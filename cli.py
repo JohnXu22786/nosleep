@@ -11,6 +11,14 @@ import platform
 
 from .core import NoSleep
 
+# Import tray module conditionally
+try:
+    from .tray import run_tray
+    TRAY_AVAILABLE = True
+except ImportError:
+    TRAY_AVAILABLE = False
+    run_tray = None
+
 
 def signal_handler(signum, frame):
     """Handle Ctrl+C"""
@@ -32,11 +40,13 @@ Examples:
   nosleep.py --display           # Also prevent display from sleeping
   nosleep.py --awaymode          # Enable away mode (requires specific hardware)
   nosleep.py -d 60 --display -i 15  # Run for 1 hour, prevent display sleep, refresh every 15s
+  nosleep.py --tray               # Run in system tray mode with taskbar icon
 
 Notes:
   - May require administrator privileges on some systems
   - Windows 11 may have compatibility issues with this API
-  - Use Ctrl+C to stop and restore normal sleep behavior
+  - In CLI mode: Use Ctrl+C to stop and restore normal sleep behavior
+  - In tray mode: Use the Stop menu item in system tray to stop
   - Regular refresh interval ensures sleep prevention remains active
         """
     )
@@ -57,7 +67,13 @@ Notes:
                        help="Stop nosleep if it's running (not implemented)")
     parser.add_argument("--verbose", action="store_true",
                        help="Print status on every refresh (more frequent updates)")
-    parser.add_argument("--version", action="version", version="nosleep 1.1.0")
+    parser.add_argument("--tray", action="store_true",
+                       help="Run in system tray mode with taskbar icon")
+    parser.add_argument("--version", action="version", version="nosleep 1.2.0")
+
+    # If no arguments are provided, default to tray mode
+    if len(sys.argv) == 1:
+        sys.argv.append('--tray')
 
     args = parser.parse_args()
 
@@ -68,13 +84,22 @@ Notes:
         datefmt='%H:%M:%S'
     )
 
-    # Set up signal handler for Ctrl+C
-    signal.signal(signal.SIGINT, signal_handler)
 
     # Check if running on Windows
     if not sys.platform.startswith('win'):
         logging.error("This tool only works on Windows")
         return 1
+
+    # Handle tray mode
+    if args.tray:
+        if not TRAY_AVAILABLE:
+            logging.error("Tray mode requires pystray and Pillow packages")
+            logging.error("Install them with: pip install pystray Pillow")
+            return 1
+        return run_tray()
+
+    # Set up signal handler for Ctrl+C (only for CLI mode)
+    signal.signal(signal.SIGINT, signal_handler)
 
     # Handle status check
     if args.status:
