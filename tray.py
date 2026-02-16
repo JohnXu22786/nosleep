@@ -92,37 +92,38 @@ class NoSleepTray:
         )
 
     def show_custom_dialog(self):
-        """Show custom duration input dialog"""
+        """Show custom duration input dialog using console input (GUI dialogs have focus issues in tray apps)"""
         try:
-            import tkinter as tk
-            from tkinter import simpledialog
+            print("\n" + "="*50)
+            print("nosleep - Custom Duration")
+            print("="*50)
+            print("Enter the number of minutes to prevent system sleep.")
+            print("Valid range: 1 to 1440 minutes (24 hours)")
+            print("Enter 'cancel' to cancel.")
+            print("="*50)
 
-            root = tk.Tk()
-            root.withdraw()  # Hide main window
+            while True:
+                try:
+                    user_input = input("Duration in minutes: ").strip()
 
-            # Ask for minutes
-            minutes = simpledialog.askinteger(
-                "nosleep - Custom Duration",
-                "Enter duration in minutes:",
-                parent=root,
-                minvalue=1,
-                maxvalue=1440  # 24 hours
-            )
+                    if user_input.lower() in ('cancel', 'quit', 'exit'):
+                        print("Cancelled.")
+                        self.show_notification("Cancelled", "Custom duration input cancelled")
+                        return
 
-            root.destroy()
+                    minutes = int(user_input)
 
-            if minutes:
-                self.set_duration(minutes)
-        except ImportError:
-            # Fallback to console input if tkinter not available
-            try:
-                minutes = int(input("Enter duration in minutes (1-1440): "))
-                if 1 <= minutes <= 1440:
-                    self.set_duration(minutes)
-                else:
-                    self.show_notification("Invalid Input", "Duration must be between 1 and 1440 minutes")
-            except (ValueError, EOFError):
-                self.show_notification("Input Error", "Invalid duration entered")
+                    if 1 <= minutes <= 1440:
+                        self.set_duration(minutes)
+                        print(f"Set to {minutes} minutes.")
+                        return
+                    else:
+                        print(f"Error: {minutes} is not in range 1-1440. Please try again.")
+                except ValueError:
+                    print("Error: Please enter a valid number (1-1440).")
+        except (EOFError, KeyboardInterrupt):
+            print("\nInput cancelled.")
+            self.show_notification("Input Cancelled", "Custom duration input was cancelled")
 
     def set_duration(self, minutes: Optional[int]):
         """Set duration and start nosleep"""
