@@ -5,6 +5,4 @@ pystray>=0.19.0
 Pillow>=9.0.0
 
 # Installation options:
-# 1. Core only (command-line mode): pip install .
-# 2. With tray support: pip install ".[tray]"  # if using setup.py with extras
-#    or: pip install pystray Pillow
+# Install with system tray support: pip install pystray Pillow

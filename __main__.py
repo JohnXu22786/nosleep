@@ -3,7 +3,7 @@
 Entry point for nosleep module
 """
 
-from .cli import main
+from .tray import run_tray
 
 if __name__ == "__main__":
-    main()
+    run_tray()

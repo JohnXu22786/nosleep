@@ -20,11 +20,11 @@ def main_wrapper():
         if parent_dir not in sys.path:
             sys.path.insert(0, parent_dir)
 
-        # Import the main function from the nosleep package
-        from nosleep.cli import main
+        # Import the tray function from the nosleep package
+        from nosleep.tray import run_tray
 
-        # Run the main function
-        return main()
+        # Run the tray function
+        return run_tray()
 
     except ImportError as e:
         print(f"Import Error: {e}", file=sys.stderr)
