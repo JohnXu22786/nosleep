@@ -115,8 +115,8 @@ class NoSleep:
 
                 if success:
                     failure_count = 0  # Reset failure count on success
-                    # Print status (every refresh if verbose, otherwise every 2 refreshes)
-                    if verbose or refresh_count % 2 == 0:
+                    # Print status on every refresh
+                    if True:
                         elapsed = datetime.now() - self.start_time
                         minutes = int(elapsed.total_seconds() // 60)
                         seconds = int(elapsed.total_seconds() % 60)
