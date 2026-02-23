@@ -157,7 +157,8 @@ class NoSleepTray:
         if self.duration_minutes is not None:
             # Ensure any previous timer thread is cleaned up
             if self.timer_thread and self.timer_thread.is_alive():
-                self.timer_thread.join(timeout=0.5)
+                if threading.current_thread() != self.timer_thread:
+                    self.timer_thread.join(timeout=0.5)
                 self.timer_thread = None
 
             self.timer_thread = threading.Thread(
@@ -170,7 +171,8 @@ class NoSleepTray:
         # Start nosleep in background thread
         # Ensure any previous nosleep thread is cleaned up
         if hasattr(self, 'nosleep_thread') and self.nosleep_thread and self.nosleep_thread.is_alive():
-            self.nosleep_thread.join(timeout=0.5)
+            if threading.current_thread() != self.nosleep_thread:
+                self.nosleep_thread.join(timeout=0.5)
             self.nosleep_thread = None
 
         self.nosleep_thread = threading.Thread(
@@ -226,25 +228,38 @@ class NoSleepTray:
         self.is_running = False
         self.stop_event.set()
 
-        # Wait for timer thread to finish
-        if self.timer_thread and self.timer_thread.is_alive():
-            self.timer_thread.join(timeout=2.0)
-            self.timer_thread = None
+        try:
+            # Wait for timer thread to finish
+            if self.timer_thread and self.timer_thread.is_alive():
+                if threading.current_thread() != self.timer_thread:
+                    try:
+                        self.timer_thread.join(timeout=2.0)
+                    except Exception as e:
+                        print(f"Warning: Failed to join timer thread: {e}")
+                # Only set to None if thread is no longer alive
+                if not self.timer_thread.is_alive():
+                    self.timer_thread = None
 
-        # Wait for nosleep thread to finish
-        if hasattr(self, 'nosleep_thread') and self.nosleep_thread and self.nosleep_thread.is_alive():
-            self.nosleep_thread.join(timeout=2.0)
-            self.nosleep_thread = None
+            # Wait for nosleep thread to finish
+            if hasattr(self, 'nosleep_thread') and self.nosleep_thread and self.nosleep_thread.is_alive():
+                if threading.current_thread() != self.nosleep_thread:
+                    try:
+                        self.nosleep_thread.join(timeout=2.0)
+                    except Exception as e:
+                        print(f"Warning: Failed to join nosleep thread: {e}")
+                # Only set to None if thread is no longer alive
+                if not self.nosleep_thread.is_alive():
+                    self.nosleep_thread = None
 
-        # Stop nosleep instance
-        if self.nosleep:
-            self.nosleep.stop()
-            self.nosleep = None
-
-        # Update UI state
-        self.icon.icon = self.create_image("gray")
-        self.icon.title = "nosleep - Inactive"
-        self.icon.menu = self.get_menu()
+            # Stop nosleep instance
+            if self.nosleep:
+                self.nosleep.stop()
+                self.nosleep = None
+        finally:
+            # Update UI state
+            self.icon.icon = self.create_image("gray")
+            self.icon.title = "nosleep - Inactive"
+            self.icon.menu = self.get_menu()
 
         # Show notification if manually stopped
         if self.start_time:
