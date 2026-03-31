@@ -194,14 +194,31 @@ class NoSleepTray:
         except Exception as e:
             self.show_notification("Error", f"Failed to prevent sleep: {str(e)}")
             self.stop_nosleep()
+        finally:
+            # If nosleep.run() completed normally (duration reached or stopped),
+            # ensure the tray state is updated
+            if self.is_running:
+                self.stop_nosleep()
 
     def _duration_timer(self, duration_seconds: int):
-        """Timer thread that waits for duration and stops nosleep"""
-        self.stop_event.wait(duration_seconds)
-
-        if not self.stop_event.is_set():
-            # Duration reached, stop nosleep
-            self.on_timeout()
+        """Timer thread that waits for duration and stops nosleep based on clock time"""
+        # Use the start_time stored in instance to calculate elapsed time
+        while not self.stop_event.is_set():
+            if self.start_time is None:
+                break
+                
+            elapsed = (datetime.now() - self.start_time).total_seconds()
+            if elapsed >= duration_seconds:
+                # Duration reached, stop nosleep
+                self.on_timeout()
+                break
+            
+            # Wait for short interval or stop event
+            remaining = max(0, duration_seconds - elapsed)
+            # Wait up to 1 second at a time to be responsive to stop event
+            wait_time = min(1.0, remaining)
+            if wait_time > 0:
+                self.stop_event.wait(wait_time)
 
     def on_timeout(self):
         """Called when duration timer expires"""
