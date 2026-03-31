@@ -49,16 +49,89 @@ class NoSleepTray:
         self.setup_icon()
         self.setup_menu()
 
-    def create_image(self, color: str = "gray") -> Image.Image:
-        """Create a simple icon image with specified color"""
-        # Create a 64x64 image (will be resized by system)
-        image = Image.new('RGB', (64, 64), color)
-        draw = ImageDraw.Draw(image)
-
-        # Draw a simple "Z" symbol for sleep prevention
-        draw.line((20, 20, 44, 20), fill="white", width=3)  # Top
-        draw.line((44, 20, 20, 44), fill="white", width=3)  # Diagonal
-        draw.line((20, 44, 44, 44), fill="white", width=3)  # Bottom
+    def create_image(self, color: str = "gray", remaining_seconds: Optional[int] = None, total_seconds: Optional[int] = None) -> Image.Image:
+        """Create an icon image with specified color and optional number display for remaining minutes"""
+        if remaining_seconds is not None and total_seconds is not None and total_seconds > 0:
+            # Show number only - transparent background
+            # Create RGBA image with transparent background
+            image = Image.new('RGBA', (128, 128), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(image)
+            
+            # Calculate minutes (show 0 when less than 1 minute)
+            minutes = max(0, remaining_seconds // 60)
+            time_text = str(minutes)
+            
+            # Determine font size to fill the icon area
+            # Start with large font and shrink if needed
+            font_size = 80
+            font = None
+            try:
+                from PIL import ImageFont
+                # Try to find a suitable font
+                try:
+                    font = ImageFont.truetype("arial.ttf", font_size)
+                except:
+                    # Fallback to default font
+                    font = ImageFont.load_default()
+            except ImportError:
+                pass
+            
+            # Adjust font size to fit within icon bounds
+            bbox = draw.textbbox((0, 0), time_text, font=font) if font else draw.textbbox((0, 0), time_text)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # Scale down if text is too wide or tall
+            max_width = 110  # Leave some margin
+            max_height = 110
+            if text_width > max_width or text_height > max_height:
+                scale = min(max_width / text_width, max_height / text_height)
+                font_size = int(font_size * scale)
+                if font:
+                    try:
+                        font = ImageFont.truetype("arial.ttf", font_size)
+                    except:
+                        font = ImageFont.load_default()
+            
+            # Recalculate bbox with adjusted font
+            bbox = draw.textbbox((0, 0), time_text, font=font) if font else draw.textbbox((0, 0), time_text)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # Center text
+            text_x = (128 - text_width) // 2
+            text_y = (128 - text_height) // 2
+            
+            # Draw text in white
+            draw.text((text_x, text_y), time_text, fill="white", font=font)
+            
+            # Set icon title with detailed time
+            if remaining_seconds >= 3600:
+                hours = remaining_seconds // 3600
+                minutes = (remaining_seconds % 3600) // 60
+                self.icon.title = f"nosleep - {hours}h {minutes}m remaining"
+            elif remaining_seconds >= 60:
+                minutes = remaining_seconds // 60
+                seconds = remaining_seconds % 60
+                self.icon.title = f"nosleep - {minutes}m {seconds}s remaining"
+            else:
+                self.icon.title = f"nosleep - {remaining_seconds}s remaining"
+        else:
+            # Draw Z symbol with colored background (indefinite or inactive)
+            # Create RGB image with solid color
+            image = Image.new('RGB', (128, 128), color)
+            draw = ImageDraw.Draw(image)
+            
+            # Draw a simple "Z" symbol for sleep prevention
+            draw.line((40, 40, 88, 40), fill="white", width=6)  # Top
+            draw.line((88, 40, 40, 88), fill="white", width=6)  # Diagonal
+            draw.line((40, 88, 88, 88), fill="white", width=6)  # Bottom
+            
+            # Set default title
+            if color == "green":
+                self.icon.title = "nosleep - Active (indefinite)"
+            else:
+                self.icon.title = "nosleep - System sleep prevention"
 
         # Resize to typical tray icon size
         image = image.resize((32, 32), Image.Resampling.LANCZOS)
@@ -68,6 +141,26 @@ class NoSleepTray:
         """Setup icon with default state"""
         self.icon.icon = self.create_image("gray")
         self.icon.title = "nosleep - System sleep prevention"
+
+    def update_icon(self):
+        """Update the tray icon with current time remaining"""
+        if self.is_running and self.duration_minutes is not None and self.start_time is not None:
+            total_seconds = self.duration_minutes * 60
+            elapsed = (datetime.now() - self.start_time).total_seconds()
+            remaining_seconds = max(0, total_seconds - elapsed)
+            
+            # Update icon with number display
+            self.icon.icon = self.create_image(
+                "green", 
+                int(remaining_seconds), 
+                total_seconds
+            )
+        elif self.is_running:
+            # Running indefinitely (no duration)
+            self.icon.icon = self.create_image("green")
+        else:
+            # Not running
+            self.icon.icon = self.create_image("gray")
 
     def get_menu(self):
         """Get the current menu based on running state"""
@@ -149,8 +242,7 @@ class NoSleepTray:
         self.stop_event.clear()
 
         # Update UI state
-        self.icon.icon = self.create_image("green")
-        self.icon.title = "nosleep - Active"
+        self.update_icon()
         self.icon.menu = self.get_menu()
 
         # Start timer thread if duration is set
@@ -213,6 +305,9 @@ class NoSleepTray:
                 self.on_timeout()
                 break
             
+            # Update icon with remaining time
+            self.update_icon()
+            
             # Wait for short interval or stop event
             remaining = max(0, duration_seconds - elapsed)
             # Wait up to 1 second at a time to be responsive to stop event
@@ -274,8 +369,7 @@ class NoSleepTray:
                 self.nosleep = None
         finally:
             # Update UI state
-            self.icon.icon = self.create_image("gray")
-            self.icon.title = "nosleep - Inactive"
+            self.update_icon()
             self.icon.menu = self.get_menu()
 
         # Show notification if manually stopped
