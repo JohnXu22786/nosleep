@@ -79,7 +79,7 @@ class NoSleep:
         """Run nosleep for specified duration or indefinitely with regular refresh
 
         Args:
-            duration_minutes: Number of minutes to run (None = indefinitely)
+            duration_minutes: Number of minutes to run (positive integer, or None for indefinitely)
             interval_seconds: Interval in seconds to refresh sleep prevention state
             prevent_display: Also prevent display from sleeping
             away_mode: Enable away mode
@@ -91,7 +91,7 @@ class NoSleep:
         logging.info("nosleep started - preventing system sleep")
         print("Press Ctrl+C to stop and allow sleep")
 
-        if duration_minutes:
+        if duration_minutes is not None and duration_minutes > 0:
             end_time = self.start_time + timedelta(minutes=duration_minutes)
             logging.info(f"Will run for {duration_minutes} minutes (until {end_time.strftime('%H:%M:%S')})")
 
@@ -138,7 +138,7 @@ class NoSleep:
                 time.sleep(interval_seconds)
 
                 # Check if duration has elapsed
-                if duration_minutes and datetime.now() >= end_time:
+                if duration_minutes is not None and duration_minutes > 0 and datetime.now() >= end_time:
                     logging.info(f"Duration reached ({duration_minutes} minutes). Stopping...")
                     break
 
