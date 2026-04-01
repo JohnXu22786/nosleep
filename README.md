@@ -28,6 +28,38 @@ Run the application to start with taskbar icon:
 - Notifications appear when timer expires
 - Icon changes color to indicate active/inactive state (gray=idle, green=active)
 
+## Command-line mode
+
+The program can be run from the command line with arguments:
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--duration` | `-d` | Minutes to prevent sleep (positive integer; ≤0 = indefinite) |
+| `--interval` | `-i` | Seconds between refreshes (default: 20) |
+| `--prevent-display` | `-p` | Also keep display awake |
+| `--away-mode` | `-a` | Enable away mode (hardware‑dependent) |
+| `--verbose` | `-v` | Print detailed status on each refresh |
+| `--tray` | `-t` | Launch the system‑tray GUI (default if no arguments) |
+
+**Entry points:**
+- `python -m nosleep [ARGS]` (run from project root directory)
+- `python app.py [ARGS]` (run from inside the `nosleep` folder)
+
+**Examples:**
+
+```bash
+# Run for 30 minutes, refresh every 10 seconds, keep display awake
+python -m nosleep --duration 30 --interval 10 --prevent-display
+
+# Run indefinitely with away mode enabled, verbose logging
+python -m nosleep --away-mode --verbose
+
+# Start the tray GUI (same as running without arguments)
+python -m nosleep --tray
+```
+
+**Default behavior:** If no arguments are given, the program starts in tray mode, preserving backward compatibility.
+
 ## API
 ```python
 from nosleep import NoSleep
