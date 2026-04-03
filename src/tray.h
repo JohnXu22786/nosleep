@@ -1,0 +1,65 @@
+// System tray integration for nosleep Windows utility
+// Provides taskbar icon with duration settings and notifications
+#ifndef TRAY_H
+#define TRAY_H
+
+#include <windows.h>
+#include <stdbool.h>
+
+// Forward declaration
+struct NoSleep;
+
+// Tray icon message ID
+#define TRAY_ICON_MESSAGE_ID 1000
+
+// Menu command IDs
+#define IDM_START_30MIN     1001
+#define IDM_START_1HOUR     1002
+#define IDM_START_2HOURS    1003
+#define IDM_START_CUSTOM    1004
+#define IDM_START_INDEFINITE 1005
+#define IDM_STOP            1006
+#define IDM_EXIT            1007
+
+typedef struct NoSleepTray {
+    HWND hwnd;                  // Window handle for tray icon
+    HMENU hmenu;                // Right-click menu
+    NOTIFYICONDATA nid;         // Tray icon data
+    bool is_running;            // Whether nosleep is active
+    bool duration_expired;      // Whether the timer duration has expired (to show correct notification)
+    bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep
+    int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
+    SYSTEMTIME start_time;      // When nosleep started
+    HANDLE stop_event;          // Event to signal stop
+    HANDLE timer_thread;        // Thread for duration timer
+    HANDLE nosleep_thread;      // Thread for nosleep execution
+    DWORD timer_thread_id;      // Thread ID for duration timer
+    DWORD nosleep_thread_id;    // Thread ID for nosleep execution
+    HICON hIconDefault;         // Default gray icon
+    HICON hIconActive;          // Green active icon
+    HICON hIconNumbered[60];    // Numbered icons for countdown (0-59 minutes)
+    HICON hIconCurrentNumbered; // Currently displayed numbered icon
+    int current_number;         // Currently displayed number (-1 if none)
+    bool prevent_display;       // Also prevent display from sleeping
+    bool away_mode;             // Enable away mode
+    bool verbose;               // Print verbose status
+    UINT uTrayMessage;          // Registered tray message ID
+} NoSleepTray;
+
+// Function prototypes
+NoSleepTray* tray_create();
+void tray_destroy(NoSleepTray* tray);
+
+bool tray_init(NoSleepTray* tray);
+void tray_run(NoSleepTray* tray);
+
+void tray_start_nosleep(NoSleepTray* tray, int duration_minutes);
+void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired);
+void tray_set_duration(NoSleepTray* tray, int minutes);
+
+void tray_update_icon(NoSleepTray* tray);
+void tray_show_notification(NoSleepTray* tray, const char* title, const char* message);
+
+LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+#endif // TRAY_H
