@@ -5,6 +5,12 @@
 #include <windows.h>
 #include <stdbool.h>
 
+// Maximum consecutive failures before giving up
+#define MAX_FAILURES 5
+#define RETRY_COUNT 2
+#define RETRY_DELAY_MS 500
+#define DEFAULT_INTERVAL_SECONDS 20
+
 typedef struct NoSleep {
     bool running;
     SYSTEMTIME start_time;

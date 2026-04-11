@@ -47,7 +47,7 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
 
 NoSleepTray* tray_create() {
-    printf("tray_create: allocating tray structure\n"); fflush(stdout);
+    DEBUG_PRINT("tray_create: allocating tray structure\n");
     NoSleepTray* tray = (NoSleepTray*)malloc(sizeof(NoSleepTray));
     if (!tray) return NULL;
     
@@ -86,7 +86,7 @@ void tray_destroy(NoSleepTray* tray) {
 }
 
 bool tray_init(NoSleepTray* tray) {
-    printf("tray_init called\n"); fflush(stdout);
+    DEBUG_PRINT("tray_init called\n");
     if (!tray) return false;
     
     // Register window class

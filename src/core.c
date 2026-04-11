@@ -6,9 +6,6 @@
 #include <string.h>
 #include <time.h>
 
-// Maximum consecutive failures before giving up
-#define MAX_FAILURES 5
-
 NoSleep* nosleep_create() {
     NoSleep* ns = (NoSleep*)malloc(sizeof(NoSleep));
     if (!ns) return NULL;
@@ -52,8 +49,8 @@ bool nosleep_prevent_sleep(NoSleep* ns, bool prevent_display, bool away_mode, bo
         }
     }
     
-    // Try up to 2 times with a short delay between attempts
-    for (int attempt = 0; attempt < 2; attempt++) {
+    // Try up to RETRY_COUNT times with a short delay between attempts
+    for (int attempt = 0; attempt < RETRY_COUNT; attempt++) {
         DWORD result = SetThreadExecutionState(flags);
         if (result != 0) {
             return true;
@@ -66,7 +63,7 @@ bool nosleep_prevent_sleep(NoSleep* ns, bool prevent_display, bool away_mode, bo
         
         // Wait before retry (only if first attempt failed)
         if (attempt == 0) {
-            Sleep(500);
+            Sleep(RETRY_DELAY_MS);
         }
     }
     

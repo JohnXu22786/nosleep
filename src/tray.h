@@ -6,6 +6,14 @@
 #include <windows.h>
 #include <stdbool.h>
 
+// Debug output macro - compiles out when not in debug mode
+#ifdef _DEBUG
+#include <stdio.h>
+#define DEBUG_PRINT(fmt, ...) fprintf(stderr, "[nosleep] " fmt, ##__VA_ARGS__)
+#else
+#define DEBUG_PRINT(fmt, ...) ((void)0)
+#endif
+
 // Forward declaration
 struct NoSleep;
 
