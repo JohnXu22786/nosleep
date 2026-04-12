@@ -62,7 +62,7 @@ bool tray_init(NoSleepTray* tray);
 void tray_run(NoSleepTray* tray);
 
 void tray_start_nosleep(NoSleepTray* tray, int duration_minutes);
-void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired);
+void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification);
 void tray_set_duration(NoSleepTray* tray, int minutes);
 
 void tray_update_icon(NoSleepTray* tray);

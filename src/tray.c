@@ -70,7 +70,7 @@ NoSleepTray* tray_create() {
 void tray_destroy(NoSleepTray* tray) {
     if (!tray) return;
     
-    tray_stop_nosleep(tray, false);
+    tray_stop_nosleep(tray, false, false);
     
     if (tray->stop_event) {
         CloseHandle(tray->stop_event);
@@ -587,7 +587,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     
     // If already running, stop it first
     if (tray->is_running) {
-        tray_stop_nosleep(tray, false);
+        tray_stop_nosleep(tray, false, true); // suppress notification when switching
     }
     
     tray->duration_minutes = duration_minutes;
@@ -628,10 +628,10 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     }
 }
 
-void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired) {
+void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_stop_nosleep called with timer_expired=%s\n", timer_expired ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_stop_nosleep called with timer_expired=%s, suppress_notification=%s\n", timer_expired ? "true" : "false", suppress_notification ? "true" : "false");
     }
     
     // Prevent re-entrant calls
@@ -696,26 +696,32 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired) {
     }
     
     // Determine which notification to show based on duration_expired flag
-    if (tray->duration_expired) {
-        if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Time's up! notification\n");
-        }
-        if (hours > 0) {
-            sprintf(message, "Sleep prevention stopped\nDuration: %dh %dm", hours, minutes);
+    if (!suppress_notification) {
+        if (tray->duration_expired) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Time's up! notification\n");
+            }
+            if (hours > 0) {
+                sprintf(message, "Sleep prevention stopped\nDuration: %dh %dm", hours, minutes);
+            } else {
+                sprintf(message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
+            }
+            tray_show_notification(tray, "Time's up!", message);
         } else {
-            sprintf(message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Stopped notification\n");
+            }
+            if (hours > 0) {
+                sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dh %dm", hours, minutes);
+            } else {
+                sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
+            }
+            tray_show_notification(tray, "Stopped", message);
         }
-        tray_show_notification(tray, "Time's up!", message);
     } else {
         if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Stopped notification\n");
+            fprintf(stderr, "[nosleep] tray_stop_nosleep: notification suppressed\n");
         }
-        if (hours > 0) {
-            sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dh %dm", hours, minutes);
-        } else {
-            sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
-        }
-        tray_show_notification(tray, "Stopped", message);
     }
     
     // Update icon
@@ -741,7 +747,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                 fprintf(stderr, "[nosleep] tray_duration_timer: duration reached, stopping with timer_expired=true\n");
             }
             tray->duration_expired = true;
-            tray_stop_nosleep(tray, true);
+            tray_stop_nosleep(tray, true, false); // show notification for timer expiry
             break;
         }
         
@@ -789,7 +795,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_nosleep_thread: calling tray_stop_nosleep with timer_expired=false\n");
         }
-        tray_stop_nosleep(tray, false);
+        tray_stop_nosleep(tray, false, false);
     }
     
     return result;
@@ -948,61 +954,7 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
-static INT_PTR CALLBACK custom_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static int* pResult = NULL;
-    
-    switch (msg) {
-        case WM_INITDIALOG:
-            pResult = (int*)lParam;
-            if (pResult) {
-                *pResult = -1;
-                // Center dialog on parent window
-                HWND hParent = GetParent(hwnd);
-                if (hParent) {
-                    RECT rcParent, rcDlg;
-                    GetWindowRect(hParent, &rcParent);
-                    GetWindowRect(hwnd, &rcDlg);
-                    int x = rcParent.left + (rcParent.right - rcParent.left - (rcDlg.right - rcDlg.left)) / 2;
-                    int y = rcParent.top + (rcParent.bottom - rcParent.top - (rcDlg.bottom - rcDlg.top)) / 2;
-                    SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-                }
-                // Set focus to edit control
-                SetFocus(GetDlgItem(hwnd, 1001));
-                // Limit input to numbers only
-                SendDlgItemMessage(hwnd, 1001, EM_SETLIMITTEXT, 4, 0);
-                // Set default value
-                SetDlgItemText(hwnd, 1001, "30");
-            }
-            return TRUE;
-            
-        case WM_COMMAND:
-            switch (LOWORD(wParam)) {
-                case IDOK: {
-                    char buffer[256];
-                    GetDlgItemText(hwnd, 1001, buffer, sizeof(buffer));
-                    char* endptr;
-                    long minutes = strtol(buffer, &endptr, 10);
-                    if (endptr != buffer && *endptr == '\0' && minutes >= 1 && minutes <= 1440) {
-                        if (pResult) {
-                            *pResult = (int)minutes;
-                        }
-                        EndDialog(hwnd, IDOK);
-                    } else {
-                        MessageBox(hwnd, "Please enter a valid number between 1 and 1440 minutes.", 
-                                  "Invalid Input", MB_OK | MB_ICONWARNING);
-                        SetFocus(GetDlgItem(hwnd, 1001));
-                        SendDlgItemMessage(hwnd, 1001, EM_SETSEL, 0, -1);
-                    }
-                    return TRUE;
-                }
-                case IDCANCEL:
-                    EndDialog(hwnd, IDCANCEL);
-                    return TRUE;
-            }
-            break;
-    }
-    return FALSE;
-}
+
 
 // Simple input dialog window procedure
 static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1162,14 +1114,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     return result;
 }
 
-// Add a dialog resource definition (this would normally be in a .rc file, but we'll create it in code)
-// We'll use a simpler approach - create a basic input dialog on the fly
-// Actually, let's create a proper dialog template in memory
-static BOOL create_custom_dialog_template() {
-    // This is complex, let's use a simpler approach with InputBox
-    // We'll implement a simple input box using CreateWindow
-    return TRUE;
-}
+
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     NoSleepTray* tray = NULL;
@@ -1258,7 +1203,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_STOP:
                     if (tray->is_running) {
-                        tray_stop_nosleep(tray, false);
+                        tray_stop_nosleep(tray, false, false); // show notification when manually stopping
                     }
                     break;
                 case IDM_EXIT:
