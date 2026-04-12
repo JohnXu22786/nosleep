@@ -55,7 +55,7 @@ typedef struct NoSleepTray {
 } NoSleepTray;
 
 // Function prototypes
-NoSleepTray* tray_create();
+NoSleepTray* tray_create(void);
 void tray_destroy(NoSleepTray* tray);
 
 bool tray_init(NoSleepTray* tray);
