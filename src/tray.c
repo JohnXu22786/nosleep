@@ -255,7 +255,6 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z) {
 }
 
 static HICON create_numbered_icon(int number) {
-    printf("create_numbered_icon(%d)\n", number); fflush(stdout);
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] create_numbered_icon(%d)\n", number);
@@ -324,8 +323,12 @@ static HICON create_numbered_icon(int number) {
     PatBlt(hdcMask, 0, 0, width, height, WHITENESS);
     
     // Prepare text
-    char text[8];
-    sprintf(text, "%d", number);
+    char text[16];
+    if (number < 0) {
+        strcpy(text, "∞");
+    } else {
+        snprintf(text, sizeof(text), "%d", number);
+    }
     
     // Dynamic font scaling algorithm matching Python version
     // Python uses 128x128 canvas with 80pt starting font, max 110x110 area
@@ -531,17 +534,26 @@ static void tray_destroy_icons(NoSleepTray* tray) {
 
 static void tray_create_menu(NoSleepTray* tray) {
     tray->hmenu = CreatePopupMenu();
-    printf("[nosleep] tray_create_menu: CreatePopupMenu returned %p\n", tray->hmenu); fflush(stdout);
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        printf("[nosleep] tray_create_menu: CreatePopupMenu returned %p\n", tray->hmenu); fflush(stdout);
+    }
     if (!tray->hmenu) {
-        printf("[nosleep] tray_create_menu: Failed to create menu (error %lu)\n", GetLastError()); fflush(stdout);
+        if (debug && strcmp(debug, "1") == 0) {
+            printf("[nosleep] tray_create_menu: Failed to create menu (error %lu)\n", GetLastError()); fflush(stdout);
+        }
         return;
     }
     
     // Duration submenu
     HMENU hSubMenu = CreatePopupMenu();
-    printf("[nosleep] tray_create_menu: CreatePopupMenu submenu returned %p\n", hSubMenu); fflush(stdout);
+    if (debug && strcmp(debug, "1") == 0) {
+        printf("[nosleep] tray_create_menu: CreatePopupMenu submenu returned %p\n", hSubMenu); fflush(stdout);
+    }
     if (!hSubMenu) {
-        printf("[nosleep] tray_create_menu: Failed to create submenu (error %lu)\n", GetLastError()); fflush(stdout);
+        if (debug && strcmp(debug, "1") == 0) {
+            printf("[nosleep] tray_create_menu: Failed to create submenu (error %lu)\n", GetLastError()); fflush(stdout);
+        }
         DestroyMenu(tray->hmenu);
         tray->hmenu = NULL;
         return;
@@ -559,11 +571,16 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
-    printf("[nosleep] tray_create_menu: Menu created successfully\n"); fflush(stdout);
+    if (debug && strcmp(debug, "1") == 0) {
+        printf("[nosleep] tray_create_menu: Menu created successfully\n"); fflush(stdout);
+    }
 }
 
 void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
-    printf("tray_start_nosleep(%d)\n", duration_minutes); fflush(stdout);
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        printf("tray_start_nosleep(%d)\n", duration_minutes); fflush(stdout);
+    }
     if (!tray || tray->is_running) {
         return;
     }
@@ -774,7 +791,6 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
 }
 
 void tray_update_icon(NoSleepTray* tray) {
-    printf("tray_update_icon called\n"); fflush(stdout);
     const char* debug = getenv("NOSLEEP_DEBUG");
     int remaining_minutes = -1;
     if (!tray || !tray->hwnd) return;
@@ -866,14 +882,22 @@ void tray_update_icon(NoSleepTray* tray) {
             // Indefinite
             // Clean up any numbered icon currently displayed
             if (tray->hIconCurrentNumbered) {
-                // If not cached (0-59), destroy it
+                // If not cached (-1 or >=60), destroy it
                 if (tray->current_number < 0 || tray->current_number >= 60) {
                     DestroyIcon(tray->hIconCurrentNumbered);
                 }
                 tray->hIconCurrentNumbered = NULL;
                 tray->current_number = -1;
             }
-            tray->nid.hIcon = tray->hIconActive;
+            
+            // Create or get infinite icon
+            if (tray->current_number != -1) {
+                // Create infinite icon if needed
+                tray->hIconCurrentNumbered = create_numbered_icon(-1);
+                tray->current_number = -1;
+            }
+            
+            tray->nid.hIcon = tray->hIconCurrentNumbered ? tray->hIconCurrentNumbered : tray->hIconActive;
             strcpy(tray->nid.szTip, "nosleep - Active (indefinite)");
         }
     } else {
@@ -919,82 +943,227 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
+static INT_PTR CALLBACK custom_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static int* pResult = NULL;
+    
+    switch (msg) {
+        case WM_INITDIALOG:
+            pResult = (int*)lParam;
+            if (pResult) {
+                *pResult = -1;
+                // Center dialog on parent window
+                HWND hParent = GetParent(hwnd);
+                if (hParent) {
+                    RECT rcParent, rcDlg;
+                    GetWindowRect(hParent, &rcParent);
+                    GetWindowRect(hwnd, &rcDlg);
+                    int x = rcParent.left + (rcParent.right - rcParent.left - (rcDlg.right - rcDlg.left)) / 2;
+                    int y = rcParent.top + (rcParent.bottom - rcParent.top - (rcDlg.bottom - rcDlg.top)) / 2;
+                    SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+                }
+                // Set focus to edit control
+                SetFocus(GetDlgItem(hwnd, 1001));
+                // Limit input to numbers only
+                SendDlgItemMessage(hwnd, 1001, EM_SETLIMITTEXT, 4, 0);
+                // Set default value
+                SetDlgItemText(hwnd, 1001, "30");
+            }
+            return TRUE;
+            
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDOK: {
+                    char buffer[256];
+                    GetDlgItemText(hwnd, 1001, buffer, sizeof(buffer));
+                    char* endptr;
+                    long minutes = strtol(buffer, &endptr, 10);
+                    if (endptr != buffer && *endptr == '\0' && minutes >= 1 && minutes <= 1440) {
+                        if (pResult) {
+                            *pResult = (int)minutes;
+                        }
+                        EndDialog(hwnd, IDOK);
+                    } else {
+                        MessageBox(hwnd, "Please enter a valid number between 1 and 1440 minutes.", 
+                                  "Invalid Input", MB_OK | MB_ICONWARNING);
+                        SetFocus(GetDlgItem(hwnd, 1001));
+                        SendDlgItemMessage(hwnd, 1001, EM_SETSEL, 0, -1);
+                    }
+                    return TRUE;
+                }
+                case IDCANCEL:
+                    EndDialog(hwnd, IDCANCEL);
+                    return TRUE;
+            }
+            break;
+    }
+    return FALSE;
+}
+
+// Simple input dialog window procedure
+static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static HWND hEdit = NULL;
+    static int* pResult = NULL;
+    
+    switch (msg) {
+        case WM_CREATE:
+            {
+                CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+                pResult = (int*)cs->lpCreateParams;
+                if (pResult) {
+                    *pResult = -1;
+                }
+                
+                // Center dialog on screen
+                RECT rc;
+                GetWindowRect(hwnd, &rc);
+                int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+                int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+                int x = (screenWidth - (rc.right - rc.left)) / 2;
+                int y = (screenHeight - (rc.bottom - rc.top)) / 2;
+                SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+                
+                // Create edit control
+                hEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "30",
+                    WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
+                    20, 30, 150, 25,
+                    hwnd, NULL, GetModuleHandle(NULL), NULL);
+                
+                if (hEdit) {
+                    // Set font
+                    HFONT hFont = CreateFont(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
+                    if (hFont) {
+                        SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+                    }
+                    
+                    // Limit input to 4 characters
+                    SendMessage(hEdit, EM_SETLIMITTEXT, 4, 0);
+                    SetFocus(hEdit);
+                    SendMessage(hEdit, EM_SETSEL, 0, -1);
+                }
+            }
+            return 0;
+            
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case 1: // OK button
+                    if (hEdit) {
+                        char buffer[256];
+                        GetWindowText(hEdit, buffer, sizeof(buffer));
+                        char* endptr;
+                        long minutes = strtol(buffer, &endptr, 10);
+                        if (endptr != buffer && *endptr == '\0' && minutes >= 1 && minutes <= 1440) {
+                            if (pResult) {
+                                *pResult = (int)minutes;
+                            }
+                            DestroyWindow(hwnd);
+                        } else {
+                            MessageBox(hwnd, "Please enter a valid number between 1 and 1440 minutes.",
+                                      "Invalid Input", MB_OK | MB_ICONWARNING);
+                            SetFocus(hEdit);
+                            SendMessage(hEdit, EM_SETSEL, 0, -1);
+                        }
+                    }
+                    return TRUE;
+                    
+                case 2: // Cancel button
+                    DestroyWindow(hwnd);
+                    return TRUE;
+            }
+            break;
+            
+        case WM_DESTROY:
+            PostQuitMessage(0);
+            break;
+            
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            break;
+    }
+    
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
 static int tray_show_custom_dialog(NoSleepTray* tray) {
-    // Allocate a console for input
-    if (!AllocConsole()) {
-        // Console already allocated or error
-        // Try to attach to existing console
-        if (!AttachConsole(ATTACH_PARENT_PROCESS)) {
-            MessageBox(tray->hwnd, "Cannot open console for input", "nosleep", MB_OK);
-            return -1;
+    // Create a simple input dialog using CreateWindow
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+    int result = -1;
+    
+    // Register dialog window class
+    WNDCLASS wc = {0};
+    wc.lpfnWndProc = input_dialog_proc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "NoSleepInputDialog";
+    
+    if (!RegisterClass(&wc)) {
+        return -1;
+    }
+    
+    // Create dialog window
+    HWND hwndDlg = CreateWindowEx(
+        0,
+        "NoSleepInputDialog",
+        "Custom Duration - nosleep",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+        CW_USEDEFAULT, CW_USEDEFAULT,
+        220, 150,
+        tray->hwnd,
+        NULL,
+        hInstance,
+        (LPVOID)&result
+    );
+    
+    if (!hwndDlg) {
+        UnregisterClass("NoSleepInputDialog", hInstance);
+        return -1;
+    }
+    
+    // Create OK button
+    CreateWindowEx(0, "BUTTON", "OK",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+        20, 70, 80, 30,
+        hwndDlg, (HMENU)1, hInstance, NULL);
+    
+    // Create Cancel button
+    CreateWindowEx(0, "BUTTON", "Cancel",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+        120, 70, 80, 30,
+        hwndDlg, (HMENU)2, hInstance, NULL);
+    
+    // Create static text
+    CreateWindowEx(0, "STATIC", "Enter duration (minutes, 1-1440):",
+        WS_CHILD | WS_VISIBLE,
+        20, 10, 180, 20,
+        hwndDlg, NULL, hInstance, NULL);
+    
+    // Show dialog
+    ShowWindow(hwndDlg, SW_SHOW);
+    
+    // Message loop for modal dialog
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsDialogMessage(hwndDlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
         }
     }
     
-    FILE* f_in = freopen("CONIN$", "r", stdin);
-    FILE* f_out = freopen("CONOUT$", "w", stdout);
-    FILE* f_err = freopen("CONOUT$", "w", stderr);
+    // Cleanup
+    UnregisterClass("NoSleepInputDialog", hInstance);
     
-    printf("\n");
-    printf("==================================================\n");
-    printf("nosleep - Custom Duration\n");
-    printf("==================================================\n");
-    printf("Enter the number of minutes to prevent system sleep.\n");
-    printf("Valid range: 1 to 1440 minutes (24 hours)\n");
-    printf("Enter 'cancel' to cancel.\n");
-    printf("==================================================\n");
-    
-    while (1) {
-        printf("\nDuration in minutes: ");
-        fflush(stdout);
-        
-        char input[256];
-        if (!fgets(input, sizeof(input), stdin)) {
-            printf("Input cancelled.\n");
-            break;
-        }
-        
-        // Remove trailing newline
-        input[strcspn(input, "\n")] = '\0';
-        
-        // Check for cancel
-        if (strcmp(input, "cancel") == 0 || 
-            strcmp(input, "quit") == 0 || 
-            strcmp(input, "exit") == 0) {
-            printf("Cancelled.\n");
-            tray_show_notification(tray, "Cancelled", "Custom duration input cancelled");
-            break;
-        }
-        
-        // Parse integer
-        char* endptr;
-        long minutes = strtol(input, &endptr, 10);
-        if (endptr == input || *endptr != '\0') {
-            printf("Error: Please enter a valid number (1-1440).\n");
-            continue;
-        }
-        
-        if (minutes >= 1 && minutes <= 1440) {
-            printf("Set to %ld minutes.\n", minutes);
-            
-            // Close console
-            fclose(f_in);
-            fclose(f_out);
-            fclose(f_err);
-            FreeConsole();
-            
-            return (int)minutes;
-        } else {
-            printf("Error: %ld is not in range 1-1440. Please try again.\n", minutes);
-        }
-    }
-    
-    // Close console
-    fclose(f_in);
-    fclose(f_out);
-    fclose(f_err);
-    FreeConsole();
-    
-    return -1; // cancelled
+    return result;
+}
+
+// Add a dialog resource definition (this would normally be in a .rc file, but we'll create it in code)
+// We'll use a simpler approach - create a basic input dialog on the fly
+// Actually, let's create a proper dialog template in memory
+static BOOL create_custom_dialog_template() {
+    // This is complex, let's use a simpler approach with InputBox
+    // We'll implement a simple input box using CreateWindow
+    return TRUE;
 }
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -1028,17 +1197,31 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         else if (lParam == NIN_BALLOONHIDE) msg_name = "NIN_BALLOONHIDE";
         else if (lParam == NIN_BALLOONTIMEOUT) msg_name = "NIN_BALLOONTIMEOUT";
         else if (lParam == NIN_BALLOONUSERCLICK) msg_name = "NIN_BALLOONUSERCLICK";
-        printf("[nosleep] tray_window_proc: Tray message received (msg=0x%X) wParam=%lld, lParam=%lld (%s)\n", msg, wParam, lParam, msg_name); fflush(stdout);
-        // Decode high and low words of lParam for debugging
-        printf("[nosleep] tray_window_proc: lParam low word=0x%04X, high word=0x%04X\n", LOWORD(lParam), HIWORD(lParam)); fflush(stdout);
+        
+        // Only print debug info if NOSLEEP_DEBUG environment variable is set
+        const char* debug = getenv("NOSLEEP_DEBUG");
+        if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
+            printf("[nosleep] tray_window_proc: Tray message received (msg=0x%X) wParam=%lld, lParam=%lld (%s)\n", msg, wParam, lParam, msg_name); fflush(stdout);
+            // Decode high and low words of lParam for debugging
+            printf("[nosleep] tray_window_proc: lParam low word=0x%04X, high word=0x%04X\n", LOWORD(lParam), HIWORD(lParam)); fflush(stdout);
+        }
         
         // Handle right-click (both legacy mouse message and notification code)
         if (lParam == WM_RBUTTONUP || lParam == NIN_KEYSELECT) {
             // Show context menu
-            printf("[nosleep] tray_window_proc: Right-click detected, showing menu\n"); fflush(stdout);
+            const char* debug = getenv("NOSLEEP_DEBUG");
+            if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
+                printf("[nosleep] tray_window_proc: Right-click detected, showing menu\n"); fflush(stdout);
+            }
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
+            // Enable/disable Stop menu item based on running state
+            if (tray->is_running) {
+                EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
+            } else {
+                EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
+            }
             TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
             PostMessage(hwnd, WM_NULL, 0, 0); // Send dummy message to make menu disappear
         }
@@ -1069,7 +1252,9 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray_start_nosleep(tray, 0); // 0 = indefinite
                     break;
                 case IDM_STOP:
-    tray_stop_nosleep(tray, false);
+                    if (tray->is_running) {
+                        tray_stop_nosleep(tray, false);
+                    }
                     break;
                 case IDM_EXIT:
                     DestroyWindow(hwnd);
@@ -1094,13 +1279,24 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             break;
             
         case WM_CONTEXTMENU:
-            printf("[nosleep] tray_window_proc: WM_CONTEXTMENU received\n"); fflush(stdout);
-            if (tray && tray->hmenu) {
-                POINT pt;
-                GetCursorPos(&pt);
-                SetForegroundWindow(hwnd);
-                TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
-                PostMessage(hwnd, WM_NULL, 0, 0);
+            {
+                const char* debug = getenv("NOSLEEP_DEBUG");
+                if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
+                    printf("[nosleep] tray_window_proc: WM_CONTEXTMENU received\n"); fflush(stdout);
+                }
+                if (tray && tray->hmenu) {
+                    POINT pt;
+                    GetCursorPos(&pt);
+                    SetForegroundWindow(hwnd);
+                    // Enable/disable Stop menu item based on running state
+                    if (tray->is_running) {
+                        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
+                    } else {
+                        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
+                    }
+                    TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+                    PostMessage(hwnd, WM_NULL, 0, 0);
+                }
             }
             break;
 
