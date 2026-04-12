@@ -21,7 +21,7 @@ typedef struct NoSleep {
 } NoSleep;
 
 // Function prototypes
-NoSleep* nosleep_create();
+NoSleep* nosleep_create(void);
 void nosleep_destroy(NoSleep* ns);
 
 bool nosleep_prevent_sleep(NoSleep* ns, bool prevent_display, bool away_mode, bool silent);

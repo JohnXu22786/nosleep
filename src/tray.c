@@ -49,7 +49,7 @@ static HICON create_numbered_icon(int number);
 static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
 static void load_gray_and_color_icons(NoSleepTray* tray);
 
-NoSleepTray* tray_create() {
+NoSleepTray* tray_create(void) {
     DEBUG_PRINT("tray_create: allocating tray structure\n");
     NoSleepTray* tray = (NoSleepTray*)malloc(sizeof(NoSleepTray));
     if (!tray) return NULL;
@@ -757,6 +757,12 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     );
     if (tray->nosleep_thread) {
         tray->nosleep_thread_id = GetThreadId(tray->nosleep_thread);
+    } else {
+        // Thread creation failed, restore state and notify user
+        tray->is_running = false;
+        tray->duration_minutes = -1;
+        tray_show_notification(tray, "Error", "Failed to create nosleep thread");
+        return;
     }
     
     // Start duration timer thread if duration is set
@@ -766,6 +772,14 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         );
         if (tray->timer_thread) {
             tray->timer_thread_id = GetThreadId(tray->timer_thread);
+        } else {
+            // Timer thread creation failed, stop nosleep thread and restore state
+            tray_stop_nosleep(tray, false, true); // suppress notification
+            
+            char error_msg[256];
+            sprintf(error_msg, "Failed to create timer thread. Error code: %lu", GetLastError());
+            tray_show_notification(tray, "Error", error_msg);
+            return;
         }
     }
 }
@@ -1292,6 +1306,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         
         // Only print debug info if NOSLEEP_DEBUG environment variable is set
         const char* debug = getenv("NOSLEEP_DEBUG");
+
         if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
             printf("[nosleep] tray_window_proc: Tray message received (msg=0x%X) wParam=%lld, lParam=%lld (%s)\n", msg, wParam, lParam, msg_name); fflush(stdout);
             // Decode high and low words of lParam for debugging
@@ -1301,7 +1316,6 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         // Handle right-click (both legacy mouse message and notification code)
         if (lParam == WM_RBUTTONUP || lParam == NIN_KEYSELECT) {
             // Show context menu
-            const char* debug = getenv("NOSLEEP_DEBUG");
             if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
                 printf("[nosleep] tray_window_proc: Right-click detected, showing menu\n"); fflush(stdout);
             }
