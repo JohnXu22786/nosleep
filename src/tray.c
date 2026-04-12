@@ -581,8 +581,13 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     if (debug && strcmp(debug, "1") == 0) {
         printf("tray_start_nosleep(%d)\n", duration_minutes); fflush(stdout);
     }
-    if (!tray || tray->is_running) {
+    if (!tray) {
         return;
+    }
+    
+    // If already running, stop it first
+    if (tray->is_running) {
+        tray_stop_nosleep(tray, false);
     }
     
     tray->duration_minutes = duration_minutes;

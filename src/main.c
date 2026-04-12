@@ -36,7 +36,7 @@ static int run_cli_mode(int duration, int interval,
 static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose);
 
 int main(int argc, char* argv[]) {
-    printf("main entered\n"); fflush(stdout);
+    // Removed debug printf for tray-only mode
     // Default values
     int duration = 0;          // 0 = indefinite
     int interval = 20;         // seconds
@@ -187,9 +187,15 @@ static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] run_tray_mode: starting with debug enabled\n");
+        printf("Starting nosleep in system tray mode...\n"); fflush(stdout);
+        printf("Right-click the tray icon to set duration and control nosleep.\n"); fflush(stdout);
+    } else {
+        // Hide console window in release mode for pure tray application
+        HWND hwndConsole = GetConsoleWindow();
+        if (hwndConsole != NULL) {
+            ShowWindow(hwndConsole, SW_HIDE);
+        }
     }
-    printf("Starting nosleep in system tray mode...\n"); fflush(stdout);
-    printf("Right-click the tray icon to set duration and control nosleep.\n"); fflush(stdout);
     
     NoSleepTray* tray = tray_create();
     if (!tray) {
