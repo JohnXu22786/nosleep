@@ -11,17 +11,21 @@ BINDIR = bin
 
 SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
+RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
 
 .PHONY: all clean
 
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS) | $(BINDIR)
-	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+$(TARGET): $(OBJECTS) $(RESOURCE_OBJ) | $(BINDIR)
+	$(CC) $(OBJECTS) $(RESOURCE_OBJ) -o $@ $(LDFLAGS)
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(RESOURCE_OBJ): $(SRCDIR)/resources.rc | $(OBJDIR)
+	windres $< -o $@
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)

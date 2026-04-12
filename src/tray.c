@@ -1,6 +1,7 @@
 // System tray implementation for nosleep
 #include "tray.h"
 #include "core.h"
+#include "resources.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,8 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam);
 static int tray_show_custom_dialog(NoSleepTray* tray);
 static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
+static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
+static void load_gray_and_color_icons(NoSleepTray* tray);
 
 NoSleepTray* tray_create() {
     DEBUG_PRINT("tray_create: allocating tray structure\n");
@@ -193,6 +196,146 @@ void tray_run(NoSleepTray* tray) {
         printf("tray_run: message 0x%04X (%s) hwnd=%p\n", msg.message, msg_name, msg.hwnd); fflush(stdout);
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+}
+
+static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+    if (!hInstance) {
+        return NULL;
+    }
+    
+    // First try to load the icon with the specified size
+    HICON hIcon = (HICON)LoadImage(hInstance, resource_name, IMAGE_ICON, width, height, LR_DEFAULTCOLOR);
+    if (!hIcon) {
+        // Fallback: load with default size
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] load_icon_from_resource: failed to load icon %p size %dx%d, trying default size\n", resource_name, width, height);
+            fflush(stderr);
+        }
+        hIcon = (HICON)LoadImage(hInstance, resource_name, IMAGE_ICON, 0, 0, LR_DEFAULTCOLOR | LR_DEFAULTSIZE);
+    }
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] load_icon_from_resource: icon %p %s\n", resource_name, hIcon ? "loaded successfully" : "failed to load");
+        fflush(stderr);
+    }
+    
+    return hIcon;
+}
+
+static HICON icon_to_grayscale(HICON hColorIcon) {
+    if (!hColorIcon) return NULL;
+    
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] icon_to_grayscale: converting icon to grayscale\n");
+    }
+    
+    ICONINFO iconInfo;
+    if (!GetIconInfo(hColorIcon, &iconInfo)) {
+        return NULL;
+    }
+    
+    HDC hdcScreen = GetDC(NULL);
+    HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    
+    // Get bitmap dimensions
+    BITMAP bmp;
+    GetObject(iconInfo.hbmColor, sizeof(BITMAP), &bmp);
+    
+    int width = bmp.bmWidth;
+    int height = bmp.bmHeight;
+    
+    // Create new bitmap for grayscale
+    BITMAPINFO bmi;
+    ZeroMemory(&bmi, sizeof(BITMAPINFO));
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+    
+    void* pBits = NULL;
+    HBITMAP hbmpGray = CreateDIBSection(hdcScreen, &bmi, DIB_RGB_COLORS, &pBits, NULL, 0);
+    if (!hbmpGray) {
+        DeleteDC(hdcMem);
+        ReleaseDC(NULL, hdcScreen);
+        DeleteObject(iconInfo.hbmColor);
+        DeleteObject(iconInfo.hbmMask);
+        return NULL;
+    }
+    
+    HBITMAP hOldBmp = (HBITMAP)SelectObject(hdcMem, hbmpGray);
+    
+    // Draw color icon to memory DC
+    DrawIconEx(hdcMem, 0, 0, hColorIcon, width, height, 0, NULL, DI_NORMAL);
+    
+    // Convert to grayscale by iterating pixels
+    DWORD* pixels = (DWORD*)pBits;
+    for (int i = 0; i < width * height; i++) {
+        DWORD pixel = pixels[i];
+        BYTE r = GetRValue(pixel);
+        BYTE g = GetGValue(pixel);
+        BYTE b = GetBValue(pixel);
+        BYTE a = (pixel >> 24) & 0xFF; // Alpha channel
+        
+        // Calculate grayscale luminance (standard formula)
+        BYTE gray = (BYTE)(0.299f * r + 0.587f * g + 0.114f * b);
+        
+        pixels[i] = (a << 24) | (gray << 16) | (gray << 8) | gray;
+    }
+    
+    // Create grayscale icon
+    ICONINFO grayIconInfo;
+    grayIconInfo.fIcon = TRUE;
+    grayIconInfo.hbmColor = hbmpGray;
+    grayIconInfo.hbmMask = iconInfo.hbmMask; // Reuse mask
+    
+    HICON hGrayIcon = CreateIconIndirect(&grayIconInfo);
+    
+    // Cleanup
+    SelectObject(hdcMem, hOldBmp);
+    DeleteObject(hbmpGray);
+    DeleteDC(hdcMem);
+    ReleaseDC(NULL, hdcScreen);
+    DeleteObject(iconInfo.hbmColor);
+    DeleteObject(iconInfo.hbmMask);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] icon_to_grayscale: conversion %s\n", hGrayIcon ? "succeeded" : "failed");
+    }
+    
+    return hGrayIcon;
+}
+
+static void load_gray_and_color_icons(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] load_gray_and_color_icons: loading icons from resources\n");
+    }
+    
+    // Load color icon from resource
+    tray->hIconActive = load_icon_from_resource(MAKEINTRESOURCE(IDI_APPICON), 32, 32);
+    
+    if (!tray->hIconActive) {
+        fprintf(stderr, "[nosleep] Failed to load color icon from resource, using fallback\n");
+        tray->hIconActive = create_colored_icon(RGB(0, 128, 0), true); // Green with Z
+    }
+    
+    // Create a grayscale version for inactive state
+    if (tray->hIconActive) {
+        tray->hIconDefault = icon_to_grayscale(tray->hIconActive);
+        if (!tray->hIconDefault) {
+            // Fallback to gray Z icon if grayscale conversion fails
+            tray->hIconDefault = create_colored_icon(RGB(128, 128, 128), true);
+        }
+    } else {
+        // Complete fallback to generated icons
+        tray->hIconDefault = create_colored_icon(RGB(128, 128, 128), true);
+        tray->hIconActive = create_colored_icon(RGB(0, 128, 0), true);
     }
 }
 
@@ -466,11 +609,10 @@ static void tray_create_icons(NoSleepTray* tray) {
     printf("tray_create_icons called\n"); fflush(stdout);
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_create_icons: creating default and active icons\n");
+        fprintf(stderr, "[nosleep] tray_create_icons: loading icons\n");
     }
-    // Create custom colored icons
-    tray->hIconDefault = create_colored_icon(RGB(128, 128, 128), true);      // Gray with Z
-    tray->hIconActive = create_colored_icon(RGB(0, 128, 0), true);           // Green with Z
+    // Load color icon from resource and create grayscale version
+    load_gray_and_color_icons(tray);
     
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] tray_create_icons: default icon %s, active icon %s\n",
