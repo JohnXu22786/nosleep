@@ -6,7 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-NoSleep* nosleep_create() {
+NoSleep* nosleep_create(void) {
     NoSleep* ns = (NoSleep*)malloc(sizeof(NoSleep));
     if (!ns) return NULL;
     
