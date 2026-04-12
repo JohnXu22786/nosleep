@@ -1,205 +1,160 @@
 // nosleep - Prevent Windows from sleeping using SetThreadExecutionState API
-// Main application entry point
+// Main application entry point for Windows GUI application
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <stdbool.h>
+#include <shellapi.h>
 
 #include "core.h"
 #include "tray.h"
 
-// Static variable for Ctrl+C handler
-static NoSleep* g_current_nosleep = NULL;
-
-// Console control handler for Ctrl+C
-static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type) {
-    if (ctrl_type == CTRL_C_EVENT) {
-        printf("\nInterrupted by user\n");
-        if (g_current_nosleep) {
-            nosleep_stop(g_current_nosleep);
-        }
-        return TRUE; // Signal handled
-    }
-    return FALSE; // Let other handlers process
-}
-
 // Function prototypes
-static void print_usage(const char* program_name);
-static int parse_arguments(int argc, char* argv[], 
+
+static int parse_arguments(int argc, wchar_t* argv[], 
                           int* duration, int* interval,
                           bool* prevent_display, bool* away_mode,
                           bool* verbose, bool* tray_mode);
-static int run_cli_mode(int duration, int interval,
-                       bool prevent_display, bool away_mode,
-                       bool verbose);
-static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose);
+static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose, int duration_minutes);
 
-int main(int argc, char* argv[]) {
-    // Removed debug printf for tray-only mode
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Suppress unused parameter warnings
+    (void)hInstance;
+    (void)hPrevInstance;
+    (void)lpCmdLine;
+    (void)nCmdShow;
     // Default values
-    int duration = 0;          // 0 = indefinite
+    int duration = -1;         // -1 = not set (tray mode default), 0 = indefinite
     int interval = 20;         // seconds
     bool prevent_display = false;
     bool away_mode = false;
     bool verbose = false;
     bool tray_mode = false;
     
-    // Parse command line arguments
+    // Parse command line arguments using Windows API
+    int argc = 0;
+    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    
+    if (!argv) {
+        // Could not parse command line, default to tray mode
+        return run_tray_mode(prevent_display, away_mode, verbose, duration);
+    }
+    
+    // Parse arguments
     int parse_result = parse_arguments(argc, argv, &duration, &interval,
                                       &prevent_display, &away_mode,
                                       &verbose, &tray_mode);
+    
+    LocalFree(argv);
+    
     if (parse_result == 1) {
-        return 1; // Error
+        // Error parsing arguments - show message box instead of console output
+        MessageBox(NULL, 
+                  "Invalid command line arguments. Use --help for usage information.",
+                  "nosleep - Error",
+                  MB_OK | MB_ICONERROR);
+        return 1;
     } else if (parse_result == 2) {
-        return 0; // Help printed successfully
-    } else if (parse_result != 0) {
-        return parse_result;
+        // Help requested - show message box
+        const char* help_text = 
+            "nosleep - Prevent Windows from sleeping using SetThreadExecutionState API\n\n"
+            "Usage: nosleep [OPTIONS]\n\n"
+            "Options:\n"
+            "  -d, --duration MINUTES    Duration in minutes to prevent sleep\n"
+            "                            (positive integer, 0 or negative = indefinite)\n"
+            "  -i, --interval SECONDS    Interval in seconds to refresh sleep prevention\n"
+            "                            (default: 20)\n"
+            "  -p, --prevent-display     Also prevent display from sleeping\n"
+            "  -a, --away-mode           Enable away mode (requires compatible hardware)\n"
+            "  -v, --verbose             Print detailed status to debug output\n"
+            "  -t, --tray                Start in system tray mode\n"
+            "                            (default if no arguments provided)\n"
+            "\n"
+            "Examples:\n"
+            "  nosleep --duration 30 --prevent-display\n"
+            "  nosleep -d 60 -i 10 -v\n"
+            "  nosleep --tray\n"
+            "  nosleep                     (starts tray mode)\n";
+        
+        MessageBox(NULL, help_text, "nosleep - Help", MB_OK | MB_ICONINFORMATION);
+        return 0;
     }
     
-    // If tray flag is set or no arguments provided, run tray mode
-    if (tray_mode || argc == 1) {
-        return run_tray_mode(prevent_display, away_mode, verbose);
-    }
-    
-    // Otherwise run CLI mode with provided arguments
-    return run_cli_mode(duration, interval, prevent_display, away_mode, verbose);
+    // Always run tray mode for pure GUI application
+    return run_tray_mode(prevent_display, away_mode, verbose, duration);
 }
 
-static void print_usage(const char* program_name) {
-    printf("nosleep - Prevent Windows from sleeping using SetThreadExecutionState API\n\n");
-    printf("Usage: %s [OPTIONS]\n\n", program_name);
-    printf("Options:\n");
-    printf("  -d, --duration MINUTES    Duration in minutes to prevent sleep\n");
-    printf("                            (positive integer, 0 or negative = indefinite)\n");
-    printf("  -i, --interval SECONDS    Interval in seconds to refresh sleep prevention\n");
-    printf("                            (default: 20)\n");
-    printf("  -p, --prevent-display     Also prevent display from sleeping\n");
-    printf("  -a, --away-mode           Enable away mode (requires compatible hardware)\n");
-    printf("  -v, --verbose             Print detailed status on every refresh\n");
-    printf("  -t, --tray                Start in system tray mode\n");
-    printf("                            (default if no arguments provided)\n");
-    printf("\nExamples:\n");
-    printf("  %s --duration 30 --prevent-display\n", program_name);
-    printf("  %s -d 60 -i 10 -v\n", program_name);
-    printf("  %s --tray\n", program_name);
-    printf("  %s                     (starts tray mode)\n", program_name);
-}
 
-static int parse_arguments(int argc, char* argv[], 
+
+static int parse_arguments(int argc, wchar_t* argv[], 
                           int* duration, int* interval,
                           bool* prevent_display, bool* away_mode,
                           bool* verbose, bool* tray_mode) {
     // Simple argument parsing (could use getopt or similar, but keep simple for Windows)
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            print_usage(argv[0]);
-            return 2; // Special code: help printed
+        // Convert wide char to UTF-8 for comparison
+        char arg[256];
+        WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, arg, sizeof(arg), NULL, NULL);
+        
+        if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
+            return 2; // Special code: help requested
         }
-        else if (strcmp(argv[i], "--duration") == 0 || strcmp(argv[i], "-d") == 0) {
+        else if (strcmp(arg, "--duration") == 0 || strcmp(arg, "-d") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --duration requires a value\n");
                 return 1;
             }
-            *duration = atoi(argv[++i]);
+            // Convert next argument to integer
+            char value[256];
+            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
+            *duration = atoi(value);
         }
-        else if (strcmp(argv[i], "--interval") == 0 || strcmp(argv[i], "-i") == 0) {
+        else if (strcmp(arg, "--interval") == 0 || strcmp(arg, "-i") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "Error: --interval requires a value\n");
                 return 1;
             }
-            *interval = atoi(argv[++i]);
+            char value[256];
+            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
+            *interval = atoi(value);
             if (*interval <= 0) {
-                fprintf(stderr, "Error: interval must be positive\n");
                 return 1;
             }
         }
-        else if (strcmp(argv[i], "--prevent-display") == 0 || strcmp(argv[i], "-p") == 0) {
+        else if (strcmp(arg, "--prevent-display") == 0 || strcmp(arg, "-p") == 0) {
             *prevent_display = true;
         }
-        else if (strcmp(argv[i], "--away-mode") == 0 || strcmp(argv[i], "-a") == 0) {
+        else if (strcmp(arg, "--away-mode") == 0 || strcmp(arg, "-a") == 0) {
             *away_mode = true;
         }
-        else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
+        else if (strcmp(arg, "--verbose") == 0 || strcmp(arg, "-v") == 0) {
             *verbose = true;
         }
-        else if (strcmp(argv[i], "--tray") == 0 || strcmp(argv[i], "-t") == 0) {
+        else if (strcmp(arg, "--tray") == 0 || strcmp(arg, "-t") == 0) {
             *tray_mode = true;
         }
         else {
-            fprintf(stderr, "Error: Unknown argument '%s'\n", argv[i]);
-            print_usage(argv[0]);
-            return 1;
+            return 1; // Unknown argument
         }
     }
     
     return 0;
 }
 
-static int run_cli_mode(int duration, int interval,
-                       bool prevent_display, bool away_mode,
-                       bool verbose) {
-    printf("run_cli_mode entered\n"); fflush(stdout);
-    
-    printf("nosleep - Preventing system sleep\n");
-    if (duration > 0) {
-        printf("Duration: %d minutes\n", duration);
-    } else {
-        printf("Duration: indefinite\n");
-    }
-    printf("Refresh interval: %d seconds\n", interval);
-    if (prevent_display) {
-        printf("Also preventing display sleep\n");
-    }
-    if (away_mode) {
-        printf("Away mode enabled (may require specific hardware)\n");
-    }
-    printf("Press Ctrl+C to stop and allow sleep\n");
-    fflush(stdout);
-    
-    NoSleep* ns = nosleep_create();
-    if (!ns) {
-        fprintf(stderr, "Failed to create NoSleep instance\n");
-        return 1;
-    }
-    
-    // Register Ctrl+C handler
-    g_current_nosleep = ns;
-    if (!SetConsoleCtrlHandler(console_ctrl_handler, TRUE)) {
-        fprintf(stderr, "Warning: Could not set console control handler\n");
-    }
-    
-    // Convert duration: 0 or negative means indefinite (pass 0 to nosleep_run)
-    int duration_to_pass = duration > 0 ? duration : 0;
-    
-    int result = nosleep_run(ns, duration_to_pass, interval,
-                            prevent_display, away_mode, verbose);
-    
-    // Unregister Ctrl+C handler
-    SetConsoleCtrlHandler(console_ctrl_handler, FALSE);
-    g_current_nosleep = NULL;
-    
-    nosleep_destroy(ns);
-    return result;
-}
 
-static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose) {
+
+static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose, int duration_minutes) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] run_tray_mode: starting with debug enabled\n");
-        printf("Starting nosleep in system tray mode...\n"); fflush(stdout);
-        printf("Right-click the tray icon to set duration and control nosleep.\n"); fflush(stdout);
-    } else {
-        // Hide console window in release mode for pure tray application
-        HWND hwndConsole = GetConsoleWindow();
-        if (hwndConsole != NULL) {
-            ShowWindow(hwndConsole, SW_HIDE);
-        }
+        // In debug mode, we can output to debugger
+        OutputDebugString("[nosleep] run_tray_mode: starting with debug enabled\n");
+        OutputDebugString("Starting nosleep in system tray mode...\n");
+        OutputDebugString("Right-click the tray icon to set duration and control nosleep.\n");
     }
     
     NoSleepTray* tray = tray_create();
     if (!tray) {
-        fprintf(stderr, "Failed to create tray instance\n");
+        // No console for error output, but we can show a message box
+        MessageBox(NULL, "Failed to create tray instance", "nosleep - Error", MB_OK | MB_ICONERROR);
         return 1;
     }
     
@@ -208,9 +163,14 @@ static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose) {
     tray->verbose = verbose;
     
     if (!tray_init(tray)) {
-        fprintf(stderr, "Failed to initialize tray\n");
+        MessageBox(NULL, "Failed to initialize tray", "nosleep - Error", MB_OK | MB_ICONERROR);
         tray_destroy(tray);
         return 1;
+    }
+    
+    // If duration is specified, auto-start (0 = indefinite, >0 = minutes)
+    if (duration_minutes >= 0) {
+        tray_start_nosleep(tray, duration_minutes);
     }
     
     tray_run(tray);
