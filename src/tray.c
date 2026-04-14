@@ -80,6 +80,14 @@ NoSleepTray* tray_create(void) {
         return NULL;
     }
     
+    tray->countdown_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!tray->countdown_stop_event) {
+        CloseHandle(tray->sleep_stop_event);
+        CloseHandle(tray->stop_event);
+        free(tray);
+        return NULL;
+    }
+    
     return tray;
 }
 
@@ -98,6 +106,10 @@ void tray_destroy(NoSleepTray* tray) {
     
     if (tray->sleep_stop_event) {
         CloseHandle(tray->sleep_stop_event);
+    }
+    
+    if (tray->countdown_stop_event) {
+        CloseHandle(tray->countdown_stop_event);
     }
     
     tray_destroy_icons(tray);
@@ -191,7 +203,7 @@ bool tray_init(NoSleepTray* tray) {
     // Auto-start test duration if NOSLEEP_DEBUG=1 or 2
     {
         const char* debug = getenv("NOSLEEP_DEBUG");
-
+        (void)debug; // Suppress unused variable warning
     }
     
     return true;
@@ -624,6 +636,131 @@ static HICON create_numbered_icon(int number) {
     return hIcon;
 }
 
+static HICON create_transparent_icon(void) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] create_transparent_icon: creating fully transparent icon\n");
+    }
+    
+    const int width = 32;
+    const int height = 32;
+    
+    // Create XOR bitmap (all zeros - black)
+    // XOR bitmap is 1-bit per pixel: 0 = black
+    int xor_row_bytes = ((width + 15) / 16) * 2; // 32 pixels = 4 bytes per row for 1-bit
+    int xor_size = xor_row_bytes * height;
+    BYTE* xor_bits = (BYTE*)calloc(1, xor_size); // All zeros = black
+    
+    // Create AND mask (all ones - transparent)
+    // AND mask is 1-bit per pixel: 1 = transparent, 0 = opaque
+    int and_row_bytes = ((width + 15) / 16) * 2; // Same calculation
+    int and_size = and_row_bytes * height;
+    BYTE* and_bits = (BYTE*)malloc(and_size);
+    
+    if (!xor_bits || !and_bits) {
+        free(xor_bits);
+        free(and_bits);
+        return NULL;
+    }
+    
+    // Fill AND mask with all ones (0xFF = all bits set = transparent)
+    memset(and_bits, 0xFF, and_size);
+    
+    // Create icon using CreateIcon (traditional icon format)
+    // Parameters: hInstance, width, height, nPlanes, nBitsPerPixel, ANDbits, XORbits
+    HICON hIcon = CreateIcon(NULL, width, height, 1, 1, and_bits, xor_bits);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] create_transparent_icon: CreateIcon %s\n", hIcon ? "succeeded" : "failed");
+    }
+    
+    free(xor_bits);
+    free(and_bits);
+    
+    // Fallback: try alternative method if CreateIcon fails
+    if (!hIcon) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] create_transparent_icon: trying alternative method\n");
+        }
+        
+        // Alternative: create a 32x32 icon with alpha=0
+        HDC hdc = GetDC(NULL);
+        if (!hdc) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: GetDC failed, error=%lu\n", GetLastError());
+            }
+            return NULL;
+        }
+        
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        if (!hdcMem) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: CreateCompatibleDC failed, error=%lu\n", GetLastError());
+            }
+            ReleaseDC(NULL, hdc);
+            return NULL;
+        }
+        
+        // Create 32-bit ARGB bitmap
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        
+        void* bits;
+        HBITMAP hbmpColor = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (hbmpColor) {
+            // Fill with fully transparent (alpha=0)
+            DWORD* pixels = (DWORD*)bits;
+            for (int i = 0; i < width * height; i++) {
+                pixels[i] = 0x00000000; // ARGB: Alpha=0, RGB=0
+            }
+            
+            // Create 1-bit mask (all white = transparent)
+            HBITMAP hbmpMask = CreateBitmap(width, height, 1, 1, NULL);
+            if (hbmpMask) {
+                HDC hdcMask = CreateCompatibleDC(hdc);
+                if (hdcMask) {
+                    HBITMAP oldMask = (HBITMAP)SelectObject(hdcMask, hbmpMask);
+                    PatBlt(hdcMask, 0, 0, width, height, WHITENESS);
+                    SelectObject(hdcMask, oldMask);
+                    DeleteDC(hdcMask);
+                }
+                
+                ICONINFO iconInfo = {0};
+                iconInfo.fIcon = TRUE;
+                iconInfo.hbmColor = hbmpColor;
+                iconInfo.hbmMask = hbmpMask;
+                
+                hIcon = CreateIconIndirect(&iconInfo);
+                if (!hIcon && debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] create_transparent_icon: CreateIconIndirect failed, error=%lu\n", GetLastError());
+                }
+                
+                DeleteObject(hbmpMask);
+            } else if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: CreateBitmap failed, error=%lu\n", GetLastError());
+            }
+            
+            DeleteObject(hbmpColor);
+        } else if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] create_transparent_icon: CreateDIBSection failed, error=%lu\n", GetLastError());
+        }
+        
+        if (hdcMem) {
+            DeleteDC(hdcMem);
+        }
+        if (hdc) {
+            ReleaseDC(NULL, hdc);
+        }
+    }
+    
+    return hIcon;
+}
+
 static void tray_create_icons(NoSleepTray* tray) {
     printf("tray_create_icons called\n"); fflush(stdout);
     const char* debug = getenv("NOSLEEP_DEBUG");
@@ -662,6 +799,13 @@ static void tray_create_icons(NoSleepTray* tray) {
                     i, tray->hIconNumbered[i] ? "created" : "failed");
         }
     }
+    
+    // Create transparent icon for countdown blink off state
+    tray->hIconCountdownBlank = create_transparent_icon();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_create_icons: transparent icon %s\n",
+                tray->hIconCountdownBlank ? "created" : "failed");
+    }
 }
 
 static void tray_destroy_icons(NoSleepTray* tray) {
@@ -690,6 +834,11 @@ static void tray_destroy_icons(NoSleepTray* tray) {
             DestroyIcon(tray->hIconNumbered[i]);
             tray->hIconNumbered[i] = NULL;
         }
+    }
+    
+    if (tray->hIconCountdownBlank) {
+        DestroyIcon(tray->hIconCountdownBlank);
+        tray->hIconCountdownBlank = NULL;
     }
 }
 
@@ -818,8 +967,8 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         }
         return;
     }
-    
-    if (!tray->is_running) {
+
+    if (!tray->is_running && !tray->delayed_sleep_countdown_active) {
         return;
     }
     
@@ -862,6 +1011,9 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         // Reset the event for future use
         ResetEvent(tray->sleep_stop_event);
     }
+    
+    // Stop countdown if active
+    tray_stop_countdown(tray);
 
     // Reset execution state to allow Windows to sleep normally
     // This ensures that any previous ES_SYSTEM_REQUIRED flags are cleared
@@ -985,6 +1137,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     if (debug && strcmp(debug, "1") == 0) {
                         fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
                     }
+                    // Countdown display will be started by delayed_sleep_thread
                 }
             } else {
                 if (debug && strcmp(debug, "1") == 0) {
@@ -1109,6 +1262,9 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] delayed_sleep_thread: waiting 60 seconds before sleep\n");
     }
+    
+    // Start countdown display
+    tray_start_countdown(tray);
 
     // Wait for 60 seconds or until cancelled
     DWORD wait_result = WaitForSingleObject(tray->sleep_stop_event, 60000);
@@ -1119,13 +1275,149 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
         }
     } else {
-        // Timeout reached, trigger sleep
-        if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+        // Timeout reached, but check if we should still sleep
+        // Double-check stop condition to prevent race condition
+        if (tray->stopping || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
+            // Already stopped, don't trigger sleep
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: race condition detected, not sleeping\n");
+            }
+        } else {
+            // Trigger sleep
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+            }
+            trigger_system_sleep(tray);
         }
-        trigger_system_sleep(tray);
     }
+    
+    // Stop countdown display
+    tray_stop_countdown(tray);
 
+    return 0;
+}
+
+void tray_start_countdown(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_start_countdown: starting 60-second countdown\n");
+    }
+    
+    // Stop any existing countdown
+    tray_stop_countdown(tray);
+    
+    // Initialize countdown state
+    tray->delayed_sleep_countdown_active = true;
+    tray->countdown_seconds = 60;
+    tray->countdown_blink_state = true;
+    ResetEvent(tray->countdown_stop_event);
+    
+    // Create countdown thread
+    tray->countdown_timer_thread = CreateThread(
+        NULL, 0, countdown_thread, tray, 0, NULL
+    );
+    if (!tray->countdown_timer_thread) {
+        tray->delayed_sleep_countdown_active = false;
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_start_countdown: failed to create countdown thread\n");
+        }
+    } else {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_start_countdown: countdown thread created\n");
+        }
+    }
+    
+    // Update icon immediately to show initial countdown state
+    tray_update_icon(tray);
+}
+
+void tray_stop_countdown(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_countdown: stopping countdown\n");
+    }
+    
+    if (!tray->delayed_sleep_countdown_active) {
+        return;
+    }
+    
+    tray->delayed_sleep_countdown_active = false;
+    
+    // Signal countdown thread to stop
+    if (tray->countdown_stop_event) {
+        SetEvent(tray->countdown_stop_event);
+    }
+    
+    // Wait for countdown thread to finish
+    if (tray->countdown_timer_thread) {
+        WaitForSingleObject(tray->countdown_timer_thread, 2000);
+        CloseHandle(tray->countdown_timer_thread);
+        tray->countdown_timer_thread = NULL;
+    }
+    
+    // Reset event for future use
+    if (tray->countdown_stop_event) {
+        ResetEvent(tray->countdown_stop_event);
+    }
+    
+    // Update icon to remove countdown display
+    tray_update_icon(tray);
+}
+
+DWORD WINAPI countdown_thread(LPVOID lpParam) {
+    NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] countdown_thread: started\n");
+    }
+    
+    int tick_count = 0;
+    
+    while (tray->delayed_sleep_countdown_active && tray->countdown_seconds > 0) {
+        // Wait for 500ms (half second) or stop event for blinking
+        DWORD wait_result = WaitForSingleObject(tray->countdown_stop_event, 500);
+        
+        if (wait_result == WAIT_OBJECT_0) {
+            // Stop event signaled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled\n");
+            }
+            break;
+        }
+        
+        // Toggle blink state every 500ms
+        tray->countdown_blink_state = !tray->countdown_blink_state;
+        tick_count++;
+        
+        // Update seconds every 2 ticks (1000ms = 1 second)
+        if (tick_count % 2 == 0) {
+            tray->countdown_seconds--;
+        }
+        
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] countdown_thread: seconds=%d, blink=%s, tick=%d\n", 
+                    tray->countdown_seconds, tray->countdown_blink_state ? "show" : "hide", tick_count);
+        }
+        
+        // Update icon
+        tray_update_icon(tray);
+        
+        // Check if countdown finished
+        if (tray->countdown_seconds <= 0) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] countdown_thread: countdown finished\n");
+            }
+            break;
+        }
+    }
+    
+    tray->delayed_sleep_countdown_active = false;
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] countdown_thread: exiting\n");
+    }
+    
     return 0;
 }
 
@@ -1133,6 +1425,47 @@ void tray_update_icon(NoSleepTray* tray) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     int remaining_minutes = -1;
     if (!tray || !tray->hwnd) return;
+    
+    // Handle delayed sleep countdown display
+    if (tray->delayed_sleep_countdown_active) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_update_icon: countdown active, seconds=%d, blink=%s\n",
+                    tray->countdown_seconds, tray->countdown_blink_state ? "show" : "hide");
+        }
+        
+        if (tray->countdown_blink_state) {
+            // Show number icon for current countdown seconds
+            HICON numbered_icon = NULL;
+            if (tray->countdown_seconds >= 0 && tray->countdown_seconds < 60) {
+                // Use cached icon if available
+                if (tray->hIconNumbered[tray->countdown_seconds] == NULL) {
+                    tray->hIconNumbered[tray->countdown_seconds] = create_numbered_icon(tray->countdown_seconds);
+                }
+                numbered_icon = tray->hIconNumbered[tray->countdown_seconds];
+            } else {
+                // Create new icon for numbers outside cache range
+                numbered_icon = create_numbered_icon(tray->countdown_seconds);
+            }
+            
+            if (numbered_icon) {
+                tray->nid.hIcon = numbered_icon;
+            } else {
+                tray->nid.hIcon = tray->hIconDefault;
+            }
+        } else {
+            // Blink off: show transparent icon (or default if transparent creation failed)
+            tray->nid.hIcon = tray->hIconCountdownBlank ? tray->hIconCountdownBlank : tray->hIconDefault;
+        }
+        
+        // Update tooltip with remaining seconds
+        char tip[128];
+        sprintf(tip, "nosleep - System will sleep in %d seconds", tray->countdown_seconds);
+        strcpy(tray->nid.szTip, tip);
+        
+        tray->nid.uFlags = NIF_ICON | NIF_TIP;
+        Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+        return;
+    }
     
     if (tray->is_running) {
         if (tray->duration_minutes > 0) {
@@ -1495,7 +1828,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
             // Enable/disable Stop menu item based on running state
-            if (tray->is_running) {
+            if (tray->is_running || tray->delayed_sleep_countdown_active) {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
             } else {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
@@ -1530,7 +1863,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray_start_nosleep(tray, 0); // 0 = indefinite
                     break;
                 case IDM_STOP:
-                    if (tray->is_running) {
+                    if (tray->is_running || tray->delayed_sleep_countdown_active) {
                         tray_stop_nosleep(tray, false, false); // show notification when manually stopping
                     }
                     break;
@@ -1575,7 +1908,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     GetCursorPos(&pt);
                     SetForegroundWindow(hwnd);
                     // Enable/disable Stop menu item based on running state
-                    if (tray->is_running) {
+                    if (tray->is_running || tray->delayed_sleep_countdown_active) {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
                     } else {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);

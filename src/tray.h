@@ -55,6 +55,12 @@ typedef struct NoSleepTray {
     bool sleep_after_timeout;   // Whether to sleep after timeout expires
     HANDLE sleep_timer;         // Timer handle for delayed sleep
     HANDLE sleep_stop_event;    // Event to signal stop delayed sleep
+    bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown)
+    int countdown_seconds;      // Remaining seconds (60 to 0)
+    HANDLE countdown_timer_thread; // Countdown update thread handle
+    bool countdown_blink_state; // Current blink state (true=show number, false=show default icon)
+    HANDLE countdown_stop_event; // Event to signal stop countdown thread
+    HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID
 } NoSleepTray;
 
@@ -73,5 +79,10 @@ void tray_update_icon(NoSleepTray* tray);
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message);
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// Countdown display functions
+void tray_start_countdown(NoSleepTray* tray);  // Start 60-second countdown display
+void tray_stop_countdown(NoSleepTray* tray);   // Stop countdown display
+DWORD WINAPI countdown_thread(LPVOID lpParam); // Countdown thread function
 
 #endif // TRAY_H
