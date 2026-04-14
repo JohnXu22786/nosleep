@@ -1,11 +1,13 @@
 // System tray implementation for nosleep
 #include "tray.h"
 #include "core.h"
+#include "constants.h"
 #include "resources.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <powrprof.h>
 
 // Window class name for tray icon
 static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
@@ -48,6 +50,8 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
 static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
 static void load_gray_and_color_icons(NoSleepTray* tray);
+static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
+static void trigger_system_sleep(NoSleepTray* tray);
 
 NoSleepTray* tray_create(void) {
     DEBUG_PRINT("tray_create: allocating tray structure\n");
@@ -60,9 +64,18 @@ NoSleepTray* tray_create(void) {
     tray->prevent_display = false;
     tray->away_mode = false;
     tray->verbose = false;
+    tray->sleep_after_timeout = false;
+    tray->sleep_timer = NULL;
     
     tray->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!tray->stop_event) {
+        free(tray);
+        return NULL;
+    }
+    
+    tray->sleep_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!tray->sleep_stop_event) {
+        CloseHandle(tray->stop_event);
         free(tray);
         return NULL;
     }
@@ -77,6 +90,14 @@ void tray_destroy(NoSleepTray* tray) {
     
     if (tray->stop_event) {
         CloseHandle(tray->stop_event);
+    }
+    
+    if (tray->sleep_timer) {
+        CloseHandle(tray->sleep_timer);
+    }
+    
+    if (tray->sleep_stop_event) {
+        CloseHandle(tray->sleep_stop_event);
     }
     
     tray_destroy_icons(tray);
@@ -170,9 +191,7 @@ bool tray_init(NoSleepTray* tray) {
     // Auto-start test duration if NOSLEEP_DEBUG=1 or 2
     {
         const char* debug = getenv("NOSLEEP_DEBUG");
-        if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
-            SetTimer(tray->hwnd, TIMER_ID_AUTO_START, 1000, NULL);
-        }
+
     }
     
     return true;
@@ -708,6 +727,8 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite");
     
+    AppendMenu(tray->hmenu, MF_STRING | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED), IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, "Sleep after timeout");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
@@ -825,6 +846,27 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         tray->nosleep_thread = NULL;
     }
     
+    // Cancel and wait for sleep timer thread if active
+    if (tray->sleep_timer) {
+        // Signal cancellation
+        SetEvent(tray->sleep_stop_event);
+        
+        DWORD current_thread_id = GetCurrentThreadId();
+        DWORD sleep_timer_thread_id = GetThreadId(tray->sleep_timer);
+        if (current_thread_id != sleep_timer_thread_id) {
+            WaitForSingleObject(tray->sleep_timer, 2000);
+        }
+        CloseHandle(tray->sleep_timer);
+        tray->sleep_timer = NULL;
+        
+        // Reset the event for future use
+        ResetEvent(tray->sleep_stop_event);
+    }
+
+    // Reset execution state to allow Windows to sleep normally
+    // This ensures that any previous ES_SYSTEM_REQUIRED flags are cleared
+    SetThreadExecutionState(ES_CONTINUOUS);
+    
     // Calculate elapsed time
     SYSTEMTIME now;
     GetSystemTime(&now);
@@ -886,8 +928,17 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
 
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_duration_timer: started, duration_minutes=%d, sleep_after_timeout=%s\n",
+                tray->duration_minutes, tray->sleep_after_timeout ? "true" : "false");
+    }
     
     if (tray->duration_minutes <= 0) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_duration_timer: duration_minutes=%d, returning early\n", tray->duration_minutes);
+        }
         return 0;
     }
     
@@ -903,7 +954,43 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                 fprintf(stderr, "[nosleep] tray_duration_timer: duration reached, stopping with timer_expired=true\n");
             }
             tray->duration_expired = true;
+            
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] tray_duration_timer: elapsed=%lu ms, duration_ms=%lu, calling tray_stop_nosleep\n",
+                        elapsed, duration_ms);
+            }
+            
             tray_stop_nosleep(tray, true, false); // show notification for timer expiry
+            
+            // Check if we should sleep after timeout
+            if (tray->sleep_after_timeout) {
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout enabled, starting delayed sleep thread\n");
+                }
+                
+                // Reset event before starting new sleep timer
+                ResetEvent(tray->sleep_stop_event);
+                
+                // Create delayed sleep thread
+                tray->sleep_timer = CreateThread(
+                    NULL, 0, delayed_sleep_thread, tray, 0, NULL
+                );
+                if (!tray->sleep_timer) {
+                    if (debug && strcmp(debug, "1") == 0) {
+                        fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
+                    }
+                } else {
+                    // Show notification about delayed sleep
+                    tray_show_notification(tray, "Time's up!", "System will sleep in 60 seconds...");
+                    if (debug && strcmp(debug, "1") == 0) {
+                        fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
+                    }
+                }
+            } else {
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout disabled, not starting sleep thread\n");
+                }
+            }
             break;
         }
         
@@ -933,7 +1020,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     // Run nosleep
     int result = nosleep_run(
         ns,
-        tray->duration_minutes > 0 ? tray->duration_minutes : 0, // 0 = indefinite
+        0, // duration_minutes (0 = indefinite, controlled by timer thread)
         20, // interval_seconds
         tray->prevent_display, // prevent_display
         tray->away_mode, // away_mode
@@ -955,6 +1042,91 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     }
     
     return result;
+}
+
+static void trigger_system_sleep(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: putting system to sleep\n");
+    }
+
+    // First, reset execution state to ensure Windows can sleep
+    SetThreadExecutionState(ES_CONTINUOUS);
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: execution state reset\n");
+    }
+
+    // Use SetSuspendState to put system to sleep (not hibernate)
+    // First parameter FALSE = sleep (not hibernate)
+    // Second parameter FALSE = force sleep (do not ask applications)
+    // Third parameter FALSE = disable wake events
+    BOOL result = SetSuspendState(FALSE, FALSE, FALSE);
+
+    if (result) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: successfully initiated sleep\n");
+        }
+        return;
+    }
+    
+    // First method failed, try alternative method
+    DWORD error = GetLastError();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: SetSuspendState failed with error %lu\n", error);
+        fprintf(stderr, "[nosleep] trigger_system_sleep: trying alternative method via rundll32\n");
+    }
+    
+    // Try alternative method using rundll32
+    STARTUPINFO si = {0};
+    PROCESS_INFORMATION pi = {0};
+    si.cb = sizeof(si);
+    
+    // Create command: rundll32.exe powrprof.dll,SetSuspendState 0,0,0
+    char cmd[] = "rundll32.exe powrprof.dll,SetSuspendState 0,0,0";
+    
+    if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: rundll32 process created (PID: %lu)\n", pi.dwProcessId);
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    } else {
+        DWORD alt_error = GetLastError();
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: rundll32 also failed with error %lu\n", alt_error);
+            fprintf(stderr, "[nosleep] trigger_system_sleep: both sleep methods failed\n");
+        }
+        
+        // Both methods failed, show notification to user
+        tray_show_notification(tray, "Sleep Failed", "Failed to put system to sleep. Check power settings.");
+    }
+}
+
+static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
+    NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] delayed_sleep_thread: waiting 60 seconds before sleep\n");
+    }
+
+    // Wait for 60 seconds or until cancelled
+    DWORD wait_result = WaitForSingleObject(tray->sleep_stop_event, 60000);
+
+    if (wait_result == WAIT_OBJECT_0) {
+        // Cancelled
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
+        }
+    } else {
+        // Timeout reached, trigger sleep
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+        }
+        trigger_system_sleep(tray);
+    }
+
+    return 0;
 }
 
 void tray_update_icon(NoSleepTray* tray) {
@@ -1364,6 +1536,14 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_EXIT:
                     DestroyWindow(hwnd);
+                    break;
+                case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
+                    tray->sleep_after_timeout = !tray->sleep_after_timeout;
+                    // Update menu checkmark
+                    if (tray->hmenu) {
+                        CheckMenuItem(tray->hmenu, IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, 
+                                     MF_BYCOMMAND | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED));
+                    }
                     break;
             }
             break;

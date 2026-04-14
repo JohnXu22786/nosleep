@@ -28,6 +28,7 @@ struct NoSleep;
 #define IDM_START_INDEFINITE 1005
 #define IDM_STOP            1006
 #define IDM_EXIT            1007
+#define IDM_TOGGLE_SLEEP_AFTER_TIMEOUT 1008
 
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
@@ -51,6 +52,9 @@ typedef struct NoSleepTray {
     bool prevent_display;       // Also prevent display from sleeping
     bool away_mode;             // Enable away mode
     bool verbose;               // Print verbose status
+    bool sleep_after_timeout;   // Whether to sleep after timeout expires
+    HANDLE sleep_timer;         // Timer handle for delayed sleep
+    HANDLE sleep_stop_event;    // Event to signal stop delayed sleep
     UINT uTrayMessage;          // Registered tray message ID
 } NoSleepTray;
 
