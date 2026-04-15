@@ -34,9 +34,9 @@ typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
     HMENU hmenu;                // Right-click menu
     NOTIFYICONDATA nid;         // Tray icon data
-    bool is_running;            // Whether nosleep is active
-    bool duration_expired;      // Whether the timer duration has expired (to show correct notification)
-    bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep
+    volatile bool is_running;            // Whether nosleep is active
+    volatile bool duration_expired;      // Whether the timer duration has expired (to show correct notification)
+    volatile bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
     SYSTEMTIME start_time;      // When nosleep started
     HANDLE stop_event;          // Event to signal stop
@@ -55,10 +55,11 @@ typedef struct NoSleepTray {
     bool sleep_after_timeout;   // Whether to sleep after timeout expires
     HANDLE sleep_timer;         // Timer handle for delayed sleep
     HANDLE sleep_stop_event;    // Event to signal stop delayed sleep
-    bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown)
-    int countdown_seconds;      // Remaining seconds (60 to 0)
+    volatile bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown)
+    volatile int countdown_seconds;      // Remaining seconds (60 to 0)
     HANDLE countdown_timer_thread; // Countdown update thread handle
-    bool countdown_blink_state; // Current blink state (true=show number, false=show default icon)
+    volatile bool countdown_blink_state; // Current blink state (true=show number, false=show default icon)
+    volatile bool countdown_stopping;    // Whether countdown is being stopped (prevents race conditions)
     HANDLE countdown_stop_event; // Event to signal stop countdown thread
     HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID

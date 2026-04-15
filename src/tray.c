@@ -65,6 +65,7 @@ NoSleepTray* tray_create(void) {
     tray->away_mode = false;
     tray->verbose = false;
     tray->sleep_after_timeout = false;
+    tray->countdown_stopping = false;
     tray->sleep_timer = NULL;
     
     tray->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -969,6 +970,9 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     }
 
     if (!tray->is_running && !tray->delayed_sleep_countdown_active) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_nosleep: neither running nor in countdown, returning\n");
+        }
         return;
     }
     
@@ -1013,6 +1017,10 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     }
     
     // Stop countdown if active
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s\n", 
+                tray->delayed_sleep_countdown_active ? "true" : "false");
+    }
     tray_stop_countdown(tray);
 
     // Reset execution state to allow Windows to sleep normally
@@ -1310,6 +1318,7 @@ void tray_start_countdown(NoSleepTray* tray) {
     tray->delayed_sleep_countdown_active = true;
     tray->countdown_seconds = 60;
     tray->countdown_blink_state = true;
+    tray->countdown_stopping = false;
     ResetEvent(tray->countdown_stop_event);
     
     // Create countdown thread
@@ -1334,23 +1343,46 @@ void tray_start_countdown(NoSleepTray* tray) {
 void tray_stop_countdown(NoSleepTray* tray) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_stop_countdown: stopping countdown\n");
+        fprintf(stderr, "[nosleep] tray_stop_countdown: stopping countdown, delayed_sleep_countdown_active=%s, countdown_stopping=%s\n",
+                tray->delayed_sleep_countdown_active ? "true" : "false",
+                tray->countdown_stopping ? "true" : "false");
     }
     
-    if (!tray->delayed_sleep_countdown_active) {
+    // Prevent re-entrant calls
+    if (tray->countdown_stopping) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_countdown: already stopping, returning\n");
+        }
         return;
     }
     
-    tray->delayed_sleep_countdown_active = false;
+    if (!tray->delayed_sleep_countdown_active) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_countdown: already not active, returning\n");
+        }
+        return;
+    }
     
-    // Signal countdown thread to stop
+    // Mark that we're stopping
+    tray->countdown_stopping = true;
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_countdown: setting delayed_sleep_countdown_active=false\n");
+    }
+    // Signal countdown thread to stop first
     if (tray->countdown_stop_event) {
         SetEvent(tray->countdown_stop_event);
     }
     
+    // Then set flag to false to ensure thread sees the event
+    tray->delayed_sleep_countdown_active = false;
+    // Ensure memory visibility across threads
+    MemoryBarrier();
+    
     // Wait for countdown thread to finish
     if (tray->countdown_timer_thread) {
-        WaitForSingleObject(tray->countdown_timer_thread, 2000);
+        // Use INFINITE wait to ensure thread exits completely
+        WaitForSingleObject(tray->countdown_timer_thread, INFINITE);
         CloseHandle(tray->countdown_timer_thread);
         tray->countdown_timer_thread = NULL;
     }
@@ -1362,6 +1394,9 @@ void tray_stop_countdown(NoSleepTray* tray) {
     
     // Update icon to remove countdown display
     tray_update_icon(tray);
+    
+    // Reset stopping flag
+    tray->countdown_stopping = false;
 }
 
 DWORD WINAPI countdown_thread(LPVOID lpParam) {
@@ -1381,7 +1416,8 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
         if (wait_result == WAIT_OBJECT_0) {
             // Stop event signaled
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled\n");
+                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled, delayed_sleep_countdown_active=%s, countdown_seconds=%d\n",
+                        tray->delayed_sleep_countdown_active ? "true" : "false", tray->countdown_seconds);
             }
             break;
         }
@@ -1413,9 +1449,12 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
     }
     
     tray->delayed_sleep_countdown_active = false;
+    // Ensure memory visibility across threads
+    MemoryBarrier();
     
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] countdown_thread: exiting\n");
+        fprintf(stderr, "[nosleep] countdown_thread: exiting, delayed_sleep_countdown_active=%s\n",
+                tray->delayed_sleep_countdown_active ? "true" : "false");
     }
     
     return 0;
@@ -1425,6 +1464,11 @@ void tray_update_icon(NoSleepTray* tray) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     int remaining_minutes = -1;
     if (!tray || !tray->hwnd) return;
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_update_icon: delayed_sleep_countdown_active=%s\n",
+                tray->delayed_sleep_countdown_active ? "true" : "false");
+    }
     
     // Handle delayed sleep countdown display
     if (tray->delayed_sleep_countdown_active) {
@@ -1463,7 +1507,11 @@ void tray_update_icon(NoSleepTray* tray) {
         strcpy(tray->nid.szTip, tip);
         
         tray->nid.uFlags = NIF_ICON | NIF_TIP;
-        Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+        BOOL success = Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_update_icon: Shell_NotifyIcon (countdown) %s\n", success ? "succeeded" : "failed");
+            fflush(stderr);
+        }
         return;
     }
     
