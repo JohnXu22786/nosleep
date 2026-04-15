@@ -1019,7 +1019,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         ResetEvent(tray->sleep_stop_event);
     }
     
-    // Stop countdown if active
+    // Cancel sleep if active
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s\n", 
                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
@@ -1308,7 +1308,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
         }
     }
     
-    // Stop countdown display
+    // Cancel sleep display
     tray_stop_countdown(tray);
 
     return 0;
@@ -1691,9 +1691,9 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     // Determine menu text based on state
     const char* stop_text = NULL;
     if (delayed_sleep_countdown_active) {
-        stop_text = "Stop countdown";
+        stop_text = "Cancel sleep";
     } else if (is_running) {
-        stop_text = "Stop nosleep";
+        stop_text = "Stop nosleep session";
     } else {
         stop_text = "Stop"; // Default
     }
