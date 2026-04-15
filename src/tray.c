@@ -983,11 +983,12 @@ void tray_update_icon(NoSleepTray* tray) {
             ULONGLONG total_seconds = tray->duration_minutes * 60ULL;
             ULONGLONG remaining_seconds = total_seconds > elapsed_seconds ? total_seconds - elapsed_seconds : 0;
             remaining_minutes = (int)(remaining_seconds / 60);
+            int display_number = remaining_minutes > 0 ? remaining_minutes : (int)remaining_seconds;
             
             // Update icon with number
-            if (remaining_minutes != tray->current_number) {
+            if (display_number != tray->current_number) {
                 if (debug && strcmp(debug, "1") == 0) {
-                    fprintf(stderr, "[nosleep] tray_update_icon: remaining_minutes=%d current_number=%d\n", remaining_minutes, tray->current_number);
+                    fprintf(stderr, "[nosleep] tray_update_icon: display_number=%d current_number=%d remaining_minutes=%d remaining_seconds=%llu\n", display_number, tray->current_number, remaining_minutes, remaining_seconds);
                 }
                 // Destroy previous numbered icon if not cached (0-59)
                 if (tray->hIconCurrentNumbered) {
@@ -1000,15 +1001,15 @@ void tray_update_icon(NoSleepTray* tray) {
                 
                 // Get or create numbered icon
                 HICON numbered_icon = NULL;
-                if (remaining_minutes >= 0 && remaining_minutes < 60) {
+                if (display_number >= 0 && display_number < 60) {
                     // Use cached icon
-                    if (tray->hIconNumbered[remaining_minutes] == NULL) {
-                        tray->hIconNumbered[remaining_minutes] = create_numbered_icon(remaining_minutes);
+                    if (tray->hIconNumbered[display_number] == NULL) {
+                        tray->hIconNumbered[display_number] = create_numbered_icon(display_number);
                     }
-                    numbered_icon = tray->hIconNumbered[remaining_minutes];
+                    numbered_icon = tray->hIconNumbered[display_number];
                 } else {
                     // Create new icon for numbers >=60
-                    numbered_icon = create_numbered_icon(remaining_minutes);
+                    numbered_icon = create_numbered_icon(display_number);
                 }
                 
                 // Fallback to active icon if numbered icon creation failed
@@ -1020,7 +1021,7 @@ void tray_update_icon(NoSleepTray* tray) {
                     }
                     tray->hIconCurrentNumbered = tray->hIconActive;
                 }
-                tray->current_number = remaining_minutes;
+                tray->current_number = display_number;
             }
             
             tray->nid.hIcon = tray->hIconCurrentNumbered ? tray->hIconCurrentNumbered : tray->hIconActive;
