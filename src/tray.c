@@ -1,11 +1,13 @@
 // System tray implementation for nosleep
 #include "tray.h"
 #include "core.h"
+#include "constants.h"
 #include "resources.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <powrprof.h>
 
 // Window class name for tray icon
 static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
@@ -48,6 +50,8 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
 static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
 static void load_gray_and_color_icons(NoSleepTray* tray);
+static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
+static void trigger_system_sleep(NoSleepTray* tray);
 
 NoSleepTray* tray_create(void) {
     DEBUG_PRINT("tray_create: allocating tray structure\n");
@@ -60,9 +64,27 @@ NoSleepTray* tray_create(void) {
     tray->prevent_display = false;
     tray->away_mode = false;
     tray->verbose = false;
+    tray->sleep_after_timeout = false;
+    tray->countdown_stopping = false;
+    tray->sleep_timer = NULL;
     
     tray->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!tray->stop_event) {
+        free(tray);
+        return NULL;
+    }
+    
+    tray->sleep_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!tray->sleep_stop_event) {
+        CloseHandle(tray->stop_event);
+        free(tray);
+        return NULL;
+    }
+    
+    tray->countdown_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!tray->countdown_stop_event) {
+        CloseHandle(tray->sleep_stop_event);
+        CloseHandle(tray->stop_event);
         free(tray);
         return NULL;
     }
@@ -77,6 +99,18 @@ void tray_destroy(NoSleepTray* tray) {
     
     if (tray->stop_event) {
         CloseHandle(tray->stop_event);
+    }
+    
+    if (tray->sleep_timer) {
+        CloseHandle(tray->sleep_timer);
+    }
+    
+    if (tray->sleep_stop_event) {
+        CloseHandle(tray->sleep_stop_event);
+    }
+    
+    if (tray->countdown_stop_event) {
+        CloseHandle(tray->countdown_stop_event);
     }
     
     tray_destroy_icons(tray);
@@ -170,9 +204,7 @@ bool tray_init(NoSleepTray* tray) {
     // Auto-start test duration if NOSLEEP_DEBUG=1 or 2
     {
         const char* debug = getenv("NOSLEEP_DEBUG");
-        if (debug && (strcmp(debug, "1") == 0 || strcmp(debug, "2") == 0)) {
-            SetTimer(tray->hwnd, TIMER_ID_AUTO_START, 1000, NULL);
-        }
+        (void)debug; // Suppress unused variable warning
     }
     
     return true;
@@ -605,6 +637,131 @@ static HICON create_numbered_icon(int number) {
     return hIcon;
 }
 
+static HICON create_transparent_icon(void) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] create_transparent_icon: creating fully transparent icon\n");
+    }
+    
+    const int width = 32;
+    const int height = 32;
+    
+    // Create XOR bitmap (all zeros - black)
+    // XOR bitmap is 1-bit per pixel: 0 = black
+    int xor_row_bytes = ((width + 15) / 16) * 2; // 32 pixels = 4 bytes per row for 1-bit
+    int xor_size = xor_row_bytes * height;
+    BYTE* xor_bits = (BYTE*)calloc(1, xor_size); // All zeros = black
+    
+    // Create AND mask (all ones - transparent)
+    // AND mask is 1-bit per pixel: 1 = transparent, 0 = opaque
+    int and_row_bytes = ((width + 15) / 16) * 2; // Same calculation
+    int and_size = and_row_bytes * height;
+    BYTE* and_bits = (BYTE*)malloc(and_size);
+    
+    if (!xor_bits || !and_bits) {
+        free(xor_bits);
+        free(and_bits);
+        return NULL;
+    }
+    
+    // Fill AND mask with all ones (0xFF = all bits set = transparent)
+    memset(and_bits, 0xFF, and_size);
+    
+    // Create icon using CreateIcon (traditional icon format)
+    // Parameters: hInstance, width, height, nPlanes, nBitsPerPixel, ANDbits, XORbits
+    HICON hIcon = CreateIcon(NULL, width, height, 1, 1, and_bits, xor_bits);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] create_transparent_icon: CreateIcon %s\n", hIcon ? "succeeded" : "failed");
+    }
+    
+    free(xor_bits);
+    free(and_bits);
+    
+    // Fallback: try alternative method if CreateIcon fails
+    if (!hIcon) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] create_transparent_icon: trying alternative method\n");
+        }
+        
+        // Alternative: create a 32x32 icon with alpha=0
+        HDC hdc = GetDC(NULL);
+        if (!hdc) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: GetDC failed, error=%lu\n", GetLastError());
+            }
+            return NULL;
+        }
+        
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        if (!hdcMem) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: CreateCompatibleDC failed, error=%lu\n", GetLastError());
+            }
+            ReleaseDC(NULL, hdc);
+            return NULL;
+        }
+        
+        // Create 32-bit ARGB bitmap
+        BITMAPINFO bmi = {0};
+        bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bmi.bmiHeader.biWidth = width;
+        bmi.bmiHeader.biHeight = -height;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        
+        void* bits;
+        HBITMAP hbmpColor = CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+        if (hbmpColor) {
+            // Fill with fully transparent (alpha=0)
+            DWORD* pixels = (DWORD*)bits;
+            for (int i = 0; i < width * height; i++) {
+                pixels[i] = 0x00000000; // ARGB: Alpha=0, RGB=0
+            }
+            
+            // Create 1-bit mask (all white = transparent)
+            HBITMAP hbmpMask = CreateBitmap(width, height, 1, 1, NULL);
+            if (hbmpMask) {
+                HDC hdcMask = CreateCompatibleDC(hdc);
+                if (hdcMask) {
+                    HBITMAP oldMask = (HBITMAP)SelectObject(hdcMask, hbmpMask);
+                    PatBlt(hdcMask, 0, 0, width, height, WHITENESS);
+                    SelectObject(hdcMask, oldMask);
+                    DeleteDC(hdcMask);
+                }
+                
+                ICONINFO iconInfo = {0};
+                iconInfo.fIcon = TRUE;
+                iconInfo.hbmColor = hbmpColor;
+                iconInfo.hbmMask = hbmpMask;
+                
+                hIcon = CreateIconIndirect(&iconInfo);
+                if (!hIcon && debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] create_transparent_icon: CreateIconIndirect failed, error=%lu\n", GetLastError());
+                }
+                
+                DeleteObject(hbmpMask);
+            } else if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] create_transparent_icon: CreateBitmap failed, error=%lu\n", GetLastError());
+            }
+            
+            DeleteObject(hbmpColor);
+        } else if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] create_transparent_icon: CreateDIBSection failed, error=%lu\n", GetLastError());
+        }
+        
+        if (hdcMem) {
+            DeleteDC(hdcMem);
+        }
+        if (hdc) {
+            ReleaseDC(NULL, hdc);
+        }
+    }
+    
+    return hIcon;
+}
+
 static void tray_create_icons(NoSleepTray* tray) {
     printf("tray_create_icons called\n"); fflush(stdout);
     const char* debug = getenv("NOSLEEP_DEBUG");
@@ -643,6 +800,13 @@ static void tray_create_icons(NoSleepTray* tray) {
                     i, tray->hIconNumbered[i] ? "created" : "failed");
         }
     }
+    
+    // Create transparent icon for countdown blink off state
+    tray->hIconCountdownBlank = create_transparent_icon();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_create_icons: transparent icon %s\n",
+                tray->hIconCountdownBlank ? "created" : "failed");
+    }
 }
 
 static void tray_destroy_icons(NoSleepTray* tray) {
@@ -671,6 +835,11 @@ static void tray_destroy_icons(NoSleepTray* tray) {
             DestroyIcon(tray->hIconNumbered[i]);
             tray->hIconNumbered[i] = NULL;
         }
+    }
+    
+    if (tray->hIconCountdownBlank) {
+        DestroyIcon(tray->hIconCountdownBlank);
+        tray->hIconCountdownBlank = NULL;
     }
 }
 
@@ -708,6 +877,8 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite");
     
+    AppendMenu(tray->hmenu, MF_STRING | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED), IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, "Sleep after timeout");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
@@ -728,14 +899,14 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     }
     
     // If already running, stop it first
-    if (tray->is_running) {
+    if (ATOMIC_LOAD_BOOL(&tray->is_running)) {
         tray_stop_nosleep(tray, false, true); // suppress notification when switching
     }
     
     tray->duration_minutes = duration_minutes;
-    tray->is_running = true;
-    tray->duration_expired = false;
-    tray->stopping = false;
+    ATOMIC_STORE_BOOL(&tray->is_running, true);
+    ATOMIC_STORE_BOOL(&tray->duration_expired, false);
+    ATOMIC_STORE_BOOL(&tray->stopping, false);
     GetSystemTime(&tray->start_time);
     ResetEvent(tray->stop_event);
     
@@ -759,7 +930,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         tray->nosleep_thread_id = GetThreadId(tray->nosleep_thread);
     } else {
         // Thread creation failed, restore state and notify user
-        tray->is_running = false;
+        ATOMIC_STORE_BOOL(&tray->is_running, false);
         tray->duration_minutes = -1;
         tray_show_notification(tray, "Error", "Failed to create nosleep thread");
         return;
@@ -782,6 +953,9 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             return;
         }
     }
+    
+    // Update stop menu item text
+    tray_update_stop_menu_item(tray);
 }
 
 void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification) {
@@ -791,19 +965,22 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     }
     
     // Prevent re-entrant calls
-    if (!tray || tray->stopping) {
+    if (!tray || ATOMIC_LOAD_BOOL(&tray->stopping)) {
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_stop_nosleep: already stopping or invalid tray, returning\n");
         }
         return;
     }
-    
-    if (!tray->is_running) {
+
+    if (!ATOMIC_LOAD_BOOL(&tray->is_running) && !ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_nosleep: neither running nor in countdown, returning\n");
+        }
         return;
     }
     
-    tray->stopping = true;
-    tray->is_running = false;
+    ATOMIC_STORE_BOOL(&tray->stopping, true);
+    ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
     
     // Wait for threads to finish
@@ -824,6 +1001,34 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         CloseHandle(tray->nosleep_thread);
         tray->nosleep_thread = NULL;
     }
+    
+    // Cancel and wait for sleep timer thread if active
+    if (tray->sleep_timer) {
+        // Signal cancellation
+        SetEvent(tray->sleep_stop_event);
+        
+        DWORD current_thread_id = GetCurrentThreadId();
+        DWORD sleep_timer_thread_id = GetThreadId(tray->sleep_timer);
+        if (current_thread_id != sleep_timer_thread_id) {
+            WaitForSingleObject(tray->sleep_timer, 2000);
+        }
+        CloseHandle(tray->sleep_timer);
+        tray->sleep_timer = NULL;
+        
+        // Reset the event for future use
+        ResetEvent(tray->sleep_stop_event);
+    }
+    
+    // Cancel sleep if active
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s\n", 
+                ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
+    }
+    tray_stop_countdown(tray);
+
+    // Reset execution state to allow Windows to sleep normally
+    // This ensures that any previous ES_SYSTEM_REQUIRED flags are cleared
+    SetThreadExecutionState(ES_CONTINUOUS);
     
     // Calculate elapsed time
     SYSTEMTIME now;
@@ -848,12 +1053,12 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     
     char message[256];
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_stop_nosleep: timer_expired=%s, duration_expired=%s\n", timer_expired ? "true" : "false", tray->duration_expired ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_stop_nosleep: timer_expired=%s, duration_expired=%s\n", timer_expired ? "true" : "false", ATOMIC_LOAD_BOOL(&tray->duration_expired) ? "true" : "false");
     }
     
     // Determine which notification to show based on duration_expired flag
     if (!suppress_notification) {
-        if (tray->duration_expired) {
+        if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
             if (debug && strcmp(debug, "1") == 0) {
                 fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Time's up! notification\n");
             }
@@ -878,23 +1083,38 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_stop_nosleep: notification suppressed\n");
         }
+    
+        // Update stop menu item text
+        tray_update_stop_menu_item(tray);
     }
     
     // Update icon
     tray_update_icon(tray);
+    
+    // Reset stopping flag
+    ATOMIC_STORE_BOOL(&tray->stopping, false);
 }
 
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_duration_timer: started, duration_minutes=%d, sleep_after_timeout=%s\n",
+                tray->duration_minutes, tray->sleep_after_timeout ? "true" : "false");
+    }
     
     if (tray->duration_minutes <= 0) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_duration_timer: duration_minutes=%d, returning early\n", tray->duration_minutes);
+        }
         return 0;
     }
     
     DWORD duration_ms = tray->duration_minutes * 60 * 1000;
     DWORD start_tick = GetTickCount();
     
-    while (tray->is_running) {
+    while (ATOMIC_LOAD_BOOL(&tray->is_running)) {
         DWORD elapsed = GetTickCount() - start_tick;
         if (elapsed >= duration_ms) {
             // Duration reached
@@ -902,8 +1122,45 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             if (debug && strcmp(debug, "1") == 0) {
                 fprintf(stderr, "[nosleep] tray_duration_timer: duration reached, stopping with timer_expired=true\n");
             }
-            tray->duration_expired = true;
+            ATOMIC_STORE_BOOL(&tray->duration_expired, true);
+            
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] tray_duration_timer: elapsed=%lu ms, duration_ms=%lu, calling tray_stop_nosleep\n",
+                        elapsed, duration_ms);
+            }
+            
             tray_stop_nosleep(tray, true, false); // show notification for timer expiry
+            
+            // Check if we should sleep after timeout
+            if (tray->sleep_after_timeout) {
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout enabled, starting delayed sleep thread\n");
+                }
+                
+                // Reset event before starting new sleep timer
+                ResetEvent(tray->sleep_stop_event);
+                
+                // Create delayed sleep thread
+                tray->sleep_timer = CreateThread(
+                    NULL, 0, delayed_sleep_thread, tray, 0, NULL
+                );
+                if (!tray->sleep_timer) {
+                    if (debug && strcmp(debug, "1") == 0) {
+                        fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
+                    }
+                } else {
+                    // Show notification about delayed sleep
+                    tray_show_notification(tray, "Time's up!", "System will sleep in 60 seconds...");
+                    if (debug && strcmp(debug, "1") == 0) {
+                        fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
+                    }
+                    // Countdown display will be started by delayed_sleep_thread
+                }
+            } else {
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout disabled, not starting sleep thread\n");
+                }
+            }
             break;
         }
         
@@ -933,7 +1190,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     // Run nosleep
     int result = nosleep_run(
         ns,
-        tray->duration_minutes > 0 ? tray->duration_minutes : 0, // 0 = indefinite
+        0, // duration_minutes (0 = indefinite, controlled by timer thread)
         20, // interval_seconds
         tray->prevent_display, // prevent_display
         tray->away_mode, // away_mode
@@ -945,9 +1202,9 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     // If nosleep completed (duration reached or error), update tray state
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_nosleep_thread: nosleep completed, tray->is_running=%s\n", tray->is_running ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_nosleep_thread: nosleep completed, tray->is_running=%s\n", ATOMIC_LOAD_BOOL(&tray->is_running) ? "true" : "false");
     }
-    if (tray->is_running) {
+    if (ATOMIC_LOAD_BOOL(&tray->is_running)) {
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_nosleep_thread: calling tray_stop_nosleep with timer_expired=false\n");
         }
@@ -957,12 +1214,341 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     return result;
 }
 
+static void trigger_system_sleep(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: putting system to sleep\n");
+    }
+
+    // First, reset execution state to ensure Windows can sleep
+    SetThreadExecutionState(ES_CONTINUOUS);
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: execution state reset\n");
+    }
+
+    // Use SetSuspendState to put system to sleep (not hibernate)
+    // First parameter FALSE = sleep (not hibernate)
+    // Second parameter FALSE = force sleep (do not ask applications)
+    // Third parameter FALSE = disable wake events
+    BOOL result = SetSuspendState(FALSE, FALSE, FALSE);
+
+    if (result) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: successfully initiated sleep\n");
+        }
+        return;
+    }
+    
+    // First method failed, try alternative method
+    DWORD error = GetLastError();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_sleep: SetSuspendState failed with error %lu\n", error);
+        fprintf(stderr, "[nosleep] trigger_system_sleep: trying alternative method via rundll32\n");
+    }
+    
+    // Try alternative method using rundll32
+    STARTUPINFO si = {0};
+    PROCESS_INFORMATION pi = {0};
+    si.cb = sizeof(si);
+    
+    // Create command: rundll32.exe powrprof.dll,SetSuspendState 0,0,0
+    char cmd[] = "rundll32.exe powrprof.dll,SetSuspendState 0,0,0";
+    
+    if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: rundll32 process created (PID: %lu)\n", pi.dwProcessId);
+        }
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    } else {
+        DWORD alt_error = GetLastError();
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_sleep: rundll32 also failed with error %lu\n", alt_error);
+            fprintf(stderr, "[nosleep] trigger_system_sleep: both sleep methods failed\n");
+        }
+        
+        // Both methods failed, show notification to user
+        tray_show_notification(tray, "Sleep Failed", "Failed to put system to sleep. Check power settings.");
+    }
+}
+
+static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
+    NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] delayed_sleep_thread: waiting 60 seconds before sleep\n");
+    }
+    
+    // Start countdown display
+    tray_start_countdown(tray);
+
+    // Wait for 60 seconds or until cancelled
+    DWORD wait_result = WaitForSingleObject(tray->sleep_stop_event, 60000);
+
+    if (wait_result == WAIT_OBJECT_0) {
+        // Cancelled
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
+        }
+    } else {
+        // Timeout reached, but check if we should still sleep
+        // Double-check stop condition to prevent race condition
+        if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
+            // Already stopped, don't trigger sleep
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: race condition detected, not sleeping\n");
+            }
+        } else {
+            // Trigger sleep
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+            }
+            trigger_system_sleep(tray);
+        }
+    }
+    
+    // Cancel sleep display
+    tray_stop_countdown(tray);
+
+    return 0;
+}
+
+void tray_start_countdown(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_start_countdown: starting 60-second countdown\n");
+    }
+    
+    // Stop any existing countdown
+    tray_stop_countdown(tray);
+    
+    // Initialize countdown state
+    ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, true);
+    ATOMIC_STORE_INT(&tray->countdown_seconds, 60);
+    ATOMIC_STORE_BOOL(&tray->countdown_blink_state, true);
+    ATOMIC_STORE_BOOL(&tray->countdown_stopping, false);
+    ResetEvent(tray->countdown_stop_event);
+    
+    // Create countdown thread
+    tray->countdown_timer_thread = CreateThread(
+        NULL, 0, countdown_thread, tray, 0, NULL
+    );
+    if (!tray->countdown_timer_thread) {
+        ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, false);
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_start_countdown: failed to create countdown thread\n");
+        }
+    } else {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_start_countdown: countdown thread created\n");
+        }
+    }
+    
+    // Update icon immediately to show initial countdown state
+    tray_update_icon(tray);
+    
+    // Update stop menu item text
+    tray_update_stop_menu_item(tray);
+}
+
+void tray_stop_countdown(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_countdown: stopping countdown, delayed_sleep_countdown_active=%s, countdown_stopping=%s\n",
+                ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false",
+                ATOMIC_LOAD_BOOL(&tray->countdown_stopping) ? "true" : "false");
+    }
+    
+    // Prevent re-entrant calls
+    if (ATOMIC_LOAD_BOOL(&tray->countdown_stopping)) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_countdown: already stopping, returning\n");
+        }
+        return;
+    }
+    
+    if (!ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_stop_countdown: already not active, returning\n");
+        }
+        return;
+    }
+    
+    // Mark that we're stopping
+    ATOMIC_STORE_BOOL(&tray->countdown_stopping, true);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_stop_countdown: setting delayed_sleep_countdown_active=false\n");
+    }
+    // Signal countdown thread to stop first
+    if (tray->countdown_stop_event) {
+        SetEvent(tray->countdown_stop_event);
+    }
+    
+    // Then set flag to false to ensure thread sees the event
+    ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, false);
+    // Ensure memory visibility across threads
+    MEMORY_BARRIER();
+    
+    // Wait for countdown thread to finish
+    if (tray->countdown_timer_thread) {
+        // Use INFINITE wait to ensure thread exits completely
+        WaitForSingleObject(tray->countdown_timer_thread, INFINITE);
+        CloseHandle(tray->countdown_timer_thread);
+        tray->countdown_timer_thread = NULL;
+    }
+    
+    // Reset event for future use
+    if (tray->countdown_stop_event) {
+        ResetEvent(tray->countdown_stop_event);
+    }
+    
+    // Update icon to remove countdown display
+    tray_update_icon(tray);
+    
+    // Update stop menu item text
+    tray_update_stop_menu_item(tray);
+    
+    // Reset stopping flag
+    ATOMIC_STORE_BOOL(&tray->countdown_stopping, false);
+}
+
+DWORD WINAPI countdown_thread(LPVOID lpParam) {
+    NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] countdown_thread: started\n");
+    }
+    
+    int tick_count = 0;
+    
+    while (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) && ATOMIC_LOAD_INT(&tray->countdown_seconds) > 0) {
+        // Wait for 500ms (half second) or stop event for blinking
+        DWORD wait_result = WaitForSingleObject(tray->countdown_stop_event, 500);
+        
+        if (wait_result == WAIT_OBJECT_0) {
+            // Stop event signaled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled, delayed_sleep_countdown_active=%s, countdown_seconds=%d\n",
+                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false", ATOMIC_LOAD_INT(&tray->countdown_seconds));
+            }
+            break;
+        }
+        
+        // Toggle blink state every 500ms
+        bool old_blink_state = ATOMIC_LOAD_BOOL(&tray->countdown_blink_state);
+        ATOMIC_STORE_BOOL(&tray->countdown_blink_state, !old_blink_state);
+        tick_count++;
+        
+        // Update seconds every 2 ticks (1000ms = 1 second)
+        if (tick_count % 2 == 0) {
+            int old_seconds = ATOMIC_LOAD_INT(&tray->countdown_seconds);
+            ATOMIC_STORE_INT(&tray->countdown_seconds, old_seconds - 1);
+        }
+        
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] countdown_thread: seconds=%d, blink=%s, tick=%d\n", 
+                    ATOMIC_LOAD_INT(&tray->countdown_seconds), ATOMIC_LOAD_BOOL(&tray->countdown_blink_state) ? "show" : "hide", tick_count);
+        }
+        
+        // Update icon
+        tray_update_icon(tray);
+        
+        // Check if countdown finished
+        if (ATOMIC_LOAD_INT(&tray->countdown_seconds) <= 0) {
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] countdown_thread: countdown finished\n");
+            }
+            break;
+        }
+    }
+    
+    ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, false);
+    // Ensure memory visibility across threads
+    MEMORY_BARRIER();
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] countdown_thread: exiting, delayed_sleep_countdown_active=%s\n",
+                ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
+    }
+    
+    return 0;
+}
+
 void tray_update_icon(NoSleepTray* tray) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     int remaining_minutes = -1;
     if (!tray || !tray->hwnd) return;
     
-    if (tray->is_running) {
+    // Take local snapshots of atomic variables for consistency
+    bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+    int countdown_seconds = ATOMIC_LOAD_INT(&tray->countdown_seconds);
+    bool countdown_blink_state = ATOMIC_LOAD_BOOL(&tray->countdown_blink_state);
+    bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_update_icon: delayed_sleep_countdown_active=%s\n",
+                delayed_sleep_countdown_active ? "true" : "false");
+    }
+    
+    // Handle delayed sleep countdown display
+    if (delayed_sleep_countdown_active) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_update_icon: countdown active, seconds=%d, blink=%s\n",
+                    countdown_seconds, countdown_blink_state ? "show" : "hide");
+        }
+        
+        if (countdown_blink_state) {
+            // Show number icon for current countdown seconds
+            HICON numbered_icon = NULL;
+            if (countdown_seconds >= 0 && countdown_seconds < 60) {
+                // Use cached icon if available
+                if (tray->hIconNumbered[countdown_seconds] == NULL) {
+                    tray->hIconNumbered[countdown_seconds] = create_numbered_icon(countdown_seconds);
+                }
+                numbered_icon = tray->hIconNumbered[countdown_seconds];
+            } else {
+                // Create new icon for numbers outside cache range
+                numbered_icon = create_numbered_icon(countdown_seconds);
+            }
+            
+            if (numbered_icon) {
+                tray->nid.hIcon = numbered_icon;
+            } else {
+                tray->nid.hIcon = tray->hIconDefault;
+            }
+        } else {
+            // Blink off: show transparent icon (or default if transparent creation failed)
+            tray->nid.hIcon = tray->hIconCountdownBlank ? tray->hIconCountdownBlank : tray->hIconDefault;
+        }
+        
+        // Update tooltip with remaining seconds
+        char tip[128];
+        sprintf(tip, "nosleep - System will sleep in %d seconds", countdown_seconds);
+        strcpy(tray->nid.szTip, tip);
+        
+        tray->nid.uFlags = NIF_ICON | NIF_TIP;
+        BOOL success = FALSE;
+        int retry_count = 0;
+        const int max_retries = 3;
+        while (!success && retry_count < max_retries) {
+            success = Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+            if (!success && retry_count < max_retries - 1) {
+                Sleep(50); // Small delay before retry
+            }
+            retry_count++;
+        }
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] tray_update_icon: Shell_NotifyIcon (countdown) %s after %d attempts\n", 
+                    success ? "succeeded" : "failed", retry_count);
+            fflush(stderr);
+        }
+        return;
+    }
+    
+    if (is_running) {
         if (tray->duration_minutes > 0) {
             // Calculate remaining minutes
             SYSTEMTIME now;
@@ -1078,10 +1664,51 @@ void tray_update_icon(NoSleepTray* tray) {
         fprintf(stderr, "[nosleep] tray_update_icon: setting hIcon=%p, remaining_minutes=%d\n", tray->nid.hIcon, remaining_minutes);
         fflush(stderr);
     }
-    BOOL success = Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+    BOOL success = FALSE;
+    int retry_count = 0;
+    const int max_retries = 3;
+    while (!success && retry_count < max_retries) {
+        success = Shell_NotifyIcon(NIM_MODIFY, &tray->nid);
+        if (!success && retry_count < max_retries - 1) {
+            Sleep(50); // Small delay before retry
+        }
+        retry_count++;
+    }
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_update_icon: Shell_NotifyIcon %s\n", success ? "succeeded" : "failed");
+        fprintf(stderr, "[nosleep] tray_update_icon: Shell_NotifyIcon %s after %d attempts\n", success ? "succeeded" : "failed", retry_count);
         fflush(stderr);
+    }
+}
+
+void tray_update_stop_menu_item(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (!tray || !tray->hmenu) return;
+    
+    // Get current state
+    bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+    bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+    
+    // Determine menu text based on state
+    const char* stop_text = NULL;
+    if (delayed_sleep_countdown_active) {
+        stop_text = "Cancel sleep";
+    } else if (is_running) {
+        stop_text = "Stop nosleep session";
+    } else {
+        stop_text = "Stop"; // Default
+    }
+    
+    // Update the menu item text
+    MENUITEMINFO mii = {0};
+    mii.cbSize = sizeof(MENUITEMINFO);
+    mii.fMask = MIIM_STRING;
+    mii.dwTypeData = (LPSTR)stop_text;
+    
+    SetMenuItemInfo(tray->hmenu, IDM_STOP, FALSE, &mii);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s)\n",
+                stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false");
     }
 }
 
@@ -1323,7 +1950,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
             // Enable/disable Stop menu item based on running state
-            if (tray->is_running) {
+            if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
             } else {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
@@ -1358,12 +1985,28 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray_start_nosleep(tray, 0); // 0 = indefinite
                     break;
                 case IDM_STOP:
-                    if (tray->is_running) {
-                        tray_stop_nosleep(tray, false, false); // show notification when manually stopping
+                    {
+                        const char* debug = getenv("NOSLEEP_DEBUG");
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] IDM_STOP: is_running=%s, delayed_sleep_countdown_active=%s\n",
+                                    ATOMIC_LOAD_BOOL(&tray->is_running) ? "true" : "false",
+                                    ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
+                        }
+                        if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                            tray_stop_nosleep(tray, false, false); // show notification when manually stopping
+                        }
                     }
                     break;
                 case IDM_EXIT:
                     DestroyWindow(hwnd);
+                    break;
+                case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
+                    tray->sleep_after_timeout = !tray->sleep_after_timeout;
+                    // Update menu checkmark
+                    if (tray->hmenu) {
+                        CheckMenuItem(tray->hmenu, IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, 
+                                     MF_BYCOMMAND | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED));
+                    }
                     break;
             }
             break;
@@ -1395,7 +2038,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     GetCursorPos(&pt);
                     SetForegroundWindow(hwnd);
                     // Enable/disable Stop menu item based on running state
-                    if (tray->is_running) {
+                    if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
                     } else {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
