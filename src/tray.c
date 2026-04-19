@@ -1304,11 +1304,14 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             if (debug && strcmp(debug, "1") == 0) {
                 fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
             }
+            // Stop countdown display before sleep
+            tray_stop_countdown(tray);
             trigger_system_sleep(tray);
+            return 0;
         }
     }
     
-    // Cancel sleep display
+    // Cancel sleep display (only reached if sleep was cancelled)
     tray_stop_countdown(tray);
 
     return 0;
