@@ -51,7 +51,10 @@ static HICON create_numbered_icon(int number);
 static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
 static void load_gray_and_color_icons(NoSleepTray* tray);
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
+static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam);
 static void trigger_system_sleep(NoSleepTray* tray);
+static void trigger_system_shutdown(NoSleepTray* tray);
+
 
 NoSleepTray* tray_create(void) {
     DEBUG_PRINT("tray_create: allocating tray structure\n");
@@ -64,9 +67,11 @@ NoSleepTray* tray_create(void) {
     tray->prevent_display = false;
     tray->away_mode = false;
     tray->verbose = false;
+    tray->session_finished_action = SESSION_FINISHED_NONE;
     tray->sleep_after_timeout = false;
     tray->countdown_stopping = false;
     tray->sleep_timer = NULL;
+    tray->shutdown_timer = NULL;
     
     tray->stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!tray->stop_event) {
@@ -76,6 +81,14 @@ NoSleepTray* tray_create(void) {
     
     tray->sleep_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!tray->sleep_stop_event) {
+        CloseHandle(tray->stop_event);
+        free(tray);
+        return NULL;
+    }
+    
+    tray->shutdown_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!tray->shutdown_stop_event) {
+        CloseHandle(tray->sleep_stop_event);
         CloseHandle(tray->stop_event);
         free(tray);
         return NULL;
@@ -105,8 +118,16 @@ void tray_destroy(NoSleepTray* tray) {
         CloseHandle(tray->sleep_timer);
     }
     
+    if (tray->shutdown_timer) {
+        CloseHandle(tray->shutdown_timer);
+    }
+    
     if (tray->sleep_stop_event) {
         CloseHandle(tray->sleep_stop_event);
+    }
+    
+    if (tray->shutdown_stop_event) {
+        CloseHandle(tray->shutdown_stop_event);
     }
     
     if (tray->countdown_stop_event) {
@@ -877,7 +898,14 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite");
     
-    AppendMenu(tray->hmenu, MF_STRING | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED), IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, "Sleep after timeout");
+    // When finished submenu
+    HMENU hSessionFinishedMenu = CreatePopupMenu();
+    if (hSessionFinishedMenu) {
+        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None");
+        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown");
+        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep");
+    }
+    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, "When finished");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
@@ -1019,6 +1047,23 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         ResetEvent(tray->sleep_stop_event);
     }
     
+    // Cancel and wait for shutdown timer thread if active
+    if (tray->shutdown_timer) {
+        // Signal cancellation
+        SetEvent(tray->shutdown_stop_event);
+        
+        DWORD current_thread_id = GetCurrentThreadId();
+        DWORD shutdown_timer_thread_id = GetThreadId(tray->shutdown_timer);
+        if (current_thread_id != shutdown_timer_thread_id) {
+            WaitForSingleObject(tray->shutdown_timer, 2000);
+        }
+        CloseHandle(tray->shutdown_timer);
+        tray->shutdown_timer = NULL;
+        
+        // Reset the event for future use
+        ResetEvent(tray->shutdown_stop_event);
+    }
+    
     // Cancel sleep if active
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s\n", 
@@ -1100,8 +1145,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_duration_timer: started, duration_minutes=%d, sleep_after_timeout=%s\n",
-                tray->duration_minutes, tray->sleep_after_timeout ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_duration_timer: started, duration_minutes=%d, session_finished_action=%d\n",
+                tray->duration_minutes, tray->session_finished_action);
     }
     
     if (tray->duration_minutes <= 0) {
@@ -1131,35 +1176,66 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             
             tray_stop_nosleep(tray, true, false); // show notification for timer expiry
             
-            // Check if we should sleep after timeout
-            if (tray->sleep_after_timeout) {
-                if (debug && strcmp(debug, "1") == 0) {
-                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout enabled, starting delayed sleep thread\n");
-                }
-                
-                // Reset event before starting new sleep timer
-                ResetEvent(tray->sleep_stop_event);
-                
-                // Create delayed sleep thread
-                tray->sleep_timer = CreateThread(
-                    NULL, 0, delayed_sleep_thread, tray, 0, NULL
-                );
-                if (!tray->sleep_timer) {
+            // Check what action to take when session finishes
+            switch (tray->session_finished_action) {
+                case SESSION_FINISHED_SLEEP:
                     if (debug && strcmp(debug, "1") == 0) {
-                        fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
+                        fprintf(stderr, "[nosleep] tray_duration_timer: session_finished_action=SLEEP, starting delayed sleep thread\n");
                     }
-                } else {
-                    // Show notification about delayed sleep
-                    tray_show_notification(tray, "Time's up!", "System will sleep in 60 seconds...");
+                    
+                    // Reset event before starting new sleep timer
+                    ResetEvent(tray->sleep_stop_event);
+                    
+                    // Create delayed sleep thread
+                    tray->sleep_timer = CreateThread(
+                        NULL, 0, delayed_sleep_thread, tray, 0, NULL
+                    );
+                    if (!tray->sleep_timer) {
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
+                        }
+                    } else {
+                        // Show notification about delayed sleep
+                        tray_show_notification(tray, "Time's up!", "System will sleep in 60 seconds...");
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
+                        }
+                        // Countdown display will be started by delayed_sleep_thread
+                    }
+                    break;
+                    
+                case SESSION_FINISHED_SHUTDOWN:
                     if (debug && strcmp(debug, "1") == 0) {
-                        fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
+                        fprintf(stderr, "[nosleep] tray_duration_timer: session_finished_action=SHUTDOWN, starting delayed shutdown thread\n");
                     }
-                    // Countdown display will be started by delayed_sleep_thread
-                }
-            } else {
-                if (debug && strcmp(debug, "1") == 0) {
-                    fprintf(stderr, "[nosleep] tray_duration_timer: sleep_after_timeout disabled, not starting sleep thread\n");
-                }
+                    
+                    // Reset event before starting new shutdown timer
+                    ResetEvent(tray->shutdown_stop_event);
+                    
+                    // Create delayed shutdown thread
+                    tray->shutdown_timer = CreateThread(
+                        NULL, 0, delayed_shutdown_thread, tray, 0, NULL
+                    );
+                    if (!tray->shutdown_timer) {
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] tray_duration_timer: failed to create shutdown timer thread\n");
+                        }
+                    } else {
+                        // Show notification about delayed shutdown
+                        tray_show_notification(tray, "Time's up!", "System will shut down in 60 seconds...");
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] tray_duration_timer: delayed shutdown thread created successfully\n");
+                        }
+                        // Countdown display will be started by delayed_shutdown_thread
+                    }
+                    break;
+                    
+                case SESSION_FINISHED_NONE:
+                default:
+                    if (debug && strcmp(debug, "1") == 0) {
+                        fprintf(stderr, "[nosleep] tray_duration_timer: session_finished_action=NONE, no action\n");
+                    }
+                    break;
             }
             break;
         }
@@ -1272,6 +1348,75 @@ static void trigger_system_sleep(NoSleepTray* tray) {
     }
 }
 
+static void trigger_system_shutdown(NoSleepTray* tray) {
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: shutting down system\n");
+    }
+
+    // Reset execution state to allow Windows to shutdown normally
+    SetThreadExecutionState(ES_CONTINUOUS);
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: execution state reset\n");
+    }
+
+    // First try ExitWindowsEx with EWX_SHUTDOWN | EWX_FORCE
+    // Need to adjust privileges first
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tkp;
+    
+    // Get a token for this process
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        // Get the LUID for the shutdown privilege
+        LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+        
+        tkp.PrivilegeCount = 1;
+        tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+        
+        // Get the shutdown privilege for this process
+        AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+        
+        CloseHandle(hToken);
+    }
+    
+    // Try ExitWindowsEx
+    BOOL result = ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, 0);
+    
+    if (result) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_shutdown: successfully initiated shutdown\n");
+        }
+        return;
+    }
+    
+    // First method failed, try alternative method using InitiateSystemShutdown
+    DWORD error = GetLastError();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: ExitWindowsEx failed with error %lu\n", error);
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: trying alternative method via InitiateSystemShutdown\n");
+    }
+    
+    // Try InitiateSystemShutdown
+    result = InitiateSystemShutdown(NULL, NULL, 0, TRUE, TRUE);
+    
+    if (result) {
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] trigger_system_shutdown: InitiateSystemShutdown succeeded\n");
+        }
+        return;
+    }
+    
+    // Both methods failed
+    DWORD alt_error = GetLastError();
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: InitiateSystemShutdown also failed with error %lu\n", alt_error);
+        fprintf(stderr, "[nosleep] trigger_system_shutdown: both shutdown methods failed\n");
+    }
+    
+    // Show notification to user
+    tray_show_notification(tray, "Shutdown Failed", "Failed to shut down system. Check permissions.");
+}
+
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
     const char* debug = getenv("NOSLEEP_DEBUG");
@@ -1312,6 +1457,48 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     }
     
     // Cancel sleep display (only reached if sleep was cancelled)
+    tray_stop_countdown(tray);
+
+    return 0;
+}
+
+static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
+    NoSleepTray* tray = (NoSleepTray*)lpParam;
+    const char* debug = getenv("NOSLEEP_DEBUG");
+
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] delayed_shutdown_thread: waiting 60 seconds before shutdown\n");
+    }
+    
+    // Start countdown display
+    tray_start_countdown(tray);
+
+    // Wait for 60 seconds or until cancelled
+    DWORD wait_result = WaitForSingleObject(tray->shutdown_stop_event, 60000);
+
+    if (wait_result == WAIT_OBJECT_0) {
+        // Cancelled
+        if (debug && strcmp(debug, "1") == 0) {
+            fprintf(stderr, "[nosleep] delayed_shutdown_thread: cancelled, not shutting down\n");
+        }
+    } else {
+        // Timeout reached, but check if we should still shutdown
+        // Double-check stop condition to prevent race condition
+        if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
+            // Already stopped, don't trigger shutdown
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_shutdown_thread: race condition detected, not shutting down\n");
+            }
+        } else {
+            // Trigger shutdown
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown\n");
+            }
+            trigger_system_shutdown(tray);
+        }
+    }
+    
+    // Cancel countdown display
     tray_stop_countdown(tray);
 
     return 0;
@@ -1716,6 +1903,22 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     }
 }
 
+static void tray_update_session_finished_menu(NoSleepTray* tray) {
+    if (!tray || !tray->hmenu) return;
+    
+    // Get the When finished submenu (position 0 in main menu)
+    HMENU hSubMenu = GetSubMenu(tray->hmenu, 0);
+    if (!hSubMenu) return;
+    
+    // Update checkmarks for all three radio items in the submenu
+    CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_NONE, 
+                  MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SHUTDOWN, 
+                  MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SLEEP, 
+                  MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED));
+}
+
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message) {
     if (!tray || !tray->hwnd) return;
     
@@ -2005,12 +2208,32 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     DestroyWindow(hwnd);
                     break;
                 case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
-                    tray->sleep_after_timeout = !tray->sleep_after_timeout;
-                    // Update menu checkmark
-                    if (tray->hmenu) {
-                        CheckMenuItem(tray->hmenu, IDM_TOGGLE_SLEEP_AFTER_TIMEOUT, 
-                                     MF_BYCOMMAND | (tray->sleep_after_timeout ? MF_CHECKED : MF_UNCHECKED));
+                    // Backward compatibility: toggle between SLEEP and NONE
+                    if (tray->session_finished_action == SESSION_FINISHED_SLEEP) {
+                        tray->session_finished_action = SESSION_FINISHED_NONE;
+                    } else {
+                        tray->session_finished_action = SESSION_FINISHED_SLEEP;
                     }
+                    tray->sleep_after_timeout = (tray->session_finished_action == SESSION_FINISHED_SLEEP);
+                    // Update menu checkmarks
+                    if (tray->hmenu) {
+                        tray_update_session_finished_menu(tray);
+                    }
+                    break;
+                case IDM_SESSION_FINISHED_NONE:
+                    tray->session_finished_action = SESSION_FINISHED_NONE;
+                    tray->sleep_after_timeout = false;
+                    tray_update_session_finished_menu(tray);
+                    break;
+                case IDM_SESSION_FINISHED_SHUTDOWN:
+                    tray->session_finished_action = SESSION_FINISHED_SHUTDOWN;
+                    tray->sleep_after_timeout = false;
+                    tray_update_session_finished_menu(tray);
+                    break;
+                case IDM_SESSION_FINISHED_SLEEP:
+                    tray->session_finished_action = SESSION_FINISHED_SLEEP;
+                    tray->sleep_after_timeout = true;
+                    tray_update_session_finished_menu(tray);
                     break;
             }
             break;

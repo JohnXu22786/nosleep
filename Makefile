@@ -3,7 +3,7 @@
 
 CC = gcc
 CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc
-LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof
+LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32
 
 SRCDIR = src
 OBJDIR = obj
