@@ -1069,6 +1069,8 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         fprintf(stderr, "[nosleep] tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s\n", 
                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
     }
+    bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+    int countdown_action = tray->session_finished_action; // SESSION_FINISHED_SLEEP or SESSION_FINISHED_SHUTDOWN
     tray_stop_countdown(tray);
 
     // Reset execution state to allow Windows to sleep normally
@@ -1098,12 +1100,23 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     
     char message[256];
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_stop_nosleep: timer_expired=%s, duration_expired=%s\n", timer_expired ? "true" : "false", ATOMIC_LOAD_BOOL(&tray->duration_expired) ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_stop_nosleep: timer_expired=%s, duration_expired=%s, was_countdown_active=%s\n", timer_expired ? "true" : "false", ATOMIC_LOAD_BOOL(&tray->duration_expired) ? "true" : "false", was_countdown_active ? "true" : "false");
     }
     
-    // Determine which notification to show based on duration_expired flag
+    // Determine which notification to show
     if (!suppress_notification) {
-        if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
+        if (was_countdown_active) {
+            // Countdown was cancelled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] tray_stop_nosleep: showing countdown cancellation notification\n");
+            }
+            if (countdown_action == SESSION_FINISHED_SHUTDOWN) {
+                tray_show_notification(tray, "Shutdown cancelled", "System shutdown has been cancelled");
+            } else {
+                tray_show_notification(tray, "Sleep cancelled", "System sleep has been cancelled");
+            }
+        } else if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
+            // Timer expired (nosleep session finished naturally)
             if (debug && strcmp(debug, "1") == 0) {
                 fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Time's up! notification\n");
             }
@@ -1114,6 +1127,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
             }
             tray_show_notification(tray, "Time's up!", message);
         } else {
+            // Nosleep session manually stopped
             if (debug && strcmp(debug, "1") == 0) {
                 fprintf(stderr, "[nosleep] tray_stop_nosleep: showing Stopped notification\n");
             }
@@ -1128,10 +1142,10 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_stop_nosleep: notification suppressed\n");
         }
-    
-        // Update stop menu item text
-        tray_update_stop_menu_item(tray);
     }
+    
+    // Update stop menu item text
+    tray_update_stop_menu_item(tray);
     
     // Update icon
     tray_update_icon(tray);
@@ -1659,6 +1673,10 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
     // Ensure memory visibility across threads
     MEMORY_BARRIER();
     
+    // Update icon and stop menu item when countdown finishes naturally
+    tray_update_icon(tray);
+    tray_update_stop_menu_item(tray);
+    
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] countdown_thread: exiting, delayed_sleep_countdown_active=%s\n",
                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
@@ -1716,7 +1734,11 @@ void tray_update_icon(NoSleepTray* tray) {
         
         // Update tooltip with remaining seconds
         char tip[128];
-        sprintf(tip, "nosleep - System will sleep in %d seconds", countdown_seconds);
+        if (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN) {
+            sprintf(tip, "nosleep - System will shut down in %d seconds", countdown_seconds);
+        } else {
+            sprintf(tip, "nosleep - System will sleep in %d seconds", countdown_seconds);
+        }
         strcpy(tray->nid.szTip, tip);
         
         tray->nid.uFlags = NIF_ICON | NIF_TIP;
@@ -1882,11 +1904,16 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     // Determine menu text based on state
     const char* stop_text = NULL;
     if (delayed_sleep_countdown_active) {
-        stop_text = "Cancel sleep";
+        // Check if it's shutdown or sleep countdown
+        if (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN) {
+            stop_text = "Cancel shutdown";
+        } else {
+            stop_text = "Cancel sleep";
+        }
     } else if (is_running) {
         stop_text = "Stop nosleep session";
     } else {
-        stop_text = "Stop"; // Default
+        stop_text = "Stop"; // Default when not active
     }
     
     // Update the menu item text
@@ -1898,8 +1925,8 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     SetMenuItemInfo(tray->hmenu, IDM_STOP, FALSE, &mii);
     
     if (debug && strcmp(debug, "1") == 0) {
-        fprintf(stderr, "[nosleep] tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s)\n",
-                stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false");
+        fprintf(stderr, "[nosleep] tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s, session_action=%d)\n",
+                stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false", tray->session_finished_action);
     }
 }
 
