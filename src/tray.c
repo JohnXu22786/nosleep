@@ -1128,10 +1128,10 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         if (debug && strcmp(debug, "1") == 0) {
             fprintf(stderr, "[nosleep] tray_stop_nosleep: notification suppressed\n");
         }
-    
-        // Update stop menu item text
-        tray_update_stop_menu_item(tray);
     }
+    
+    // Update stop menu item text
+    tray_update_stop_menu_item(tray);
     
     // Update icon
     tray_update_icon(tray);
@@ -1659,6 +1659,10 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
     // Ensure memory visibility across threads
     MEMORY_BARRIER();
     
+    // Update icon and stop menu item when countdown finishes naturally
+    tray_update_icon(tray);
+    tray_update_stop_menu_item(tray);
+    
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] countdown_thread: exiting, delayed_sleep_countdown_active=%s\n",
                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
@@ -1886,7 +1890,7 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     } else if (is_running) {
         stop_text = "Stop nosleep session";
     } else {
-        stop_text = "Stop"; // Default
+        stop_text = "Stop"; // Default when not active
     }
     
     // Update the menu item text
