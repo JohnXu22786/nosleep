@@ -1906,7 +1906,7 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     if (delayed_sleep_countdown_active) {
         // Check if it's shutdown or sleep countdown
         if (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN) {
-            stop_text = "Stop shutdown";
+            stop_text = "Cancel shutdown";
         } else {
             stop_text = "Cancel sleep";
         }
