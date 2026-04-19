@@ -41,6 +41,13 @@ struct NoSleep;
 // Tray icon message ID
 #define TRAY_ICON_MESSAGE_ID 1000
 
+// When finished action enum
+typedef enum {
+    SESSION_FINISHED_NONE = 0,
+    SESSION_FINISHED_SHUTDOWN,
+    SESSION_FINISHED_SLEEP
+} SessionFinishedAction;
+
 // Menu command IDs
 #define IDM_START_30MIN     1001
 #define IDM_START_1HOUR     1002
@@ -50,6 +57,9 @@ struct NoSleep;
 #define IDM_STOP            1006
 #define IDM_EXIT            1007
 #define IDM_TOGGLE_SLEEP_AFTER_TIMEOUT 1008
+#define IDM_SESSION_FINISHED_NONE 1009
+#define IDM_SESSION_FINISHED_SHUTDOWN 1010
+#define IDM_SESSION_FINISHED_SLEEP 1011
 
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
@@ -73,9 +83,12 @@ typedef struct NoSleepTray {
     bool prevent_display;       // Also prevent display from sleeping
     bool away_mode;             // Enable away mode
     bool verbose;               // Print verbose status
-    bool sleep_after_timeout;   // Whether to sleep after timeout expires
+    SessionFinishedAction session_finished_action; // Action to take when session finishes
+    bool sleep_after_timeout;   // Whether to sleep after timeout expires (deprecated, use session_finished_action)
     HANDLE sleep_timer;         // Timer handle for delayed sleep
     HANDLE sleep_stop_event;    // Event to signal stop delayed sleep
+    HANDLE shutdown_timer;      // Timer handle for delayed shutdown
+    HANDLE shutdown_stop_event; // Event to signal stop delayed shutdown
     bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown) - accessed atomically
     int countdown_seconds;               // Remaining seconds (60 to 0) - accessed atomically
     HANDLE countdown_timer_thread; // Countdown update thread handle
