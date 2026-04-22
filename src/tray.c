@@ -992,22 +992,24 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         fprintf(stderr, "[nosleep] tray_stop_nosleep called with timer_expired=%s, suppress_notification=%s\n", timer_expired ? "true" : "false", suppress_notification ? "true" : "false");
     }
     
-    // Prevent re-entrant calls
-    if (!tray || ATOMIC_LOAD_BOOL(&tray->stopping)) {
+    // Prevent re-entrant calls - use atomic exchange to check and set stopping flag
+    if (!tray) return;
+    
+    bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
+    if (was_stopping) {
         if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] tray_stop_nosleep: already stopping or invalid tray, returning\n");
+            fprintf(stderr, "[nosleep] tray_stop_nosleep: already stopping, returning\n");
         }
         return;
     }
 
     if (!ATOMIC_LOAD_BOOL(&tray->is_running) && !ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
         if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] tray_stop_nosleep: neither running nor in countdown, returning\n");
+            fprintf(stderr, "[nosleep] tray_stop_nosleep: neither running nor in countdown, resetting stopping flag and returning\n");
         }
+        ATOMIC_STORE_BOOL(&tray->stopping, false);
         return;
     }
-    
-    ATOMIC_STORE_BOOL(&tray->stopping, true);
     ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
     
@@ -1188,9 +1190,38 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         elapsed, duration_ms);
             }
             
-            tray_stop_nosleep(tray, true, false); // show notification for timer expiry
-            
             // Check what action to take when session finishes
+            bool suppress_notification = (tray->session_finished_action != SESSION_FINISHED_NONE);
+            tray_stop_nosleep(tray, true, suppress_notification); // suppress notification if we have follow-up action
+            
+            // Calculate elapsed time for notifications
+            SYSTEMTIME now;
+            GetSystemTime(&now);
+            
+            FILETIME ft_start, ft_now;
+            SystemTimeToFileTime(&tray->start_time, &ft_start);
+            SystemTimeToFileTime(&now, &ft_now);
+            
+            ULARGE_INTEGER uli_start, uli_now;
+            uli_start.LowPart = ft_start.dwLowDateTime;
+            uli_start.HighPart = ft_start.dwHighDateTime;
+            uli_now.LowPart = ft_now.dwLowDateTime;
+            uli_now.HighPart = ft_now.dwHighDateTime;
+            
+            ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+            ULONGLONG elapsed_seconds = elapsed_100ns / 10000000LL;
+            
+            int hours = (int)(elapsed_seconds / 3600);
+            int minutes = (int)((elapsed_seconds % 3600) / 60);
+            int seconds = (int)(elapsed_seconds % 60);
+            
+            char duration_message[256];
+            if (hours > 0) {
+                sprintf(duration_message, "Sleep prevention stopped\nDuration: %dh %dm", hours, minutes);
+            } else {
+                sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
+            }
+            
             switch (tray->session_finished_action) {
                 case SESSION_FINISHED_SLEEP:
                     if (debug && strcmp(debug, "1") == 0) {
@@ -1208,9 +1239,13 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
                         }
+                        // Show error notification
+                        tray_show_notification(tray, "Error", "Failed to start sleep timer");
                     } else {
                         // Show notification about delayed sleep
-                        tray_show_notification(tray, "Time's up!", "System will sleep in 60 seconds...");
+                        char sleep_message[512];
+                        sprintf(sleep_message, "%s\nSystem will sleep in 60 seconds...", duration_message);
+                        tray_show_notification(tray, "Time's up!", sleep_message);
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
                         }
@@ -1234,9 +1269,13 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: failed to create shutdown timer thread\n");
                         }
+                        // Show error notification
+                        tray_show_notification(tray, "Error", "Failed to start shutdown timer");
                     } else {
                         // Show notification about delayed shutdown
-                        tray_show_notification(tray, "Time's up!", "System will shut down in 60 seconds...");
+                        char shutdown_message[512];
+                        sprintf(shutdown_message, "%s\nSystem will shut down in 60 seconds...", duration_message);
+                        tray_show_notification(tray, "Time's up!", shutdown_message);
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: delayed shutdown thread created successfully\n");
                         }
