@@ -905,7 +905,25 @@ static void tray_create_menu(NoSleepTray* tray) {
         AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown");
         AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep");
     }
-    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, "When finished");
+    
+    // Create main menu item text based on current selection
+    char finished_text[64];
+    switch (tray->session_finished_action) {
+        case SESSION_FINISHED_NONE:
+            snprintf(finished_text, sizeof(finished_text), "When finished(None)");
+            break;
+        case SESSION_FINISHED_SHUTDOWN:
+            snprintf(finished_text, sizeof(finished_text), "When finished(Shutdown)");
+            break;
+        case SESSION_FINISHED_SLEEP:
+            snprintf(finished_text, sizeof(finished_text), "When finished(Sleep)");
+            break;
+        default:
+            snprintf(finished_text, sizeof(finished_text), "When finished");
+            break;
+    }
+    
+    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, finished_text);
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
@@ -1972,6 +1990,11 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
 static void tray_update_session_finished_menu(NoSleepTray* tray) {
     if (!tray || !tray->hmenu) return;
     
+    const char* debug = getenv("NOSLEEP_DEBUG");
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_update_session_finished_menu: action=%d\n", tray->session_finished_action);
+    }
+    
     // Get the When finished submenu (position 0 in main menu)
     HMENU hSubMenu = GetSubMenu(tray->hmenu, 0);
     if (!hSubMenu) return;
@@ -1983,6 +2006,35 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
                   MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SLEEP, 
                   MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED));
+    
+    // Update main menu item text to show current selection
+    char finished_text[64];
+    switch (tray->session_finished_action) {
+        case SESSION_FINISHED_NONE:
+            snprintf(finished_text, sizeof(finished_text), "When finished(None)");
+            break;
+        case SESSION_FINISHED_SHUTDOWN:
+            snprintf(finished_text, sizeof(finished_text), "When finished(Shutdown)");
+            break;
+        case SESSION_FINISHED_SLEEP:
+            snprintf(finished_text, sizeof(finished_text), "When finished(Sleep)");
+            break;
+        default:
+            snprintf(finished_text, sizeof(finished_text), "When finished");
+            break;
+    }
+    
+    MENUITEMINFO mii = {0};
+    mii.cbSize = sizeof(MENUITEMINFO);
+    mii.fMask = MIIM_STRING;
+    mii.dwTypeData = finished_text;
+    
+    // Update the main menu item (position 0)
+    SetMenuItemInfo(tray->hmenu, 0, TRUE, &mii);
+    
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_update_session_finished_menu: updated to '%s'\n", finished_text);
+    }
 }
 
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message) {
