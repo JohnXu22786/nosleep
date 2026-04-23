@@ -60,6 +60,7 @@ typedef enum {
 #define IDM_SESSION_FINISHED_NONE 1009
 #define IDM_SESSION_FINISHED_SHUTDOWN 1010
 #define IDM_SESSION_FINISHED_SLEEP 1011
+#define IDM_ABOUT                 1012
 
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
