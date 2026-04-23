@@ -1190,12 +1190,30 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         return 0;
     }
     
-    DWORD duration_ms = tray->duration_minutes * 60 * 1000;
-    DWORD start_tick = GetTickCount();
+    // Convert duration to 100-nanosecond intervals (1 minute = 60 * 1000 * 10000 = 600,000,000 100-ns intervals)
+    ULONGLONG duration_100ns = (ULONGLONG)tray->duration_minutes * 60 * 1000 * 10000;
+    
+    // Convert start time to FILETIME for calculation
+    FILETIME ft_start;
+    SystemTimeToFileTime(&tray->start_time, &ft_start);
+    ULARGE_INTEGER uli_start;
+    uli_start.LowPart = ft_start.dwLowDateTime;
+    uli_start.HighPart = ft_start.dwHighDateTime;
     
     while (ATOMIC_LOAD_BOOL(&tray->is_running)) {
-        DWORD elapsed = GetTickCount() - start_tick;
-        if (elapsed >= duration_ms) {
+        // Get current system time
+        SYSTEMTIME now;
+        GetSystemTime(&now);
+        FILETIME ft_now;
+        SystemTimeToFileTime(&now, &ft_now);
+        
+        ULARGE_INTEGER uli_now;
+        uli_now.LowPart = ft_now.dwLowDateTime;
+        uli_now.HighPart = ft_now.dwHighDateTime;
+        
+        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+        
+        if (elapsed_100ns >= duration_100ns) {
             // Duration reached
             const char* debug = getenv("NOSLEEP_DEBUG");
             if (debug && strcmp(debug, "1") == 0) {
@@ -1204,8 +1222,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             ATOMIC_STORE_BOOL(&tray->duration_expired, true);
             
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] tray_duration_timer: elapsed=%lu ms, duration_ms=%lu, calling tray_stop_nosleep\n",
-                        elapsed, duration_ms);
+                fprintf(stderr, "[nosleep] tray_duration_timer: elapsed=%llu 100-ns intervals, duration=%llu 100-ns intervals, calling tray_stop_nosleep\n",
+                        elapsed_100ns, duration_100ns);
             }
             
             // Check what action to take when session finishes
@@ -1499,31 +1517,68 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     // Start countdown display
     tray_start_countdown(tray);
 
-    // Wait for 60 seconds or until cancelled
-    DWORD wait_result = WaitForSingleObject(tray->sleep_stop_event, 60000);
-
-    if (wait_result == WAIT_OBJECT_0) {
-        // Cancelled
-        if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
+    // Record start time using system time (FILETIME in 100-nanosecond intervals)
+    SYSTEMTIME start_time;
+    GetSystemTime(&start_time);
+    FILETIME ft_start;
+    SystemTimeToFileTime(&start_time, &ft_start);
+    ULARGE_INTEGER uli_start;
+    uli_start.LowPart = ft_start.dwLowDateTime;
+    uli_start.HighPart = ft_start.dwHighDateTime;
+    
+    // 60 seconds in 100-nanosecond intervals
+    ULONGLONG delay_100ns = 60 * 1000 * 10000LL;
+    
+    while (true) {
+        // Check for cancellation first
+        if (WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
+            // Cancelled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
+            }
+            break;
         }
-    } else {
-        // Timeout reached, but check if we should still sleep
-        // Double-check stop condition to prevent race condition
-        if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
-            // Already stopped, don't trigger sleep
-            if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] delayed_sleep_thread: race condition detected, not sleeping\n");
+        
+        // Get current system time
+        SYSTEMTIME now;
+        GetSystemTime(&now);
+        FILETIME ft_now;
+        SystemTimeToFileTime(&now, &ft_now);
+        ULARGE_INTEGER uli_now;
+        uli_now.LowPart = ft_now.dwLowDateTime;
+        uli_now.HighPart = ft_now.dwHighDateTime;
+        
+        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+        
+        if (elapsed_100ns >= delay_100ns) {
+            // Timeout reached, but check if we should still sleep
+            // Double-check stop condition to prevent race condition
+            if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
+                // Already stopped, don't trigger sleep
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] delayed_sleep_thread: race condition detected, not sleeping\n");
+                }
+            } else {
+                // Trigger sleep
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+                }
+                // Stop countdown display before sleep
+                tray_stop_countdown(tray);
+                trigger_system_sleep(tray);
+                return 0;
             }
-        } else {
-            // Trigger sleep
+            break;
+        }
+        
+        // Wait for 1 second or until cancelled
+        DWORD wait_result = WaitForSingleObject(tray->sleep_stop_event, 1000);
+        if (wait_result == WAIT_OBJECT_0) {
+            // Cancelled
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] delayed_sleep_thread: 60 seconds elapsed, triggering sleep\n");
+                fprintf(stderr, "[nosleep] delayed_sleep_thread: cancelled, not sleeping\n");
             }
-            // Stop countdown display before sleep
-            tray_stop_countdown(tray);
-            trigger_system_sleep(tray);
-            return 0;
+            break;
         }
     }
     
@@ -1544,28 +1599,68 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     // Start countdown display
     tray_start_countdown(tray);
 
-    // Wait for 60 seconds or until cancelled
-    DWORD wait_result = WaitForSingleObject(tray->shutdown_stop_event, 60000);
-
-    if (wait_result == WAIT_OBJECT_0) {
-        // Cancelled
-        if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] delayed_shutdown_thread: cancelled, not shutting down\n");
+    // Record start time using system time (FILETIME in 100-nanosecond intervals)
+    SYSTEMTIME start_time;
+    GetSystemTime(&start_time);
+    FILETIME ft_start;
+    SystemTimeToFileTime(&start_time, &ft_start);
+    ULARGE_INTEGER uli_start;
+    uli_start.LowPart = ft_start.dwLowDateTime;
+    uli_start.HighPart = ft_start.dwHighDateTime;
+    
+    // 60 seconds in 100-nanosecond intervals
+    ULONGLONG delay_100ns = 60 * 1000 * 10000LL;
+    
+    while (true) {
+        // Check for cancellation first
+        if (WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
+            // Cancelled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] delayed_shutdown_thread: cancelled, not shutting down\n");
+            }
+            break;
         }
-    } else {
-        // Timeout reached, but check if we should still shutdown
-        // Double-check stop condition to prevent race condition
-        if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
-            // Already stopped, don't trigger shutdown
-            if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] delayed_shutdown_thread: race condition detected, not shutting down\n");
+        
+        // Get current system time
+        SYSTEMTIME now;
+        GetSystemTime(&now);
+        FILETIME ft_now;
+        SystemTimeToFileTime(&now, &ft_now);
+        ULARGE_INTEGER uli_now;
+        uli_now.LowPart = ft_now.dwLowDateTime;
+        uli_now.HighPart = ft_now.dwHighDateTime;
+        
+        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+        
+        if (elapsed_100ns >= delay_100ns) {
+            // Timeout reached, but check if we should still shutdown
+            // Double-check stop condition to prevent race condition
+            if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
+                // Already stopped, don't trigger shutdown
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] delayed_shutdown_thread: race condition detected, not shutting down\n");
+                }
+            } else {
+                // Trigger shutdown
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown\n");
+                }
+                // Stop countdown display before shutdown
+                tray_stop_countdown(tray);
+                trigger_system_shutdown(tray);
+                return 0;
             }
-        } else {
-            // Trigger shutdown
+            break;
+        }
+        
+        // Wait for 1 second or until cancelled
+        DWORD wait_result = WaitForSingleObject(tray->shutdown_stop_event, 1000);
+        if (wait_result == WAIT_OBJECT_0) {
+            // Cancelled
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown\n");
+                fprintf(stderr, "[nosleep] delayed_shutdown_thread: cancelled, not shutting down\n");
             }
-            trigger_system_shutdown(tray);
+            break;
         }
     }
     
@@ -1683,44 +1778,76 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
         fprintf(stderr, "[nosleep] countdown_thread: started\n");
     }
     
-    int tick_count = 0;
+    // Record start time using system time (FILETIME in 100-nanosecond intervals)
+    SYSTEMTIME start_time;
+    GetSystemTime(&start_time);
+    FILETIME ft_start;
+    SystemTimeToFileTime(&start_time, &ft_start);
+    ULARGE_INTEGER uli_start;
+    uli_start.LowPart = ft_start.dwLowDateTime;
+    uli_start.HighPart = ft_start.dwHighDateTime;
     
-    while (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) && ATOMIC_LOAD_INT(&tray->countdown_seconds) > 0) {
-        // Wait for 500ms (half second) or stop event for blinking
-        DWORD wait_result = WaitForSingleObject(tray->countdown_stop_event, 500);
+    // Total countdown duration: 60 seconds in 100-nanosecond intervals
+    ULONGLONG total_duration_100ns = 60 * 1000 * 10000LL;
+    
+    while (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+        // Get current system time
+        SYSTEMTIME now;
+        GetSystemTime(&now);
+        FILETIME ft_now;
+        SystemTimeToFileTime(&now, &ft_now);
+        ULARGE_INTEGER uli_now;
+        uli_now.LowPart = ft_now.dwLowDateTime;
+        uli_now.HighPart = ft_now.dwHighDateTime;
         
-        if (wait_result == WAIT_OBJECT_0) {
-            // Stop event signaled
+        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+        
+        // Check if countdown finished
+        if (elapsed_100ns >= total_duration_100ns) {
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled, delayed_sleep_countdown_active=%s, countdown_seconds=%d\n",
-                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false", ATOMIC_LOAD_INT(&tray->countdown_seconds));
+                fprintf(stderr, "[nosleep] countdown_thread: countdown finished\n");
             }
+            ATOMIC_STORE_INT(&tray->countdown_seconds, 0);
             break;
         }
         
-        // Toggle blink state every 500ms
-        bool old_blink_state = ATOMIC_LOAD_BOOL(&tray->countdown_blink_state);
-        ATOMIC_STORE_BOOL(&tray->countdown_blink_state, !old_blink_state);
-        tick_count++;
+        // Calculate remaining seconds
+        ULONGLONG remaining_100ns = total_duration_100ns - elapsed_100ns;
+        int remaining_seconds = (int)(remaining_100ns / (1000 * 10000LL)); // Convert to seconds
         
-        // Update seconds every 2 ticks (1000ms = 1 second)
-        if (tick_count % 2 == 0) {
-            int old_seconds = ATOMIC_LOAD_INT(&tray->countdown_seconds);
-            ATOMIC_STORE_INT(&tray->countdown_seconds, old_seconds - 1);
-        }
+        // Calculate blink state based on elapsed milliseconds
+        // We want to blink every 500ms (0.5 seconds)
+        ULONGLONG elapsed_ms = elapsed_100ns / (10 * 1000LL); // Convert to milliseconds
+        bool blink_state = ((elapsed_ms / 500) % 2) == 0; // True for first 500ms of each second
+        
+        // Update atomic variables
+        ATOMIC_STORE_INT(&tray->countdown_seconds, remaining_seconds);
+        ATOMIC_STORE_BOOL(&tray->countdown_blink_state, blink_state);
         
         if (debug && strcmp(debug, "1") == 0) {
-            fprintf(stderr, "[nosleep] countdown_thread: seconds=%d, blink=%s, tick=%d\n", 
-                    ATOMIC_LOAD_INT(&tray->countdown_seconds), ATOMIC_LOAD_BOOL(&tray->countdown_blink_state) ? "show" : "hide", tick_count);
+            fprintf(stderr, "[nosleep] countdown_thread: seconds=%d, blink=%s, elapsed_ms=%llu\n", 
+                    remaining_seconds, blink_state ? "show" : "hide", elapsed_ms);
         }
         
         // Update icon
         tray_update_icon(tray);
         
-        // Check if countdown finished
-        if (ATOMIC_LOAD_INT(&tray->countdown_seconds) <= 0) {
+        // Check for stop event
+        if (WaitForSingleObject(tray->countdown_stop_event, 0) == WAIT_OBJECT_0) {
+            // Stop event signaled
             if (debug && strcmp(debug, "1") == 0) {
-                fprintf(stderr, "[nosleep] countdown_thread: countdown finished\n");
+                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled, delayed_sleep_countdown_active=%s, countdown_seconds=%d\n",
+                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false", remaining_seconds);
+            }
+            break;
+        }
+        
+        // Wait for a short time (100ms) or until stop event
+        DWORD wait_result = WaitForSingleObject(tray->countdown_stop_event, 100);
+        if (wait_result == WAIT_OBJECT_0) {
+            // Stop event signaled
+            if (debug && strcmp(debug, "1") == 0) {
+                fprintf(stderr, "[nosleep] countdown_thread: stop event signaled during wait\n");
             }
             break;
         }
@@ -2370,6 +2497,58 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 Shell_NotifyIcon(NIM_DELETE, &tray->nid);
             }
             PostQuitMessage(0);
+            break;
+            
+        case WM_POWERBROADCAST:
+            {
+                const char* debug = getenv("NOSLEEP_DEBUG");
+                if (debug && strcmp(debug, "1") == 0) {
+                    fprintf(stderr, "[nosleep] WM_POWERBROADCAST: wParam=0x%llX\n", wParam);
+                }
+                
+                switch (wParam) {
+                    case PBT_APMSUSPEND:
+                        // System is about to enter sleep
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] System entering sleep, stopping all timers\n");
+                        }
+                        
+                        // Stop any active countdown
+                        if (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                            tray_stop_countdown(tray);
+                        }
+                        
+                        // Cancel delayed sleep if active
+                        if (tray->sleep_timer) {
+                            SetEvent(tray->sleep_stop_event);
+                            WaitForSingleObject(tray->sleep_timer, 2000);
+                            CloseHandle(tray->sleep_timer);
+                            tray->sleep_timer = NULL;
+                        }
+                        
+                        // Cancel delayed shutdown if active
+                        if (tray->shutdown_timer) {
+                            SetEvent(tray->shutdown_stop_event);
+                            WaitForSingleObject(tray->shutdown_timer, 2000);
+                            CloseHandle(tray->shutdown_timer);
+                            tray->shutdown_timer = NULL;
+                        }
+                        
+                        // Show notification
+                        tray_show_notification(tray, "Sleep Detected", "System sleep cancelled all pending actions");
+                        break;
+                        
+                    case PBT_APMRESUMESUSPEND:
+                        // System resumed from sleep
+                        if (debug && strcmp(debug, "1") == 0) {
+                            fprintf(stderr, "[nosleep] System resumed from sleep\n");
+                        }
+                        break;
+                }
+                
+                // Return TRUE to indicate we processed the message
+                return TRUE;
+            }
             break;
             
         case WM_CONTEXTMENU:
