@@ -49,14 +49,21 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     LocalFree(argv);
     
     if (parse_result == 1) {
-        // Error parsing arguments - show message box instead of console output
-        MessageBox(NULL, 
-                  "Invalid command line arguments. Use --help for usage information.",
-                  "nosleep - Error",
-                  MB_OK | MB_ICONERROR);
+        // Error parsing arguments - output to console
+        // Try to attach to parent console if available
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            freopen("CONOUT$", "w", stdout);
+            freopen("CONOUT$", "w", stderr);
+        }
+        fprintf(stderr, "Invalid command line arguments. Use --help for usage information.\n");
         return 1;
     } else if (parse_result == 2) {
-        // Help requested - show message box
+        // Help requested - output to console
+        // Try to attach to parent console if available
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            freopen("CONOUT$", "w", stdout);
+            freopen("CONOUT$", "w", stderr);
+        }
         const char* help_text = 
             "nosleep - Prevent Windows from sleeping using SetThreadExecutionState API\n\n"
             "Usage: nosleep [OPTIONS]\n\n"
@@ -77,7 +84,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "  nosleep --tray\n"
             "  nosleep                     (starts tray mode)\n";
         
-        MessageBox(NULL, help_text, "nosleep - Help", MB_OK | MB_ICONINFORMATION);
+        printf("%s", help_text);
         return 0;
     }
     
