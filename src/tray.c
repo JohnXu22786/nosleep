@@ -929,6 +929,8 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
     if (debug && strcmp(debug, "1") == 0) {
         printf("[nosleep] tray_create_menu: Menu created successfully\n"); fflush(stdout);
@@ -2451,6 +2453,15 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_EXIT:
                     DestroyWindow(hwnd);
+                    break;
+                case IDM_ABOUT:
+                    MessageBox(NULL,
+                        "nosleep v1.0.0\n"
+                        "Prevent Windows from sleeping using SetThreadExecutionState API\n\n"
+                        "License: GPL v3\n"
+                        "Copyright \xA9 2024-2026",
+                        "About nosleep",
+                        MB_OK | MB_ICONINFORMATION);
                     break;
                 case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
                     // Backward compatibility: toggle between SLEEP and NONE
