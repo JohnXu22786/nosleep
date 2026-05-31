@@ -2455,13 +2455,16 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     DestroyWindow(hwnd);
                     break;
                 case IDM_ABOUT:
-                    MessageBox(NULL,
-                        "nosleep v1.0.0\n"
-                        "Prevent Windows from sleeping using SetThreadExecutionState API\n\n"
+                {
+                    char about_text[512];
+                    snprintf(about_text, sizeof(about_text),
+                        "nosleep v" VERSION_STR "\n\n"
+                        "Prevent Windows from sleeping using\n"
+                        "SetThreadExecutionState API\n\n"
                         "License: GPL v3\n"
-                        "Copyright \xA9 2024-2026",
-                        "About nosleep",
-                        MB_OK | MB_ICONINFORMATION);
+                        "Copyright \xA9 2024-2026");
+                    MessageBox(hwnd, about_text, "About nosleep", MB_OK | MB_ICONINFORMATION);
+                }
                     break;
                 case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
                     // Backward compatibility: toggle between SLEEP and NONE

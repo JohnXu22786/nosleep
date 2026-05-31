@@ -1,9 +1,17 @@
 # Makefile for nosleep C migration
 # Uses MinGW gcc on Windows
+# VERSION can be overridden on command line: make VERSION=2.2.0
+
+VERSION ?= 0.0.0
 
 CC = gcc
-CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc
+RC = windres
+CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"$(VERSION)\"
 LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32
+
+Comma := ,
+VERSION_COMMA := $(subst .,$(Comma),$(VERSION))
+VERSION_COMMA := $(VERSION_COMMA),0
 
 SRCDIR = src
 OBJDIR = obj
@@ -25,7 +33,8 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(RESOURCE_OBJ): $(SRCDIR)/resources.rc | $(OBJDIR)
-	windres $< -o $@
+	sed 's/@VERSION_COMMA@/$(VERSION_COMMA)/g; s/@VERSION_STRING@/$(VERSION)/g' $(SRCDIR)/resources.rc > $(OBJDIR)/resources_built.rc
+	$(RC) --include-dir $(SRCDIR) -i $(OBJDIR)/resources_built.rc -o $@
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
