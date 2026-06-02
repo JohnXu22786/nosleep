@@ -54,6 +54,9 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
 static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam);
 static void trigger_system_sleep(NoSleepTray* tray);
 static void trigger_system_shutdown(NoSleepTray* tray);
+static char* get_exe_path(void);
+static bool is_startup_enabled(void);
+static void set_startup_registry(bool enable);
 
 
 NoSleepTray* tray_create(void) {
@@ -70,6 +73,7 @@ NoSleepTray* tray_create(void) {
     tray->session_finished_action = SESSION_FINISHED_NONE;
     tray->sleep_after_timeout = false;
     tray->countdown_stopping = false;
+    tray->start_on_startup = false;
     tray->sleep_timer = NULL;
     tray->shutdown_timer = NULL;
     
@@ -227,6 +231,10 @@ bool tray_init(NoSleepTray* tray) {
         const char* debug = getenv("NOSLEEP_DEBUG");
         (void)debug; // Suppress unused variable warning
     }
+    
+    // Read startup state from registry
+    tray->start_on_startup = is_startup_enabled();
+    tray_update_startup_menu_item(tray);
     
     return true;
 }
@@ -930,6 +938,8 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(tray->hmenu, MF_STRING, IDM_TOGGLE_STARTUP, "Run at Windows startup");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
     if (debug && strcmp(debug, "1") == 0) {
@@ -2166,6 +2176,95 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     }
 }
 
+static char* get_exe_path(void) {
+    char* path = (char*)malloc(MAX_PATH);
+    if (!path) return NULL;
+    DWORD len = GetModuleFileName(NULL, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        free(path);
+        return NULL;
+    }
+    return path;
+}
+
+static bool is_startup_enabled(void) {
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_READ, &hKey);
+    if (result != ERROR_SUCCESS) return false;
+
+    char* exe_path = get_exe_path();
+    if (!exe_path) {
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    // Build expected registry value: "exe_path" --startup
+    // Need to account for possible quotes around exe path
+    size_t exe_len = strlen(exe_path);
+    size_t expected_len = exe_len + 13;
+    char* expected = (char*)malloc(expected_len);
+    if (!expected) {
+        free(exe_path);
+        RegCloseKey(hKey);
+        return false;
+    }
+    snprintf(expected, expected_len, "\"%s\" --startup", exe_path);
+
+    char reg_value[MAX_PATH + 16] = {0};
+    DWORD value_size = sizeof(reg_value);
+    result = RegQueryValueEx(hKey, "nosleep", NULL, NULL,
+                             (LPBYTE)reg_value, &value_size);
+    RegCloseKey(hKey);
+
+    bool enabled = (result == ERROR_SUCCESS && strcmp(reg_value, expected) == 0);
+    free(exe_path);
+    free(expected);
+    return enabled;
+}
+
+static void set_startup_registry(bool enable) {
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_WRITE, &hKey);
+    if (result != ERROR_SUCCESS) return;
+
+    if (enable) {
+        char* exe_path = get_exe_path();
+        if (exe_path) {
+            // Store as: "exe_path" --startup
+            size_t value_len = strlen(exe_path) + 13;
+            char* value = (char*)malloc(value_len);
+            if (value) {
+                snprintf(value, value_len, "\"%s\" --startup", exe_path);
+                RegSetValueEx(hKey, "nosleep", 0, REG_SZ,
+                              (LPBYTE)value, (DWORD)(strlen(value) + 1));
+                free(value);
+            }
+            free(exe_path);
+        }
+    } else {
+        RegDeleteValue(hKey, "nosleep");
+    }
+
+    RegCloseKey(hKey);
+}
+
+void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
+    if (!tray) return;
+    tray->start_on_startup = enable;
+    set_startup_registry(enable);
+    tray_update_startup_menu_item(tray);
+}
+
+void tray_update_startup_menu_item(NoSleepTray* tray) {
+    if (!tray || !tray->hmenu) return;
+    CheckMenuItem(tray->hmenu, IDM_TOGGLE_STARTUP,
+                  MF_BYCOMMAND | (tray->start_on_startup ? MF_CHECKED : MF_UNCHECKED));
+}
+
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message) {
     if (!tray || !tray->hwnd) return;
     
@@ -2493,6 +2592,18 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray->session_finished_action = SESSION_FINISHED_SLEEP;
                     tray->sleep_after_timeout = true;
                     tray_update_session_finished_menu(tray);
+                    break;
+                case IDM_TOGGLE_STARTUP:
+                    tray_set_startup_enabled(tray, !tray->start_on_startup);
+                    {
+                        char msg[256];
+                        if (tray->start_on_startup) {
+                            sprintf(msg, "nosleep will start automatically at Windows logon");
+                        } else {
+                            sprintf(msg, "nosleep will not start automatically at Windows logon");
+                        }
+                        tray_show_notification(tray, "Startup setting changed", msg);
+                    }
                     break;
             }
             break;

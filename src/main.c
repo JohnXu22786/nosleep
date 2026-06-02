@@ -15,7 +15,8 @@
 static int parse_arguments(int argc, wchar_t* argv[], 
                           int* duration, int* interval,
                           bool* prevent_display, bool* away_mode,
-                          bool* verbose, bool* tray_mode);
+                          bool* verbose, bool* tray_mode,
+                          bool* startup);
 static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose, int duration_minutes);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
@@ -31,6 +32,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     bool away_mode = false;
     bool verbose = false;
     bool tray_mode = false;
+    bool startup = false;
     
     // Parse command line arguments using Windows API
     int argc = 0;
@@ -43,8 +45,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     // Parse arguments
     int parse_result = parse_arguments(argc, argv, &duration, &interval,
-                                      &prevent_display, &away_mode,
-                                      &verbose, &tray_mode);
+                                       &prevent_display, &away_mode,
+                                       &verbose, &tray_mode, &startup);
     
     LocalFree(argv);
     
@@ -77,6 +79,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "  -v, --verbose             Print detailed status to debug output\n"
             "  -t, --tray                Start in system tray mode\n"
             "                            (default if no arguments provided)\n"
+            "  -s, --startup             Start sleep prevention immediately (for Windows startup)\n"
+            "  -h, --help                Show this help message\n"
             "\n"
             "Examples:\n"
             "  nosleep --duration 30 --prevent-display\n"
@@ -88,6 +92,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
     
+    // If --startup was passed and no explicit duration, auto-start indefinitely
+    if (startup && duration < 0) {
+        duration = 0;
+    }
+    
     // Always run tray mode for pure GUI application
     return run_tray_mode(prevent_display, away_mode, verbose, duration);
 }
@@ -97,7 +106,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 static int parse_arguments(int argc, wchar_t* argv[], 
                           int* duration, int* interval,
                           bool* prevent_display, bool* away_mode,
-                          bool* verbose, bool* tray_mode) {
+                          bool* verbose, bool* tray_mode,
+                          bool* startup) {
     // Simple argument parsing (could use getopt or similar, but keep simple for Windows)
     for (int i = 1; i < argc; i++) {
         // Convert wide char to UTF-8 for comparison
@@ -138,6 +148,9 @@ static int parse_arguments(int argc, wchar_t* argv[],
         }
         else if (strcmp(arg, "--tray") == 0 || strcmp(arg, "-t") == 0) {
             *tray_mode = true;
+        }
+        else if (strcmp(arg, "--startup") == 0 || strcmp(arg, "-s") == 0) {
+            if (startup) *startup = true;
         }
         else {
             return 1; // Unknown argument
