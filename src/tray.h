@@ -61,6 +61,7 @@ typedef enum {
 #define IDM_SESSION_FINISHED_SHUTDOWN 1010
 #define IDM_SESSION_FINISHED_SLEEP 1011
 #define IDM_ABOUT                 1012
+#define IDM_TOGGLE_STARTUP       1013
 
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
@@ -98,6 +99,7 @@ typedef struct NoSleepTray {
     HANDLE countdown_stop_event; // Event to signal stop countdown thread
     HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID
+    bool start_on_startup;      // Whether to auto-start at Windows logon
 } NoSleepTray;
 
 // Function prototypes
@@ -114,6 +116,8 @@ void tray_set_duration(NoSleepTray* tray, int minutes);
 void tray_update_icon(NoSleepTray* tray);
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message);
 void tray_update_stop_menu_item(NoSleepTray* tray);
+void tray_update_startup_menu_item(NoSleepTray* tray);
+void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
