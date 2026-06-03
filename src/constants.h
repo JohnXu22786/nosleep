@@ -18,4 +18,6 @@
 #define ES_AWAYMODE_REQUIRED 0x00000040
 #endif
 
+#define CURRENT_VERSION "1.0.0"
+
 #endif // CONSTANTS_H
