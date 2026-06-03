@@ -62,6 +62,8 @@ typedef enum {
 #define IDM_SESSION_FINISHED_SLEEP 1011
 #define IDM_ABOUT                 1012
 #define IDM_TOGGLE_STARTUP       1013
+#define IDM_SETTINGS             1014
+#define IDM_CHECK_UPDATES        1015
 
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
@@ -100,6 +102,9 @@ typedef struct NoSleepTray {
     HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID
     bool start_on_startup;      // Whether to auto-start at Windows logon
+    bool check_updates_on_startup; // Whether to check for updates on startup
+    int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
+    UINT_PTR update_timer_id;   // Timer ID for periodic update checks
 } NoSleepTray;
 
 // Function prototypes
@@ -119,7 +124,16 @@ void tray_update_stop_menu_item(NoSleepTray* tray);
 void tray_update_startup_menu_item(NoSleepTray* tray);
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 
-LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+// Settings
+void tray_load_settings(NoSleepTray* tray);
+void tray_save_settings(NoSleepTray* tray);
+void tray_show_settings_dialog(NoSleepTray* tray);
+
+// About dialog
+void tray_show_about_dialog(NoSleepTray* tray);
+
+// Update checking
+void tray_check_for_updates(NoSleepTray* tray, bool silent);
 
 // Countdown display functions
 void tray_start_countdown(NoSleepTray* tray);  // Start 60-second countdown display

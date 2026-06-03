@@ -8,6 +8,8 @@
 #include <string.h>
 #include <time.h>
 #include <powrprof.h>
+#include <winhttp.h>
+#include <ctype.h>
 
 // Window class name for tray icon
 static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
@@ -57,6 +59,10 @@ static void trigger_system_shutdown(NoSleepTray* tray);
 static char* get_exe_path(void);
 static bool is_startup_enabled(void);
 static void set_startup_registry(bool enable);
+static bool should_check_for_updates(void);
+static void tray_setup_update_timer(NoSleepTray* tray);
+static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 
 NoSleepTray* tray_create(void) {
@@ -235,7 +241,18 @@ bool tray_init(NoSleepTray* tray) {
     // Read startup state from registry
     tray->start_on_startup = is_startup_enabled();
     tray_update_startup_menu_item(tray);
-    
+
+    // Load settings from registry
+    tray_load_settings(tray);
+
+    // Check for updates on startup if enabled
+    if (tray->check_updates_on_startup && should_check_for_updates()) {
+        tray_check_for_updates(tray, true);
+    }
+
+    // Set up periodic update check timer
+    tray_setup_update_timer(tray);
+
     return true;
 }
 
@@ -936,6 +953,9 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(tray->hmenu, MF_STRING, IDM_SETTINGS, "Settings...");
+    AppendMenu(tray->hmenu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
@@ -2252,6 +2272,126 @@ static void set_startup_registry(bool enable) {
     RegCloseKey(hKey);
 }
 
+#define SETTINGS_REG_KEY "Software\\nosleep\\settings"
+
+static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD default_value) {
+    DWORD size = sizeof(DWORD);
+    DWORD data = 0;
+    LONG result = RegQueryValueEx(hKey, name, NULL, NULL, (LPBYTE)&data, &size);
+    if (result == ERROR_SUCCESS) {
+        *value = data;
+    } else {
+        *value = default_value;
+    }
+}
+
+void tray_load_settings(NoSleepTray* tray) {
+    if (!tray) return;
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return;
+
+    DWORD val;
+    settings_read_dword(hKey, "prevent_display", &val, 0);
+    tray->prevent_display = (val != 0);
+
+    settings_read_dword(hKey, "away_mode", &val, 0);
+    tray->away_mode = (val != 0);
+
+    settings_read_dword(hKey, "verbose_logging", &val, 0);
+    tray->verbose = (val != 0);
+
+    settings_read_dword(hKey, "check_updates_on_startup", &val, 1);
+    tray->check_updates_on_startup = (val != 0);
+
+    settings_read_dword(hKey, "auto_check_interval", &val, 1);
+    tray->auto_check_interval = (int)val;
+
+    RegCloseKey(hKey);
+}
+
+void tray_save_settings(NoSleepTray* tray) {
+    if (!tray) return;
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return;
+
+    DWORD val = tray->prevent_display ? 1 : 0;
+    RegSetValueEx(hKey, "prevent_display", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = tray->away_mode ? 1 : 0;
+    RegSetValueEx(hKey, "away_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = tray->verbose ? 1 : 0;
+    RegSetValueEx(hKey, "verbose_logging", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = tray->check_updates_on_startup ? 1 : 0;
+    RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = (DWORD)tray->auto_check_interval;
+    RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    RegCloseKey(hKey);
+}
+
+static void save_last_update_check_time(void) {
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return;
+
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    ULONGLONG time_val = uli.QuadPart;
+    RegSetValueEx(hKey, "last_update_check", 0, REG_QWORD, (LPBYTE)&time_val, sizeof(time_val));
+
+    RegCloseKey(hKey);
+}
+
+static bool should_check_for_updates(void) {
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, KEY_READ, &hKey);
+    if (result != ERROR_SUCCESS) return true;
+
+    DWORD interval = 1;
+    DWORD size = sizeof(DWORD);
+    RegQueryValueEx(hKey, "auto_check_interval", NULL, NULL, (LPBYTE)&interval, &size);
+
+    if (interval == 0) {
+        RegCloseKey(hKey);
+        return false;
+    }
+
+    ULONGLONG last_check = 0;
+    DWORD qsize = sizeof(ULONGLONG);
+    result = RegQueryValueEx(hKey, "last_update_check", NULL, NULL, (LPBYTE)&last_check, &qsize);
+    RegCloseKey(hKey);
+
+    if (result != ERROR_SUCCESS) return true;
+
+    FILETIME ft_now;
+    GetSystemTimeAsFileTime(&ft_now);
+    ULARGE_INTEGER uli_now;
+    uli_now.LowPart = ft_now.dwLowDateTime;
+    uli_now.HighPart = ft_now.dwHighDateTime;
+    ULONGLONG now = uli_now.QuadPart;
+
+    ULONGLONG interval_100ns;
+    if (interval == 1) {
+        interval_100ns = (ULONGLONG)24 * 60 * 60 * 10000000LL;
+    } else {
+        interval_100ns = (ULONGLONG)7 * 24 * 60 * 60 * 10000000LL;
+    }
+
+    return (now - last_check) >= interval_100ns;
+}
+
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
     if (!tray) return;
     tray->start_on_startup = enable;
@@ -2450,6 +2590,495 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     return result;
 }
 
+// Settings dialog control IDs
+#define IDC_PREVENT_DISPLAY      2001
+#define IDC_AWAY_MODE            2002
+#define IDC_AUTO_START           2003
+#define IDC_VERBOSE_LOGGING      2004
+#define IDC_CHECK_UPDATES_STARTUP 2005
+#define IDC_AUTO_CHECK_INTERVAL  2006
+#define IDC_SETTINGS_OK          2007
+#define IDC_SETTINGS_CANCEL      2008
+
+static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static NoSleepTray* settings_tray = NULL;
+    static HWND hIntervalCombo = NULL;
+
+    switch (msg) {
+        case WM_CREATE:
+        {
+            CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+            settings_tray = (NoSleepTray*)cs->lpCreateParams;
+            if (!settings_tray) return -1;
+
+            HINSTANCE hInst = GetModuleHandle(NULL);
+            int y = 20;
+
+            CreateWindowEx(0, "BUTTON", "Prevent display sleep",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 220, 25, hwnd, (HMENU)IDC_PREVENT_DISPLAY, hInst, NULL);
+            if (settings_tray->prevent_display) {
+                SendDlgItemMessage(hwnd, IDC_PREVENT_DISPLAY, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "Enable away mode",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 220, 25, hwnd, (HMENU)IDC_AWAY_MODE, hInst, NULL);
+            if (settings_tray->away_mode) {
+                SendDlgItemMessage(hwnd, IDC_AWAY_MODE, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "Auto-start with Windows",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 220, 25, hwnd, (HMENU)IDC_AUTO_START, hInst, NULL);
+            if (settings_tray->start_on_startup) {
+                SendDlgItemMessage(hwnd, IDC_AUTO_START, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "Enable verbose logging",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 220, 25, hwnd, (HMENU)IDC_VERBOSE_LOGGING, hInst, NULL);
+            if (settings_tray->verbose) {
+                SendDlgItemMessage(hwnd, IDC_VERBOSE_LOGGING, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "Check for updates on startup",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 220, 25, hwnd, (HMENU)IDC_CHECK_UPDATES_STARTUP, hInst, NULL);
+            if (settings_tray->check_updates_on_startup) {
+                SendDlgItemMessage(hwnd, IDC_CHECK_UPDATES_STARTUP, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "STATIC", "Auto check updates interval:",
+                WS_CHILD | WS_VISIBLE,
+                20, y, 180, 20, hwnd, NULL, hInst, NULL);
+            y += 22;
+
+            hIntervalCombo = CreateWindowEx(WS_EX_CLIENTEDGE, "COMBOBOX", NULL,
+                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+                20, y, 180, 80, hwnd, (HMENU)IDC_AUTO_CHECK_INTERVAL, hInst, NULL);
+            if (hIntervalCombo) {
+                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Never");
+                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Daily");
+                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Weekly");
+                int idx = settings_tray->auto_check_interval;
+                if (idx < 0) idx = 0;
+                if (idx > 2) idx = 2;
+                SendMessage(hIntervalCombo, CB_SETCURSEL, (WPARAM)idx, 0);
+            }
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "OK",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                40, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
+
+            CreateWindowEx(0, "BUTTON", "Cancel",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                140, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
+
+            RECT rc;
+            GetWindowRect(hwnd, &rc);
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+            int x = (screenWidth - (rc.right - rc.left)) / 2;
+            int yy = (screenHeight - (rc.bottom - rc.top)) / 2;
+            SetWindowPos(hwnd, NULL, x, yy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+            return 0;
+        }
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDC_SETTINGS_OK:
+                {
+                    if (!settings_tray) break;
+                    settings_tray->prevent_display = (SendDlgItemMessage(hwnd, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    settings_tray->away_mode = (SendDlgItemMessage(hwnd, IDC_AWAY_MODE, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    bool auto_start = (SendDlgItemMessage(hwnd, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    if (auto_start != settings_tray->start_on_startup) {
+                        tray_set_startup_enabled(settings_tray, auto_start);
+                    }
+                    settings_tray->verbose = (SendDlgItemMessage(hwnd, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    settings_tray->check_updates_on_startup = (SendDlgItemMessage(hwnd, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    if (hIntervalCombo) {
+                        int sel = (int)SendMessage(hIntervalCombo, CB_GETCURSEL, 0, 0);
+                        if (sel != CB_ERR) {
+                            settings_tray->auto_check_interval = sel;
+                        }
+                    }
+                    tray_save_settings(settings_tray);
+                    DestroyWindow(hwnd);
+                    break;
+                }
+                case IDC_SETTINGS_CANCEL:
+                    DestroyWindow(hwnd);
+                    break;
+            }
+            break;
+
+        case WM_DESTROY:
+            settings_tray = NULL;
+            hIntervalCombo = NULL;
+            PostQuitMessage(0);
+            break;
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            break;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+void tray_show_settings_dialog(NoSleepTray* tray) {
+    if (!tray) return;
+
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+
+    WNDCLASS wc = {0};
+    wc.lpfnWndProc = settings_dialog_proc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "NoSleepSettingsDialog";
+
+    RegisterClass(&wc);
+
+    HWND hwndDlg = CreateWindowEx(
+        0, "NoSleepSettingsDialog", "nosleep Settings",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+        CW_USEDEFAULT, CW_USEDEFAULT, 270, 310,
+        tray->hwnd, NULL, hInstance, (LPVOID)tray
+    );
+
+    if (hwndDlg) {
+        ShowWindow(hwndDlg, SW_SHOW);
+
+        MSG msg;
+        while (GetMessage(&msg, NULL, 0, 0)) {
+            if (!IsDialogMessage(hwndDlg, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+    }
+
+    UnregisterClass("NoSleepSettingsDialog", hInstance);
+}
+
+void tray_show_about_dialog(NoSleepTray* tray) {
+    if (!tray) return;
+
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+    int result = 0;
+
+    WNDCLASS wc = {0};
+    wc.lpfnWndProc = about_dialog_proc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "NoSleepAboutDialog";
+    RegisterClass(&wc);
+
+    HWND hwndDlg = CreateWindowEx(
+        0, "NoSleepAboutDialog", "About nosleep",
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+        CW_USEDEFAULT, CW_USEDEFAULT, 380, 240,
+        tray->hwnd, NULL, hInstance, (LPVOID)&result
+    );
+
+    if (hwndDlg) {
+        ShowWindow(hwndDlg, SW_SHOW);
+
+        MSG msg;
+        while (GetMessage(&msg, NULL, 0, 0)) {
+            if (!IsDialogMessage(hwndDlg, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+    }
+
+    UnregisterClass("NoSleepAboutDialog", hInstance);
+
+    if (result == 1) {
+        tray_check_for_updates(tray, false);
+    }
+}
+
+// About dialog control IDs
+#define IDC_ABOUT_CHECK_UPDATES 3001
+#define IDC_ABOUT_OK            3002
+
+static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static int* pResult = NULL;
+
+    switch (msg) {
+        case WM_CREATE:
+        {
+            CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
+            pResult = (int*)cs->lpCreateParams;
+            if (pResult) *pResult = 0;
+
+            HINSTANCE hInst = GetModuleHandle(NULL);
+            int y = 15;
+
+            char line1[128];
+            snprintf(line1, sizeof(line1), "nosleep v" CURRENT_VERSION);
+            CreateWindowEx(0, "STATIC", line1,
+                WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
+            y += 25;
+
+            CreateWindowEx(0, "STATIC", "A lightweight Windows utility that prevents system sleep",
+                WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
+            y += 22;
+
+            CreateWindowEx(0, "STATIC", "License: GPL v3",
+                WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
+            y += 22;
+
+            char build_info[128];
+            snprintf(build_info, sizeof(build_info), "Built: %s %s", __DATE__, __TIME__);
+            CreateWindowEx(0, "STATIC", build_info,
+                WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
+            y += 30;
+
+            CreateWindowEx(0, "BUTTON", "Check for Updates...",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                20, y, 160, 28, hwnd, (HMENU)IDC_ABOUT_CHECK_UPDATES, hInst, NULL);
+
+            CreateWindowEx(0, "BUTTON", "OK",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                200, y, 140, 28, hwnd, (HMENU)IDC_ABOUT_OK, hInst, NULL);
+
+            RECT rc;
+            GetWindowRect(hwnd, &rc);
+            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+            int x = (screenWidth - (rc.right - rc.left)) / 2;
+            int yy = (screenHeight - (rc.bottom - rc.top)) / 2;
+            SetWindowPos(hwnd, NULL, x, yy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+            return 0;
+        }
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDC_ABOUT_CHECK_UPDATES:
+                    if (pResult) *pResult = 1;
+                    DestroyWindow(hwnd);
+                    return TRUE;
+                case IDC_ABOUT_OK:
+                    if (pResult) *pResult = 0;
+                    DestroyWindow(hwnd);
+                    return TRUE;
+            }
+            break;
+
+        case WM_DESTROY:
+            pResult = NULL;
+            PostQuitMessage(0);
+            break;
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            break;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// Update checking
+void tray_check_for_updates(NoSleepTray* tray, bool silent) {
+    if (!tray) return;
+
+    const char* debug = getenv("NOSLEEP_DEBUG");
+
+    HINTERNET hSession = WinHttpOpen(L"nosleep-updater/1.0",
+        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
+    if (!hSession) {
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not initialize network");
+        }
+        return;
+    }
+
+    HINTERNET hConnect = WinHttpConnect(hSession, L"api.github.com",
+        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    if (!hConnect) {
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not connect to server");
+        }
+        return;
+    }
+
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
+        L"/repos/JohnXu22786/nosleep/releases/latest", NULL, NULL, NULL,
+        WINHTTP_FLAG_SECURE);
+    if (!hRequest) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not create request");
+        }
+        return;
+    }
+
+    BOOL sent = WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0);
+    if (!sent) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not send request");
+        }
+        return;
+    }
+
+    BOOL received = WinHttpReceiveResponse(hRequest, NULL);
+    if (!received) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not receive response");
+        }
+        return;
+    }
+
+    DWORD status_code = 0;
+    DWORD status_size = sizeof(status_code);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        NULL, &status_code, &status_size, NULL);
+
+    if (status_code != 200) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Server returned status %lu", status_code);
+            tray_show_notification(tray, "Update Check Failed", msg);
+        }
+        return;
+    }
+
+    DWORD content_length = 0;
+    DWORD cl_size = sizeof(content_length);
+    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+        NULL, &content_length, &cl_size, NULL);
+
+    DWORD total_read = 0;
+    DWORD buffer_size = 4096;
+    if (content_length > 0) {
+        buffer_size = content_length + 1;
+    } else {
+        buffer_size = 8192;
+    }
+
+    char* response = (char*)malloc(buffer_size);
+    if (!response) {
+        WinHttpCloseHandle(hRequest);
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Out of memory");
+        }
+        return;
+    }
+    memset(response, 0, buffer_size);
+
+    DWORD bytes_read = 0;
+    while (WinHttpReadData(hRequest, response + total_read, buffer_size - total_read - 1, &bytes_read) && bytes_read > 0) {
+        total_read += bytes_read;
+        if (total_read >= buffer_size - 1) {
+            buffer_size *= 2;
+            char* new_response = (char*)realloc(response, buffer_size);
+            if (!new_response) break;
+            response = new_response;
+            memset(response + total_read, 0, buffer_size - total_read);
+        }
+    }
+    response[total_read] = '\0';
+
+    WinHttpCloseHandle(hRequest);
+    WinHttpCloseHandle(hConnect);
+    WinHttpCloseHandle(hSession);
+
+    save_last_update_check_time();
+
+    // Parse JSON for "tag_name"
+    char* tag = strstr(response, "\"tag_name\"");
+    char latest_version[64] = "";
+    if (tag) {
+        char* quote1 = strchr(tag + 10, '"');
+        if (quote1) {
+            char* quote2 = strchr(quote1 + 1, '"');
+            if (quote2) {
+                size_t len = (size_t)(quote2 - quote1 - 1);
+                if (len > 0 && len < sizeof(latest_version)) {
+                    strncpy(latest_version, quote1 + 1, len);
+                    latest_version[len] = '\0';
+                }
+            }
+        }
+    }
+
+    free(response);
+
+    if (latest_version[0] == '\0') {
+        if (!silent) {
+            tray_show_notification(tray, "Update Check Failed", "Could not parse version info");
+        }
+        return;
+    }
+
+    // Strip leading 'v' if present
+    const char* remote_ver = latest_version;
+    if (remote_ver[0] == 'v' || remote_ver[0] == 'V') {
+        remote_ver++;
+    }
+
+    if (strcmp(remote_ver, CURRENT_VERSION) > 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Version %s is available!\nYou have v" CURRENT_VERSION, latest_version);
+        tray_show_notification(tray, "Update Available", msg);
+    } else {
+        if (!silent) {
+            tray_show_notification(tray, "No Updates", "You are running the latest version (v" CURRENT_VERSION ")");
+        }
+        if (debug) {
+            fprintf(stderr, "[nosleep] Update check: current=%s, latest=%s - up to date\n", CURRENT_VERSION, latest_version);
+        }
+    }
+}
+
+static void tray_setup_update_timer(NoSleepTray* tray) {
+    if (!tray || !tray->hwnd) return;
+
+    if (tray->update_timer_id) {
+        KillTimer(tray->hwnd, tray->update_timer_id);
+        tray->update_timer_id = 0;
+    }
+
+    if (tray->auto_check_interval == 0) return;
+
+    UINT interval_ms;
+    if (tray->auto_check_interval == 1) {
+        interval_ms = 24 * 60 * 60 * 1000;
+    } else {
+        interval_ms = 7 * 24 * 60 * 60 * 1000;
+    }
+
+    tray->update_timer_id = SetTimer(tray->hwnd, 1002, interval_ms, NULL);
+}
+
 
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2554,16 +3183,13 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     DestroyWindow(hwnd);
                     break;
                 case IDM_ABOUT:
-                {
-                    char about_text[512];
-                    snprintf(about_text, sizeof(about_text),
-                        "nosleep v" VERSION_STR "\n\n"
-                        "Prevent Windows from sleeping using\n"
-                        "SetThreadExecutionState API\n\n"
-                        "License: GPL v3\n"
-                        "Copyright \xA9 2024-2026");
-                    MessageBox(hwnd, about_text, "About nosleep", MB_OK | MB_ICONINFORMATION);
-                }
+                    tray_show_about_dialog(tray);
+                    break;
+                case IDM_SETTINGS:
+                    tray_show_settings_dialog(tray);
+                    break;
+                case IDM_CHECK_UPDATES:
+                    tray_check_for_updates(tray, false);
                     break;
                 case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
                     // Backward compatibility: toggle between SLEEP and NONE
@@ -2613,6 +3239,11 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 KillTimer(hwnd, TIMER_ID_AUTO_START);
                 printf("Auto-starting 1 minute nosleep (testing)\n"); fflush(stdout);
                 tray_start_nosleep(tray, 1); // 1 minute for testing
+            } else if (wParam == 1002) {
+                // Periodic update check timer
+                if (tray) {
+                    tray_check_for_updates(tray, true);
+                }
             }
             break;
             
