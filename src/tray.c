@@ -62,6 +62,7 @@ static void set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
 static void tray_setup_update_timer(NoSleepTray* tray);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void tray_update_notification_menu(NoSleepTray* tray);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 
@@ -80,6 +81,7 @@ NoSleepTray* tray_create(void) {
     tray->sleep_after_timeout = false;
     tray->countdown_stopping = false;
     tray->start_on_startup = false;
+    tray->notification_mode = NOTIFY_ALL;
     tray->sleep_timer = NULL;
     tray->shutdown_timer = NULL;
     
@@ -230,7 +232,7 @@ bool tray_init(NoSleepTray* tray) {
     }
     
     // Show notification balloon
-    tray_show_notification(tray, "nosleep started", "System tray icon created");
+    tray_show_notification(tray, "nosleep started", "System tray icon created", false);
     
     // Auto-start test duration if NOSLEEP_DEBUG=1 or 2
     {
@@ -961,6 +963,17 @@ static void tray_create_menu(NoSleepTray* tray) {
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_TOGGLE_STARTUP, "Run at Windows startup");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    
+    // Notifications submenu
+    HMENU hNotifyMenu = CreatePopupMenu();
+    if (hNotifyMenu) {
+        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_ALL ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_ALL, "Show all notifications");
+        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_CRITICAL_ONLY ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_CRITICAL, "Show only critical notifications");
+        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_NONE, "Suppress all notifications");
+    }
+    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hNotifyMenu, "Notifications");
+    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    
     AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
     if (debug && strcmp(debug, "1") == 0) {
         printf("[nosleep] tray_create_menu: Menu created successfully\n"); fflush(stdout);
@@ -995,9 +1008,9 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     if (duration_minutes > 0) {
         char message[256];
         sprintf(message, "Preventing system sleep for %d minutes", duration_minutes);
-        tray_show_notification(tray, "Starting", message);
+        tray_show_notification(tray, "Starting", message, false);
     } else {
-        tray_show_notification(tray, "Starting", "Preventing system sleep indefinitely");
+        tray_show_notification(tray, "Starting", "Preventing system sleep indefinitely", false);
     }
     
     // Start nosleep thread
@@ -1010,7 +1023,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         // Thread creation failed, restore state and notify user
         ATOMIC_STORE_BOOL(&tray->is_running, false);
         tray->duration_minutes = -1;
-        tray_show_notification(tray, "Error", "Failed to create nosleep thread");
+        tray_show_notification(tray, "Error", "Failed to create nosleep thread", true);
         return;
     }
     
@@ -1027,7 +1040,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             
             char error_msg[256];
             sprintf(error_msg, "Failed to create timer thread. Error code: %lu", GetLastError());
-            tray_show_notification(tray, "Error", error_msg);
+            tray_show_notification(tray, "Error", error_msg, true);
             return;
         }
     }
@@ -1163,9 +1176,9 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
                 fprintf(stderr, "[nosleep] tray_stop_nosleep: showing countdown cancellation notification\n");
             }
             if (countdown_action == SESSION_FINISHED_SHUTDOWN) {
-                tray_show_notification(tray, "Shutdown cancelled", "System shutdown has been cancelled");
+                tray_show_notification(tray, "Shutdown cancelled", "System shutdown has been cancelled", true);
             } else {
-                tray_show_notification(tray, "Sleep cancelled", "System sleep has been cancelled");
+                tray_show_notification(tray, "Sleep cancelled", "System sleep has been cancelled", true);
             }
         } else if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
             // Timer expired (nosleep session finished naturally)
@@ -1177,7 +1190,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
             } else {
                 sprintf(message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
             }
-            tray_show_notification(tray, "Time's up!", message);
+            tray_show_notification(tray, "Time's up!", message, false);
         } else {
             // Nosleep session manually stopped
             if (debug && strcmp(debug, "1") == 0) {
@@ -1188,7 +1201,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
             } else {
                 sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
             }
-            tray_show_notification(tray, "Stopped", message);
+            tray_show_notification(tray, "Stopped", message, false);
         }
     } else {
         if (debug && strcmp(debug, "1") == 0) {
@@ -1308,12 +1321,12 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: failed to create sleep timer thread\n");
                         }
                         // Show error notification
-                        tray_show_notification(tray, "Error", "Failed to start sleep timer");
+                        tray_show_notification(tray, "Error", "Failed to start sleep timer", true);
                     } else {
                         // Show notification about delayed sleep
                         char sleep_message[512];
                         sprintf(sleep_message, "%s\nSystem will sleep in 60 seconds...", duration_message);
-                        tray_show_notification(tray, "Time's up!", sleep_message);
+                        tray_show_notification(tray, "Time's up!", sleep_message, true);
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: delayed sleep thread created successfully\n");
                         }
@@ -1338,12 +1351,12 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: failed to create shutdown timer thread\n");
                         }
                         // Show error notification
-                        tray_show_notification(tray, "Error", "Failed to start shutdown timer");
+                        tray_show_notification(tray, "Error", "Failed to start shutdown timer", true);
                     } else {
                         // Show notification about delayed shutdown
                         char shutdown_message[512];
                         sprintf(shutdown_message, "%s\nSystem will shut down in 60 seconds...", duration_message);
-                        tray_show_notification(tray, "Time's up!", shutdown_message);
+                        tray_show_notification(tray, "Time's up!", shutdown_message, true);
                         if (debug && strcmp(debug, "1") == 0) {
                             fprintf(stderr, "[nosleep] tray_duration_timer: delayed shutdown thread created successfully\n");
                         }
@@ -1380,7 +1393,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     // Create NoSleep instance
     NoSleep* ns = nosleep_create();
     if (!ns) {
-        tray_show_notification(tray, "Error", "Failed to create NoSleep instance");
+        tray_show_notification(tray, "Error", "Failed to create NoSleep instance", true);
         return 1;
     }
     
@@ -1465,7 +1478,7 @@ static void trigger_system_sleep(NoSleepTray* tray) {
         }
         
         // Both methods failed, show notification to user
-        tray_show_notification(tray, "Sleep Failed", "Failed to put system to sleep. Check power settings.");
+        tray_show_notification(tray, "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
     }
 }
 
@@ -1535,7 +1548,7 @@ static void trigger_system_shutdown(NoSleepTray* tray) {
     }
     
     // Show notification to user
-    tray_show_notification(tray, "Shutdown Failed", "Failed to shut down system. Check permissions.");
+    tray_show_notification(tray, "Shutdown Failed", "Failed to shut down system. Check permissions.", true);
 }
 
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
@@ -2405,8 +2418,22 @@ void tray_update_startup_menu_item(NoSleepTray* tray) {
                   MF_BYCOMMAND | (tray->start_on_startup ? MF_CHECKED : MF_UNCHECKED));
 }
 
-void tray_show_notification(NoSleepTray* tray, const char* title, const char* message) {
+static void tray_update_notification_menu(NoSleepTray* tray) {
+    if (!tray || !tray->hmenu) return;
+    CheckMenuItem(tray->hmenu, IDM_NOTIFY_ALL,
+                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_ALL ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(tray->hmenu, IDM_NOTIFY_CRITICAL,
+                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_CRITICAL_ONLY ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(tray->hmenu, IDM_NOTIFY_NONE,
+                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_NONE ? MF_CHECKED : MF_UNCHECKED));
+}
+
+void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical) {
     if (!tray || !tray->hwnd) return;
+    
+    // Check notification mode
+    if (tray->notification_mode == NOTIFY_NONE) return;
+    if (tray->notification_mode == NOTIFY_CRITICAL_ONLY && !critical) return;
     
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug) {
@@ -3228,8 +3255,20 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         } else {
                             sprintf(msg, "nosleep will not start automatically at Windows logon");
                         }
-                        tray_show_notification(tray, "Startup setting changed", msg);
+                        tray_show_notification(tray, "Startup setting changed", msg, false);
                     }
+                    break;
+                case IDM_NOTIFY_ALL:
+                    tray->notification_mode = NOTIFY_ALL;
+                    tray_update_notification_menu(tray);
+                    break;
+                case IDM_NOTIFY_CRITICAL:
+                    tray->notification_mode = NOTIFY_CRITICAL_ONLY;
+                    tray_update_notification_menu(tray);
+                    break;
+                case IDM_NOTIFY_NONE:
+                    tray->notification_mode = NOTIFY_NONE;
+                    tray_update_notification_menu(tray);
                     break;
             }
             break;
@@ -3291,7 +3330,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         }
                         
                         // Show notification
-                        tray_show_notification(tray, "Sleep Detected", "System sleep cancelled all pending actions");
+                        tray_show_notification(tray, "Sleep Detected", "System sleep cancelled all pending actions", false);
                         break;
                         
                     case PBT_APMRESUMESUSPEND:
