@@ -2457,8 +2457,6 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
-
-
 // Simple input dialog window procedure
 static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hEdit = NULL;
@@ -2930,7 +2928,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) {
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not initialize network");
+            tray_show_notification(tray, "Update Check Failed", "Could not initialize network", false);
         }
         return;
     }
@@ -2940,7 +2938,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not connect to server");
+            tray_show_notification(tray, "Update Check Failed", "Could not connect to server", false);
         }
         return;
     }
@@ -2952,7 +2950,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not create request");
+            tray_show_notification(tray, "Update Check Failed", "Could not create request", false);
         }
         return;
     }
@@ -2963,7 +2961,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not send request");
+            tray_show_notification(tray, "Update Check Failed", "Could not send request", false);
         }
         return;
     }
@@ -2974,7 +2972,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not receive response");
+            tray_show_notification(tray, "Update Check Failed", "Could not receive response", false);
         }
         return;
     }
@@ -2991,7 +2989,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         if (!silent) {
             char msg[128];
             snprintf(msg, sizeof(msg), "Server returned status %lu", status_code);
-            tray_show_notification(tray, "Update Check Failed", msg);
+            tray_show_notification(tray, "Update Check Failed", msg, false);
         }
         return;
     }
@@ -3015,7 +3013,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Out of memory");
+            tray_show_notification(tray, "Update Check Failed", "Out of memory", false);
         }
         return;
     }
@@ -3061,7 +3059,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
 
     if (latest_version[0] == '\0') {
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not parse version info");
+            tray_show_notification(tray, "Update Check Failed", "Could not parse version info", false);
         }
         return;
     }
@@ -3075,10 +3073,10 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     if (strcmp(remote_ver, CURRENT_VERSION) > 0) {
         char msg[256];
         snprintf(msg, sizeof(msg), "Version %s is available!\nYou have v" CURRENT_VERSION, latest_version);
-        tray_show_notification(tray, "Update Available", msg);
+        tray_show_notification(tray, "Update Available", msg, false);
     } else {
         if (!silent) {
-            tray_show_notification(tray, "No Updates", "You are running the latest version (v" CURRENT_VERSION ")");
+            tray_show_notification(tray, "No Updates", "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
         if (debug) {
             fprintf(stderr, "[nosleep] Update check: current=%s, latest=%s - up to date\n", CURRENT_VERSION, latest_version);
