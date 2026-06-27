@@ -61,12 +61,8 @@ typedef enum {
 #define IDM_SESSION_FINISHED_SHUTDOWN 1010
 #define IDM_SESSION_FINISHED_SLEEP 1011
 #define IDM_ABOUT                 1012
-#define IDM_TOGGLE_STARTUP       1013
 #define IDM_SETTINGS             1014
 #define IDM_CHECK_UPDATES        1015
-#define IDM_NOTIFY_ALL           1017
-#define IDM_NOTIFY_CRITICAL      1018
-#define IDM_NOTIFY_NONE          1019
 
 // Notification mode
 #define NOTIFY_ALL 0
@@ -130,7 +126,6 @@ void tray_set_duration(NoSleepTray* tray, int minutes);
 void tray_update_icon(NoSleepTray* tray);
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical);
 void tray_update_stop_menu_item(NoSleepTray* tray);
-void tray_update_startup_menu_item(NoSleepTray* tray);
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 
 // Settings
