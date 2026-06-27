@@ -1,0 +1,37 @@
+name: CI
+run-name: CI ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install MinGW cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
+      - name: Build
+        run: make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres
+
+      - name: Verify binary exists
+        run: |
+          if [ -f bin/nosleep.exe ]; then
+            echo "Binary successfully built: bin/nosleep.exe"
+            file bin/nosleep.exe
+          else
+            echo "ERROR: Binary not found"
+            exit 1
+          fi

@@ -18,6 +18,11 @@
 #define ES_AWAYMODE_REQUIRED 0x00000040
 #endif
 
-#define CURRENT_VERSION "1.0.0"
+// VERSION_STR is injected by build system (e.g., -DVERSION_STR=\"1.2.3\")
+// Fallback when not compiled with VERSION_STR defined
+#ifndef VERSION_STR
+#define VERSION_STR "1.0.0"
+#endif
+#define CURRENT_VERSION VERSION_STR
 
 #endif // CONSTANTS_H
