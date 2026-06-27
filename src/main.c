@@ -20,6 +20,9 @@ static int parse_arguments(int argc, wchar_t* argv[],
 static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose, int duration_minutes);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    // Enable DPI awareness for proper font rendering on high-DPI displays
+    SetProcessDPIAware();
+    
     // Suppress unused parameter warnings
     (void)hInstance;
     (void)hPrevInstance;

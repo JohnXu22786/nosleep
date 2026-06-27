@@ -62,8 +62,30 @@ static void set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
 static void tray_setup_update_timer(NoSleepTray* tray);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-static void tray_update_notification_menu(NoSleepTray* tray);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// Font helper: creates a high-quality ClearType font for dialog controls
+static HFONT create_dialog_font(int font_size) {
+    // Try Segoe UI first (modern Windows UI font), fall back to default
+    HFONT hFont = CreateFont(font_size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                             CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
+    if (!hFont) {
+        hFont = CreateFont(font_size, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, NULL);
+    }
+    return hFont;
+}
+
+// Callback to apply a font to all child controls of a dialog
+static BOOL CALLBACK set_child_font_proc(HWND hwndChild, LPARAM lParam) {
+    HFONT hFont = (HFONT)lParam;
+    if (hFont) {
+        SendMessage(hwndChild, WM_SETFONT, (WPARAM)hFont, TRUE);
+    }
+    return TRUE;
+}
 
 
 NoSleepTray* tray_create(void) {
@@ -242,7 +264,6 @@ bool tray_init(NoSleepTray* tray) {
     
     // Read startup state from registry
     tray->start_on_startup = is_startup_enabled();
-    tray_update_startup_menu_item(tray);
 
     // Load settings from registry
     tray_load_settings(tray);
@@ -950,30 +971,23 @@ static void tray_create_menu(NoSleepTray* tray) {
             break;
     }
     
+    // Build main menu
+    // 1. Primary actions first (When finished, Set Duration)
+    // 2. Stop (no separator between Set Duration and Stop)
+    // 3. --- separator ---
+    // 4. Settings, Check for Updates, About (grouped together)
+    // 5. --- separator ---
+    // 6. Exit
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, finished_text);
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    // Group: Settings, Check for Updates, About
     AppendMenu(tray->hmenu, MF_STRING, IDM_SETTINGS, "Settings...");
     AppendMenu(tray->hmenu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
     AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About");
     AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(tray->hmenu, MF_STRING, IDM_TOGGLE_STARTUP, "Run at Windows startup");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
-    
-    // Notifications submenu
-    HMENU hNotifyMenu = CreatePopupMenu();
-    if (hNotifyMenu) {
-        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_ALL ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_ALL, "Show all notifications");
-        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_CRITICAL_ONLY ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_CRITICAL, "Show only critical notifications");
-        AppendMenu(hNotifyMenu, MF_STRING | (tray->notification_mode == NOTIFY_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_NOTIFY_NONE, "Suppress all notifications");
-    }
-    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hNotifyMenu, "Notifications");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
-    
     AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
     if (debug && strcmp(debug, "1") == 0) {
         printf("[nosleep] tray_create_menu: Menu created successfully\n"); fflush(stdout);
@@ -2167,8 +2181,8 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
         fprintf(stderr, "[nosleep] tray_update_session_finished_menu: action=%d\n", tray->session_finished_action);
     }
     
-    // Get the When finished submenu (position 0 in main menu)
-    HMENU hSubMenu = GetSubMenu(tray->hmenu, 0);
+    // Get the When finished submenu (position 1 in main menu, after Set Duration at position 0)
+    HMENU hSubMenu = GetSubMenu(tray->hmenu, 1);
     if (!hSubMenu) return;
     
     // Update checkmarks for all three radio items in the submenu
@@ -2201,8 +2215,8 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     mii.fMask = MIIM_STRING;
     mii.dwTypeData = finished_text;
     
-    // Update the main menu item (position 0)
-    SetMenuItemInfo(tray->hmenu, 0, TRUE, &mii);
+    // Update the main menu item (position 1 = When finished submenu)
+    SetMenuItemInfo(tray->hmenu, 1, TRUE, &mii);
     
     if (debug && strcmp(debug, "1") == 0) {
         fprintf(stderr, "[nosleep] tray_update_session_finished_menu: updated to '%s'\n", finished_text);
@@ -2321,6 +2335,9 @@ void tray_load_settings(NoSleepTray* tray) {
     settings_read_dword(hKey, "auto_check_interval", &val, 1);
     tray->auto_check_interval = (int)val;
 
+    settings_read_dword(hKey, "notification_mode", &val, (DWORD)NOTIFY_ALL);
+    tray->notification_mode = (int)val;
+
     RegCloseKey(hKey);
 }
 
@@ -2345,6 +2362,9 @@ void tray_save_settings(NoSleepTray* tray) {
 
     val = (DWORD)tray->auto_check_interval;
     RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = (DWORD)tray->notification_mode;
+    RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
 
     RegCloseKey(hKey);
 }
@@ -2409,23 +2429,6 @@ void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
     if (!tray) return;
     tray->start_on_startup = enable;
     set_startup_registry(enable);
-    tray_update_startup_menu_item(tray);
-}
-
-void tray_update_startup_menu_item(NoSleepTray* tray) {
-    if (!tray || !tray->hmenu) return;
-    CheckMenuItem(tray->hmenu, IDM_TOGGLE_STARTUP,
-                  MF_BYCOMMAND | (tray->start_on_startup ? MF_CHECKED : MF_UNCHECKED));
-}
-
-static void tray_update_notification_menu(NoSleepTray* tray) {
-    if (!tray || !tray->hmenu) return;
-    CheckMenuItem(tray->hmenu, IDM_NOTIFY_ALL,
-                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_ALL ? MF_CHECKED : MF_UNCHECKED));
-    CheckMenuItem(tray->hmenu, IDM_NOTIFY_CRITICAL,
-                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_CRITICAL_ONLY ? MF_CHECKED : MF_UNCHECKED));
-    CheckMenuItem(tray->hmenu, IDM_NOTIFY_NONE,
-                  MF_BYCOMMAND | (tray->notification_mode == NOTIFY_NONE ? MF_CHECKED : MF_UNCHECKED));
 }
 
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical) {
@@ -2461,6 +2464,7 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
 static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hEdit = NULL;
     static int* pResult = NULL;
+    static HFONT hInputFont = NULL;
     
     switch (msg) {
         case WM_CREATE:
@@ -2487,12 +2491,10 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     hwnd, NULL, GetModuleHandle(NULL), NULL);
                 
                 if (hEdit) {
-                    // Set font
-                    HFONT hFont = CreateFont(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                            DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
-                    if (hFont) {
-                        SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+                    // Set font with ClearType quality for high-resolution rendering
+                    hInputFont = create_dialog_font(14);
+                    if (hInputFont) {
+                        SendMessage(hEdit, WM_SETFONT, (WPARAM)hInputFont, TRUE);
                     }
                     
                     // Limit input to 4 characters
@@ -2532,6 +2534,10 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             break;
             
         case WM_DESTROY:
+            if (hInputFont) {
+                DeleteObject(hInputFont);
+                hInputFont = NULL;
+            }
             PostQuitMessage(0);
             break;
             
@@ -2597,6 +2603,14 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
         20, 10, 180, 20,
         hwndDlg, NULL, hInstance, NULL);
     
+    // Apply high-quality ClearType font to all dialog controls
+    HFONT dlgFont = create_dialog_font(14);
+    if (dlgFont) {
+        EnumChildWindows(hwndDlg, set_child_font_proc, (LPARAM)dlgFont);
+        // Store font handle on window for cleanup in WM_DESTROY
+        SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)dlgFont);
+    }
+    
     // Show dialog
     ShowWindow(hwndDlg, SW_SHOW);
     
@@ -2610,6 +2624,9 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     }
     
     // Cleanup
+    if (dlgFont) {
+        DeleteObject(dlgFont);
+    }
     UnregisterClass("NoSleepInputDialog", hInstance);
     
     return result;
@@ -2624,6 +2641,9 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_AUTO_CHECK_INTERVAL  2006
 #define IDC_SETTINGS_OK          2007
 #define IDC_SETTINGS_CANCEL      2008
+#define IDC_NOTIFY_ALL           2009
+#define IDC_NOTIFY_CRITICAL      2010
+#define IDC_NOTIFY_NONE          2011
 
 static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* settings_tray = NULL;
@@ -2698,6 +2718,36 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             }
             y += 30;
 
+            // Notification mode: group label
+            CreateWindowEx(0, "STATIC", "Notifications:",
+                WS_CHILD | WS_VISIBLE,
+                20, y, 220, 20, hwnd, NULL, hInst, NULL);
+            y += 20;
+
+            CreateWindowEx(0, "BUTTON", "Show all notifications",
+                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP,
+                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_ALL, hInst, NULL);
+            if (settings_tray->notification_mode == NOTIFY_ALL) {
+                SendDlgItemMessage(hwnd, IDC_NOTIFY_ALL, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 24;
+
+            CreateWindowEx(0, "BUTTON", "Show only critical notifications",
+                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP,
+                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_CRITICAL, hInst, NULL);
+            if (settings_tray->notification_mode == NOTIFY_CRITICAL_ONLY) {
+                SendDlgItemMessage(hwnd, IDC_NOTIFY_CRITICAL, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 24;
+
+            CreateWindowEx(0, "BUTTON", "Suppress all notifications",
+                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP,
+                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_NONE, hInst, NULL);
+            if (settings_tray->notification_mode == NOTIFY_NONE) {
+                SendDlgItemMessage(hwnd, IDC_NOTIFY_NONE, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
             CreateWindowEx(0, "BUTTON", "OK",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                 40, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
@@ -2705,6 +2755,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             CreateWindowEx(0, "BUTTON", "Cancel",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 140, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
+
+            // Apply high-quality ClearType font to all dialog controls
+            HFONT settingsFont = create_dialog_font(14);
+            if (settingsFont) {
+                EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)settingsFont);
+                // Store font handle on window for cleanup in WM_DESTROY
+                SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)settingsFont);
+            }
 
             RECT rc;
             GetWindowRect(hwnd, &rc);
@@ -2736,6 +2794,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                             settings_tray->auto_check_interval = sel;
                         }
                     }
+                    // Read notification mode from radio buttons
+                    if (SendDlgItemMessage(hwnd, IDC_NOTIFY_ALL, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        settings_tray->notification_mode = NOTIFY_ALL;
+                    } else if (SendDlgItemMessage(hwnd, IDC_NOTIFY_CRITICAL, BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                        settings_tray->notification_mode = NOTIFY_CRITICAL_ONLY;
+                    } else {
+                        settings_tray->notification_mode = NOTIFY_NONE;
+                    }
                     tray_save_settings(settings_tray);
                     DestroyWindow(hwnd);
                     break;
@@ -2747,6 +2813,13 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             break;
 
         case WM_DESTROY:
+            {
+                // Clean up GDI font stored via SetWindowLongPtr
+                HFONT hFont = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+                if (hFont) {
+                    DeleteObject(hFont);
+                }
+            }
             settings_tray = NULL;
             hIntervalCombo = NULL;
             PostQuitMessage(0);
@@ -2777,7 +2850,7 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepSettingsDialog", "nosleep Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 270, 310,
+        CW_USEDEFAULT, CW_USEDEFAULT, 270, 400,
         tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
@@ -2881,6 +2954,14 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                 200, y, 140, 28, hwnd, (HMENU)IDC_ABOUT_OK, hInst, NULL);
 
+            // Apply high-quality ClearType font to all dialog controls
+            HFONT aboutFont = create_dialog_font(14);
+            if (aboutFont) {
+                EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)aboutFont);
+                // Store font handle on window for cleanup in WM_DESTROY
+                SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)aboutFont);
+            }
+
             RECT rc;
             GetWindowRect(hwnd, &rc);
             int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -2906,6 +2987,13 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             break;
 
         case WM_DESTROY:
+            {
+                // Clean up GDI font stored via SetWindowLongPtr
+                HFONT hFont = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+                if (hFont) {
+                    DeleteObject(hFont);
+                }
+            }
             pResult = NULL;
             PostQuitMessage(0);
             break;
@@ -3243,30 +3331,6 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray->session_finished_action = SESSION_FINISHED_SLEEP;
                     tray->sleep_after_timeout = true;
                     tray_update_session_finished_menu(tray);
-                    break;
-                case IDM_TOGGLE_STARTUP:
-                    tray_set_startup_enabled(tray, !tray->start_on_startup);
-                    {
-                        char msg[256];
-                        if (tray->start_on_startup) {
-                            sprintf(msg, "nosleep will start automatically at Windows logon");
-                        } else {
-                            sprintf(msg, "nosleep will not start automatically at Windows logon");
-                        }
-                        tray_show_notification(tray, "Startup setting changed", msg, false);
-                    }
-                    break;
-                case IDM_NOTIFY_ALL:
-                    tray->notification_mode = NOTIFY_ALL;
-                    tray_update_notification_menu(tray);
-                    break;
-                case IDM_NOTIFY_CRITICAL:
-                    tray->notification_mode = NOTIFY_CRITICAL_ONLY;
-                    tray_update_notification_menu(tray);
-                    break;
-                case IDM_NOTIFY_NONE:
-                    tray->notification_mode = NOTIFY_NONE;
-                    tray_update_notification_menu(tray);
                     break;
             }
             break;
