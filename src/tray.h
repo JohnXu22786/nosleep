@@ -110,6 +110,7 @@ typedef struct NoSleepTray {
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
     UINT_PTR update_timer_id;   // Timer ID for periodic update checks
     int notification_mode;      // 0=all, 1=critical only, 2=none
+    bool add_to_path;           // Whether to add nosleep directory to environment PATH
 } NoSleepTray;
 
 // Function prototypes

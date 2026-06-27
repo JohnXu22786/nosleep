@@ -62,6 +62,10 @@ static void set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
 static void tray_setup_update_timer(NoSleepTray* tray);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static bool add_app_to_path(void);
+static bool remove_app_from_path(void);
+static int str_icmp_n(const char* a, const char* b, size_t n);
+static char* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // Font helper: creates a high-quality ClearType font for dialog controls
@@ -104,6 +108,7 @@ NoSleepTray* tray_create(void) {
     tray->countdown_stopping = false;
     tray->start_on_startup = false;
     tray->notification_mode = NOTIFY_ALL;
+    tray->add_to_path = false;
     tray->sleep_timer = NULL;
     tray->shutdown_timer = NULL;
     
@@ -267,6 +272,11 @@ bool tray_init(NoSleepTray* tray) {
 
     // Load settings from registry
     tray_load_settings(tray);
+
+    // If add_to_path is enabled, ensure it's applied on startup
+    if (tray->add_to_path) {
+        add_app_to_path();
+    }
 
     // Check for updates on startup if enabled
     if (tray->check_updates_on_startup && should_check_for_updates()) {
@@ -2234,6 +2244,319 @@ static char* get_exe_path(void) {
     return path;
 }
 
+// Case-insensitive string comparison (C99-compatible, no strnicmp/strncasecmp)
+static int str_icmp_n(const char* a, const char* b, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (a[i] == '\0' && b[i] == '\0') return 0;
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (ca == '\0') return 0;
+    }
+    return 0;
+}
+
+// Get the directory containing the executable
+static char* get_exe_dir(void) {
+    char* path = get_exe_path();
+    if (!path) return NULL;
+    
+    // Find last backslash and terminate there to get directory
+    char* last_backslash = strrchr(path, '\\');
+    if (last_backslash) {
+        *last_backslash = '\0';
+    }
+    return path; // Caller must free()
+}
+
+// Add nosleep directory to user PATH in registry
+static bool add_app_to_path(void) {
+    char* dir = get_exe_dir();
+    if (!dir) return false;
+    
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
+        "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
+    if (result != ERROR_SUCCESS) {
+        free(dir);
+        return false;
+    }
+    
+    // Read current PATH
+    DWORD path_size = 0;
+    result = RegQueryValueEx(hKey, "Path", NULL, NULL, NULL, &path_size);
+    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    
+    if (path_size == 0) {
+        // PATH is empty or doesn't exist, just set it to our directory
+        RegCloseKey(hKey);
+        
+        HKEY hKeyWrite;
+        result = RegCreateKeyEx(HKEY_CURRENT_USER,
+            "Environment", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyWrite, NULL);
+        if (result != ERROR_SUCCESS) {
+            free(dir);
+            return false;
+        }
+        
+        result = RegSetValueEx(hKeyWrite, "Path", 0, REG_EXPAND_SZ,
+            (LPBYTE)dir, (DWORD)(strlen(dir) + 1));
+        RegCloseKey(hKeyWrite);
+        free(dir);
+        
+        if (result != ERROR_SUCCESS) return false;
+        
+        // Notify the system about the environment change
+        SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+            (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+        return true;
+    }
+    
+    // Allocate buffer for current path + new dir + semicolon
+    DWORD buf_size = path_size + (DWORD)strlen(dir) + 2; // +2 for ';' and '\0'
+    char* new_path = (char*)malloc(buf_size);
+    if (!new_path) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    new_path[0] = '\0';
+    
+    // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
+    DWORD actual_size = path_size;
+    result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+    if (result == ERROR_MORE_DATA) {
+        // PATH grew between calls, reallocate and retry
+        buf_size = actual_size + (DWORD)strlen(dir) + 2;
+        char* realloc_path = (char*)realloc(new_path, buf_size);
+        if (!realloc_path) {
+            RegCloseKey(hKey);
+            free(new_path);
+            free(dir);
+            return false;
+        }
+        new_path = realloc_path;
+        result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+    }
+    if (result != ERROR_SUCCESS) {
+        RegCloseKey(hKey);
+        free(new_path);
+        free(dir);
+        return false;
+    }
+    // Ensure null-terminated (actual_size is bytes including null in REG_EXPAND_SZ)
+    if (actual_size > 0 && actual_size <= buf_size) {
+        new_path[actual_size - 1] = '\0'; // REG_EXPAND_SZ includes null terminator in count
+    } else {
+        new_path[0] = '\0';
+    }
+        
+        // Check if dir is already in PATH (case-insensitive)
+        // Remove trailing spaces and semicolons for clean comparison
+        size_t dir_len = strlen(dir);
+        char* p = new_path;
+        bool already_in_path = false;
+        while (*p && !already_in_path) {
+            // Skip leading spaces
+            while (*p == ' ') p++;
+            if (*p == '\0') break;
+            
+            // Find next semicolon or end
+            char* next = strchr(p, ';');
+            size_t seg_len = next ? (size_t)(next - p) : strlen(p);
+            
+            // Trim trailing spaces
+            while (seg_len > 0 && p[seg_len - 1] == ' ') seg_len--;
+            
+            if (seg_len == dir_len && str_icmp_n(p, dir, dir_len) == 0) {
+                already_in_path = true;
+                break;
+            }
+            
+            if (next) {
+                p = next + 1;
+            } else {
+                break;
+            }
+        }
+        
+        if (already_in_path) {
+            free(new_path);
+            RegCloseKey(hKey);
+            free(dir);
+            return true; // Already in PATH, consider it success
+        }
+        
+        // Append semicolon if existing path doesn't end with one
+        size_t existing_len = strlen(new_path);
+        if (existing_len > 0 && new_path[existing_len - 1] != ';') {
+            strcat(new_path, ";");
+        }
+    
+    // Append new directory
+    strcat(new_path, dir);
+    
+    // Write back to registry
+    result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
+        (LPBYTE)new_path, (DWORD)(strlen(new_path) + 1));
+    
+    RegCloseKey(hKey);
+    free(new_path);
+    free(dir);
+    
+    if (result != ERROR_SUCCESS) return false;
+    
+    // Notify the system about the environment change
+    SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+        (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+    
+    return true;
+}
+
+// Remove nosleep directory from user PATH in registry
+static bool remove_app_from_path(void) {
+    char* dir = get_exe_dir();
+    if (!dir) return false;
+    
+    HKEY hKey;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
+        "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
+    if (result != ERROR_SUCCESS) {
+        free(dir);
+        return false;
+    }
+    
+    // Read current PATH
+    DWORD path_size = 0;
+    result = RegQueryValueEx(hKey, "Path", NULL, NULL, NULL, &path_size);
+    if (result != ERROR_SUCCESS || path_size == 0) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    
+    char* current_path = (char*)malloc(path_size + 1);
+    if (!current_path) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    
+    // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
+    DWORD actual_size = path_size;
+    DWORD buf_size = path_size;
+    result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+    if (result == ERROR_MORE_DATA) {
+        // PATH grew between calls, reallocate and retry
+        buf_size = actual_size;
+        char* realloc_path = (char*)realloc(current_path, buf_size + 1);
+        if (!realloc_path) {
+            free(current_path);
+            RegCloseKey(hKey);
+            free(dir);
+            return false;
+        }
+        current_path = realloc_path;
+        result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+    }
+    if (result != ERROR_SUCCESS) {
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    // Ensure null-terminated (REG_EXPAND_SZ includes null terminator in count)
+    if (actual_size > 0 && actual_size <= buf_size) {
+        current_path[actual_size - 1] = '\0';
+    } else {
+        current_path[0] = '\0';
+    }
+    
+    size_t dir_len = strlen(dir);
+    bool found = false;
+    
+    // Build new path by removing all occurrences of dir (handle duplicates)
+    // Use strlen(current_path) since the actual data might be larger than path_size from first query
+    size_t new_size = strlen(current_path) + 1;
+    char* new_path = (char*)malloc(new_size);
+    if (!new_path) {
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    new_path[0] = '\0';
+    
+    char* p = current_path;
+    while (*p) {
+        // Find next semicolon or end (without modifying p yet)
+        char* seg_start = p;
+        char* next = strchr(p, ';');
+        size_t seg_len = next ? (size_t)(next - p) : strlen(p);
+        
+        // Trim leading spaces for comparison only
+        char* compare_start = p;
+        while (*compare_start == ' ' && compare_start < p + seg_len) compare_start++;
+        size_t remaining = seg_len - (size_t)(compare_start - p);
+        
+        // Trim trailing spaces for comparison
+        size_t trimmed_len = remaining;
+        while (trimmed_len > 0 && compare_start[trimmed_len - 1] == ' ') trimmed_len--;
+        
+        // Check if this segment matches our directory
+        bool is_match = (trimmed_len == dir_len && str_icmp_n(compare_start, dir, dir_len) == 0);
+        
+        if (!is_match) {
+            // Keep this segment with original formatting
+            if (new_path[0] != '\0') {
+                strcat(new_path, ";");
+            }
+            strncat(new_path, seg_start, seg_len);
+        } else {
+            found = true;
+        }
+        
+        if (next) {
+            p = next + 1;
+        } else {
+            break;
+        }
+    }
+    
+    if (!found) {
+        // Not in PATH, nothing to remove
+        free(new_path);
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return true;
+    }
+    
+    // Write back to registry
+    result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
+        (LPBYTE)new_path, (DWORD)(strlen(new_path) + 1));
+    
+    RegCloseKey(hKey);
+    free(new_path);
+    free(current_path);
+    free(dir);
+    
+    if (result != ERROR_SUCCESS) return false;
+    
+    // Notify the system about the environment change
+    SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+        (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+    
+    return true;
+}
+
+// Check if nosleep directory is currently in the user PATH
 static bool is_startup_enabled(void) {
     HKEY hKey;
     LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
@@ -2338,6 +2661,9 @@ void tray_load_settings(NoSleepTray* tray) {
     settings_read_dword(hKey, "notification_mode", &val, (DWORD)NOTIFY_ALL);
     tray->notification_mode = (int)val;
 
+    settings_read_dword(hKey, "add_to_path", &val, 0);
+    tray->add_to_path = (val != 0);
+
     RegCloseKey(hKey);
 }
 
@@ -2365,6 +2691,9 @@ void tray_save_settings(NoSleepTray* tray) {
 
     val = (DWORD)tray->notification_mode;
     RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
+    val = tray->add_to_path ? 1 : 0;
+    RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
 
     RegCloseKey(hKey);
 }
@@ -2644,6 +2973,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_NOTIFY_ALL           2009
 #define IDC_NOTIFY_CRITICAL      2010
 #define IDC_NOTIFY_NONE          2011
+#define IDC_ADD_TO_PATH          2012
 
 static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* settings_tray = NULL;
@@ -2748,6 +3078,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             }
             y += 30;
 
+            CreateWindowEx(0, "BUTTON", "Add nosleep to environment PATH",
+                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                20, y, 240, 25, hwnd, (HMENU)IDC_ADD_TO_PATH, hInst, NULL);
+            if (settings_tray->add_to_path) {
+                SendDlgItemMessage(hwnd, IDC_ADD_TO_PATH, BM_SETCHECK, BST_CHECKED, 0);
+            }
+            y += 30;
+
             CreateWindowEx(0, "BUTTON", "OK",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
                 40, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
@@ -2802,6 +3140,16 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     } else {
                         settings_tray->notification_mode = NOTIFY_NONE;
                     }
+                    // Handle add to PATH setting
+                    bool new_add_to_path = (SendDlgItemMessage(hwnd, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    if (new_add_to_path != settings_tray->add_to_path) {
+                        settings_tray->add_to_path = new_add_to_path;
+                        if (new_add_to_path) {
+                            add_app_to_path();
+                        } else {
+                            remove_app_from_path();
+                        }
+                    }
                     tray_save_settings(settings_tray);
                     DestroyWindow(hwnd);
                     break;
@@ -2850,7 +3198,7 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepSettingsDialog", "nosleep Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 270, 400,
+        CW_USEDEFAULT, CW_USEDEFAULT, 290, 440,
         tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
