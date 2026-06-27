@@ -90,6 +90,16 @@ Run `nosleep.exe` with the following arguments:
 | `--away-mode` | `-a` | Enable away mode (hardware‑dependent) |
 | `--verbose` | `-v` | Print detailed status on each refresh |
 | `--tray` | `-t` | Launch the system‑tray GUI |
+| `--startup` | `-s` | Start sleep prevention immediately (for Windows startup) |
+| `--session-finished MODE` | | Action after timer expires (`none`, `shutdown`, `sleep`) |
+| `--notification-mode MODE` | | Notification mode (`all`, `critical`, `none`) |
+| `--auto-check-interval I` | | Update check interval (`never`, `daily`, `weekly`) |
+| `--auto-start` | | Enable auto-start with Windows |
+| `--no-auto-start` | | Disable auto-start with Windows |
+| `--check-updates-startup` | | Enable check for updates on startup |
+| `--no-check-updates-startup` | | Disable check for updates on startup |
+| `--configure` | | Save settings to registry and exit (use with settings above) |
+| `--version` | `-V` | Show version information |
 | `--help` | `-h` | Show this help message |
 
 **Default behavior**: If no arguments are given, the program starts in tray mode, preserving backward compatibility.
@@ -108,6 +118,18 @@ nosleep.exe --away-mode
 
 # Start the tray GUI (same as running without arguments)
 nosleep.exe --tray
+
+# Configure: set session-finished to shutdown, persist to registry
+nosleep.exe --session-finished shutdown --configure
+
+# Configure: enable auto-start, set notification mode to critical only
+nosleep.exe --auto-start --notification-mode critical --configure
+
+# Configure: disable auto-start with Windows
+nosleep.exe --no-auto-start --configure
+
+# Show version information
+nosleep.exe --version
 ```
 
 ### System Tray Mode

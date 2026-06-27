@@ -132,6 +132,11 @@ void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 // Settings
 void tray_load_settings(NoSleepTray* tray);
 void tray_save_settings(NoSleepTray* tray);
+bool tray_save_settings_cli(int session_finished_action,
+                            int auto_start,
+                            int notification_mode,
+                            int auto_check_interval,
+                            int check_updates_startup);
 void tray_show_settings_dialog(NoSleepTray* tray);
 
 // About dialog

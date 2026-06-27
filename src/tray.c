@@ -2664,6 +2664,9 @@ void tray_load_settings(NoSleepTray* tray) {
     settings_read_dword(hKey, "add_to_path", &val, 0);
     tray->add_to_path = (val != 0);
 
+    settings_read_dword(hKey, "session_finished_action", &val, (DWORD)SESSION_FINISHED_NONE);
+    tray->session_finished_action = (SessionFinishedAction)val;
+
     RegCloseKey(hKey);
 }
 
@@ -2695,7 +2698,66 @@ void tray_save_settings(NoSleepTray* tray) {
     val = tray->add_to_path ? 1 : 0;
     RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
 
+    val = (DWORD)tray->session_finished_action;
+    RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+
     RegCloseKey(hKey);
+}
+
+bool tray_save_settings_cli(int session_finished_action,
+                            int auto_start,
+                            int notification_mode,
+                            int auto_check_interval,
+                            int check_updates_startup) {
+    // Validate enum ranges
+    if (session_finished_action >= 0 &&
+        session_finished_action != SESSION_FINISHED_NONE &&
+        session_finished_action != SESSION_FINISHED_SHUTDOWN &&
+        session_finished_action != SESSION_FINISHED_SLEEP) {
+        return false;
+    }
+    if (notification_mode >= 0 &&
+        notification_mode != NOTIFY_ALL &&
+        notification_mode != NOTIFY_CRITICAL_ONLY &&
+        notification_mode != NOTIFY_NONE) {
+        return false;
+    }
+    if (auto_check_interval >= 0 &&
+        auto_check_interval != 0 &&
+        auto_check_interval != 1 &&
+        auto_check_interval != 2) {
+        return false;
+    }
+    if (auto_start < -1 || auto_start > 1) return false;
+    if (check_updates_startup < -1 || check_updates_startup > 1) return false;
+
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return false;
+
+    if (session_finished_action >= 0) {
+        DWORD val = (DWORD)session_finished_action;
+        RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    }
+    if (auto_start >= 0) {
+        set_startup_registry(auto_start != 0);
+    }
+    if (notification_mode >= 0) {
+        DWORD val = (DWORD)notification_mode;
+        RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    }
+    if (auto_check_interval >= 0) {
+        DWORD val = (DWORD)auto_check_interval;
+        RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    }
+    if (check_updates_startup >= 0) {
+        DWORD val = (DWORD)(check_updates_startup != 0 ? 1 : 0);
+        RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    }
+
+    RegCloseKey(hKey);
+    return true;
 }
 
 static void save_last_update_check_time(void) {
