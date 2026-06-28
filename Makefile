@@ -17,7 +17,7 @@ SRCDIR = src
 OBJDIR = obj
 BINDIR = bin
 
-SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c
+SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe

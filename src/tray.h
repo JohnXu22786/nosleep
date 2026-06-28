@@ -5,6 +5,7 @@
 
 #include <windows.h>
 #include <stdbool.h>
+#include "notify_groups.h"
 
 // Atomic operation macros for thread-safe flag access
 #ifdef __GNUC__
@@ -109,8 +110,9 @@ typedef struct NoSleepTray {
     bool check_updates_on_startup; // Whether to check for updates on startup
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
     UINT_PTR update_timer_id;   // Timer ID for periodic update checks
-    int notification_mode;      // 0=all, 1=critical only, 2=none
+    int notification_mode;      // 0=all, 1=critical only, 2=none (legacy, use notify_groups instead)
     bool add_to_path;           // Whether to add nosleep directory to environment PATH
+    NotifyGroupManager notify_groups; // Notification group manager for per-event filtering
 } NoSleepTray;
 
 // Function prototypes
@@ -125,7 +127,9 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
 void tray_set_duration(NoSleepTray* tray, int minutes);
 
 void tray_update_icon(NoSleepTray* tray);
+// Includes notification event type for per-event filtering
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical);
+void tray_show_notification_event(NoSleepTray* tray, int event_type, const char* title, const char* message, bool critical);
 void tray_update_stop_menu_item(NoSleepTray* tray);
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 void tray_set_add_to_path(NoSleepTray* tray, bool enable);

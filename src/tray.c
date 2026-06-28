@@ -3,12 +3,15 @@
 #include "core.h"
 #include "constants.h"
 #include "resources.h"
+#include "notify_groups.h"
+#include "updater.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <powrprof.h>
 #include <winhttp.h>
+#include <commctrl.h>
 #include <ctype.h>
 
 // Window class name for tray icon
@@ -67,6 +70,9 @@ static bool remove_app_from_path(void);
 static int str_icmp_n(const char* a, const char* b, size_t n);
 static char* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+// Forward declaration for notification group edit dialog
+void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, int group_index);
 
 // Font helper: creates a high-quality ClearType font for dialog controls
 static HFONT create_dialog_font(int font_size) {
@@ -276,6 +282,34 @@ bool tray_init(NoSleepTray* tray) {
     // If add_to_path is enabled, ensure it's applied on startup
     if (tray->add_to_path) {
         add_app_to_path();
+    }
+
+    // Initialize notification groups and migrate old settings
+    notify_groups_init(&tray->notify_groups);
+    // The old notification_mode is used for migration if no groups exist
+    // Migration happens inside notify_groups_init if registry is empty
+    // We still check to see if migration is needed
+    {
+        // Check if old notification_mode key exists and no groups yet
+        HKEY hKey;
+        LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, 
+            "Software\\nosleep\\settings", 0, KEY_READ, &hKey);
+        if (result == ERROR_SUCCESS) {
+            DWORD old_mode;
+            DWORD size = sizeof(DWORD);
+            result = RegQueryValueEx(hKey, "notification_mode", NULL, NULL, 
+                                     (LPBYTE)&old_mode, &size);
+            RegCloseKey(hKey);
+            
+            if (result == ERROR_SUCCESS && tray->notify_groups.count == 0) {
+                // No groups loaded from registry - this is a fresh start
+                // Use the old notification_mode to set active group
+                tray->notification_mode = (int)old_mode;
+            }
+        }
+        // Migrate: if groups were just loaded from registry with defaults,
+        // use the old notification_mode value to select active group
+        notify_groups_migrate_old_settings(&tray->notify_groups, tray->notification_mode);
     }
 
     // Check for updates on startup if enabled
@@ -2702,6 +2736,9 @@ void tray_save_settings(NoSleepTray* tray) {
     RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
 
     RegCloseKey(hKey);
+
+    // Save notification groups separately
+    notify_groups_save(&tray->notify_groups);
 }
 
 bool tray_save_settings_cli(int session_finished_action,
@@ -2846,7 +2883,7 @@ void tray_set_add_to_path(NoSleepTray* tray, bool enable) {
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical) {
     if (!tray || !tray->hwnd) return;
     
-    // Check notification mode
+    // Check notification mode (legacy check)
     if (tray->notification_mode == NOTIFY_NONE) return;
     if (tray->notification_mode == NOTIFY_CRITICAL_ONLY && !critical) return;
     
@@ -2870,6 +2907,20 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
     
     // Reset flags
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+}
+
+// Event-aware notification: checks notification group filtering before showing
+void tray_show_notification_event(NoSleepTray* tray, int event_type, const char* title, const char* message, bool critical) {
+    if (!tray) return;
+    
+    // Check if this event type is enabled in the current notification group
+    if (!notify_groups_should_show(&tray->notify_groups, (NotifyEventId)event_type)) {
+        return;
+    }
+    
+    // Also respect the legacy notification_mode as a fallback
+    // (the group system is the primary filter now)
+    tray_show_notification(tray, title, message, critical);
 }
 
 // Simple input dialog window procedure
@@ -3053,13 +3104,42 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_AUTO_CHECK_INTERVAL  2006
 #define IDC_SETTINGS_OK          2007
 #define IDC_SETTINGS_CANCEL      2008
-#define IDC_NOTIFY_ALL           2009
-#define IDC_NOTIFY_CRITICAL      2010
-#define IDC_NOTIFY_NONE          2011
 #define IDC_ADD_TO_PATH          2012
+#define IDC_SETTINGS_TAB         2013
+#define IDC_NOTIFY_GROUP_LIST    2014
+
+// Notification group edit popup control IDs
+#define IDC_NOTIFY_GROUP_NAME       2100
+#define IDC_NOTIFY_EVENT_CHECK_START 2101
+#define IDC_NOTIFY_GROUP_EDIT_OK    2200
+#define IDC_NOTIFY_GROUP_EDIT_CANCEL 2201
+#define IDC_NOTIFY_ADD_GROUP        2202
+#define IDC_NOTIFY_DEL_GROUP        2203
+#define IDC_NOTIFY_CONFIGURE_GROUP  2204
+#define IDC_NOTIFY_SET_ACTIVE       2205
+
+// Tab indices
+#define TAB_GENERAL       0
+#define TAB_NOTIFICATIONS 1
+
+// Forward declarations
+static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+static void create_general_tab(HWND hwnd_tab, NoSleepTray* tray);
+static void create_notifications_tab(HWND hwnd_tab, NoSleepTray* tray);
+static void refresh_notification_group_list(HWND hwnd_tab, NoSleepTray* tray);
+
+// Global for passing group edit info
+static struct {
+    NotifyGroupManager* mgr;
+    int group_index;
+    HWND hwnd_parent;
+} g_notify_edit_ctx = {NULL, -1, NULL};
 
 static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* settings_tray = NULL;
+    static HWND hTab = NULL;
+    static HWND hGeneralTab = NULL;
+    static HWND hNotifyTab = NULL;
     static HWND hIntervalCombo = NULL;
 
     switch (msg) {
@@ -3070,121 +3150,70 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             if (!settings_tray) return -1;
 
             HINSTANCE hInst = GetModuleHandle(NULL);
-            int y = 20;
 
-            CreateWindowEx(0, "BUTTON", "Prevent display sleep",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 220, 25, hwnd, (HMENU)IDC_PREVENT_DISPLAY, hInst, NULL);
-            if (settings_tray->prevent_display) {
-                SendDlgItemMessage(hwnd, IDC_PREVENT_DISPLAY, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
+            // Register common controls for tab control
+            INITCOMMONCONTROLSEX icex;
+            icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
+            icex.dwICC = ICC_TAB_CLASSES;
+            InitCommonControlsEx(&icex);
 
-            CreateWindowEx(0, "BUTTON", "Enable away mode",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 220, 25, hwnd, (HMENU)IDC_AWAY_MODE, hInst, NULL);
-            if (settings_tray->away_mode) {
-                SendDlgItemMessage(hwnd, IDC_AWAY_MODE, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
+            // Create tab control
+            hTab = CreateWindowEx(0, WC_TABCONTROL, NULL,
+                WS_CHILD | WS_VISIBLE | TCS_FIXEDWIDTH,
+                10, 10, 460, 350,
+                hwnd, (HMENU)IDC_SETTINGS_TAB, hInst, NULL);
 
-            CreateWindowEx(0, "BUTTON", "Auto-start with Windows",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 220, 25, hwnd, (HMENU)IDC_AUTO_START, hInst, NULL);
-            if (settings_tray->start_on_startup) {
-                SendDlgItemMessage(hwnd, IDC_AUTO_START, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
+            // Add tabs
+            TCITEM tie = {0};
+            tie.mask = TCIF_TEXT;
+            
+            char tab1_text[] = "General";
+            tie.pszText = tab1_text;
+            TabCtrl_InsertItem(hTab, TAB_GENERAL, &tie);
+            
+            char tab2_text[] = "Notifications";
+            tie.pszText = tab2_text;
+            TabCtrl_InsertItem(hTab, TAB_NOTIFICATIONS, &tie);
 
-            CreateWindowEx(0, "BUTTON", "Enable verbose logging",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 220, 25, hwnd, (HMENU)IDC_VERBOSE_LOGGING, hInst, NULL);
-            if (settings_tray->verbose) {
-                SendDlgItemMessage(hwnd, IDC_VERBOSE_LOGGING, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
-
-            CreateWindowEx(0, "BUTTON", "Check for updates on startup",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 220, 25, hwnd, (HMENU)IDC_CHECK_UPDATES_STARTUP, hInst, NULL);
-            if (settings_tray->check_updates_on_startup) {
-                SendDlgItemMessage(hwnd, IDC_CHECK_UPDATES_STARTUP, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
-
-            CreateWindowEx(0, "STATIC", "Auto check updates interval:",
+            // Create tab page windows (initially hidden, shown when tab selected)
+            // General tab
+            hGeneralTab = CreateWindowEx(0, "STATIC", NULL,
                 WS_CHILD | WS_VISIBLE,
-                20, y, 180, 20, hwnd, NULL, hInst, NULL);
-            y += 22;
+                15, 35, 450, 320,
+                hwnd, NULL, hInst, NULL);
+            create_general_tab(hGeneralTab, settings_tray);
+            
+            // Notifications tab (initially hidden)
+            hNotifyTab = CreateWindowEx(0, "STATIC", NULL,
+                WS_CHILD,  // Not visible initially
+                15, 35, 450, 320,
+                hwnd, NULL, hInst, NULL);
+            create_notifications_tab(hNotifyTab, settings_tray);
 
-            hIntervalCombo = CreateWindowEx(WS_EX_CLIENTEDGE, "COMBOBOX", NULL,
-                WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
-                20, y, 180, 80, hwnd, (HMENU)IDC_AUTO_CHECK_INTERVAL, hInst, NULL);
-            if (hIntervalCombo) {
-                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Never");
-                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Daily");
-                SendMessage(hIntervalCombo, CB_ADDSTRING, 0, (LPARAM)"Weekly");
-                int idx = settings_tray->auto_check_interval;
-                if (idx < 0) idx = 0;
-                if (idx > 2) idx = 2;
-                SendMessage(hIntervalCombo, CB_SETCURSEL, (WPARAM)idx, 0);
-            }
-            y += 30;
+            // Show the first tab by default
+            ShowWindow(hGeneralTab, SW_SHOW);
+            ShowWindow(hNotifyTab, SW_HIDE);
 
-            // Notification mode: group label
-            CreateWindowEx(0, "STATIC", "Notifications:",
-                WS_CHILD | WS_VISIBLE,
-                20, y, 220, 20, hwnd, NULL, hInst, NULL);
-            y += 20;
+            // Find the interval combo (created inside the general tab's static parent)
+            hIntervalCombo = GetDlgItem(hGeneralTab, IDC_AUTO_CHECK_INTERVAL);
 
-            CreateWindowEx(0, "BUTTON", "Show all notifications",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP | WS_GROUP,
-                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_ALL, hInst, NULL);
-            if (settings_tray->notification_mode == NOTIFY_ALL) {
-                SendDlgItemMessage(hwnd, IDC_NOTIFY_ALL, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 24;
-
-            CreateWindowEx(0, "BUTTON", "Show only critical notifications",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP,
-                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_CRITICAL, hInst, NULL);
-            if (settings_tray->notification_mode == NOTIFY_CRITICAL_ONLY) {
-                SendDlgItemMessage(hwnd, IDC_NOTIFY_CRITICAL, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 24;
-
-            CreateWindowEx(0, "BUTTON", "Suppress all notifications",
-                WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP,
-                30, y, 220, 22, hwnd, (HMENU)IDC_NOTIFY_NONE, hInst, NULL);
-            if (settings_tray->notification_mode == NOTIFY_NONE) {
-                SendDlgItemMessage(hwnd, IDC_NOTIFY_NONE, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
-
-            CreateWindowEx(0, "BUTTON", "Add nosleep to environment PATH",
-                WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
-                20, y, 240, 25, hwnd, (HMENU)IDC_ADD_TO_PATH, hInst, NULL);
-            if (settings_tray->add_to_path) {
-                SendDlgItemMessage(hwnd, IDC_ADD_TO_PATH, BM_SETCHECK, BST_CHECKED, 0);
-            }
-            y += 30;
-
+            // OK and Cancel buttons at the bottom (outside tab control)
             CreateWindowEx(0, "BUTTON", "OK",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-                40, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
+                150, 370, 80, 28, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
 
             CreateWindowEx(0, "BUTTON", "Cancel",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                140, y, 80, 30, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
+                250, 370, 80, 28, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
 
-            // Apply high-quality ClearType font to all dialog controls
+            // Apply font
             HFONT settingsFont = create_dialog_font(14);
             if (settingsFont) {
                 EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)settingsFont);
-                // Store font handle on window for cleanup in WM_DESTROY
                 SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)settingsFont);
             }
 
+            // Center on screen
             RECT rc;
             GetWindowRect(hwnd, &rc);
             int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -3196,35 +3225,42 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             return 0;
         }
 
+        case WM_NOTIFY:
+        {
+            if (((LPNMHDR)lParam)->idFrom == IDC_SETTINGS_TAB &&
+                ((LPNMHDR)lParam)->code == TCN_SELCHANGE) {
+                int sel = TabCtrl_GetCurSel(hTab);
+                ShowWindow(hGeneralTab, sel == TAB_GENERAL ? SW_SHOW : SW_HIDE);
+                ShowWindow(hNotifyTab, sel == TAB_NOTIFICATIONS ? SW_SHOW : SW_HIDE);
+                if (sel == TAB_NOTIFICATIONS) {
+                    refresh_notification_group_list(hNotifyTab, settings_tray);
+                }
+            }
+            break;
+        }
+
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
                 case IDC_SETTINGS_OK:
                 {
                     if (!settings_tray) break;
-                    settings_tray->prevent_display = (SendDlgItemMessage(hwnd, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    settings_tray->away_mode = (SendDlgItemMessage(hwnd, IDC_AWAY_MODE, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    bool auto_start = (SendDlgItemMessage(hwnd, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    
+                    // Read general tab settings (controls are children of hGeneralTab)
+                    settings_tray->prevent_display = (SendDlgItemMessage(hGeneralTab, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    settings_tray->away_mode = (SendDlgItemMessage(hGeneralTab, IDC_AWAY_MODE, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    bool auto_start = (SendDlgItemMessage(hGeneralTab, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (auto_start != settings_tray->start_on_startup) {
                         tray_set_startup_enabled(settings_tray, auto_start);
                     }
-                    settings_tray->verbose = (SendDlgItemMessage(hwnd, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    settings_tray->check_updates_on_startup = (SendDlgItemMessage(hwnd, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    settings_tray->verbose = (SendDlgItemMessage(hGeneralTab, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    settings_tray->check_updates_on_startup = (SendDlgItemMessage(hGeneralTab, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (hIntervalCombo) {
                         int sel = (int)SendMessage(hIntervalCombo, CB_GETCURSEL, 0, 0);
                         if (sel != CB_ERR) {
                             settings_tray->auto_check_interval = sel;
                         }
                     }
-                    // Read notification mode from radio buttons
-                    if (SendDlgItemMessage(hwnd, IDC_NOTIFY_ALL, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                        settings_tray->notification_mode = NOTIFY_ALL;
-                    } else if (SendDlgItemMessage(hwnd, IDC_NOTIFY_CRITICAL, BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                        settings_tray->notification_mode = NOTIFY_CRITICAL_ONLY;
-                    } else {
-                        settings_tray->notification_mode = NOTIFY_NONE;
-                    }
-                    // Handle add to PATH setting
-                    bool new_add_to_path = (SendDlgItemMessage(hwnd, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    bool new_add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (new_add_to_path != settings_tray->add_to_path) {
                         settings_tray->add_to_path = new_add_to_path;
                         if (new_add_to_path) {
@@ -3233,25 +3269,99 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                             remove_app_from_path();
                         }
                     }
+
+                    // Save notification groups
+                    notify_groups_save(&settings_tray->notify_groups);
+
                     tray_save_settings(settings_tray);
                     DestroyWindow(hwnd);
                     break;
                 }
+
                 case IDC_SETTINGS_CANCEL:
                     DestroyWindow(hwnd);
                     break;
+
+                case IDC_NOTIFY_ADD_GROUP:
+                {
+                    show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, -1);
+                    refresh_notification_group_list(hNotifyTab, settings_tray);
+                    break;
+                }
+
+                case IDC_NOTIFY_CONFIGURE_GROUP:
+                {
+                    HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
+                    if (!hList) break;
+                    int sel = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+                    if (sel == LB_ERR) break;
+                    
+                    int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
+                    if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count) break;
+                    
+                    show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, group_idx);
+                    refresh_notification_group_list(hNotifyTab, settings_tray);
+                    break;
+                }
+
+                case IDC_NOTIFY_SET_ACTIVE:
+                {
+                    HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
+                    if (!hList) break;
+                    int sel = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+                    if (sel == LB_ERR) break;
+                    
+                    int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
+                    if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count) break;
+                    
+                    if (notify_groups_set_active(&settings_tray->notify_groups, group_idx)) {
+                        notify_groups_save(&settings_tray->notify_groups);
+                        refresh_notification_group_list(hNotifyTab, settings_tray);
+                    }
+                    break;
+                }
+
+                case IDC_NOTIFY_DEL_GROUP:
+                {
+                    HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
+                    if (!hList) break;
+                    int sel = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+                    if (sel == LB_ERR) break;
+                    
+                    int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
+                    if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count) break;
+                    
+                    // Cannot delete default groups
+                    if (settings_tray->notify_groups.groups[group_idx].is_default) {
+                        MessageBox(hwnd, "Default notification groups cannot be deleted.",
+                            "Cannot Delete", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+                        break;
+                    }
+                    
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Delete notification group \"%s\"?",
+                             settings_tray->notify_groups.groups[group_idx].name);
+                    int confirm = MessageBox(hwnd, msg, "Confirm Delete",
+                        MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
+                    if (confirm == IDYES) {
+                        notify_groups_remove(&settings_tray->notify_groups, group_idx);
+                        notify_groups_save(&settings_tray->notify_groups);
+                        refresh_notification_group_list(hNotifyTab, settings_tray);
+                    }
+                    break;
+                }
             }
             break;
 
         case WM_DESTROY:
             {
-                // Clean up GDI font stored via SetWindowLongPtr
                 HFONT hFont = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
-                if (hFont) {
-                    DeleteObject(hFont);
-                }
+                if (hFont) DeleteObject(hFont);
             }
             settings_tray = NULL;
+            hTab = NULL;
+            hGeneralTab = NULL;
+            hNotifyTab = NULL;
             hIntervalCombo = NULL;
             PostQuitMessage(0);
             break;
@@ -3262,6 +3372,145 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+// Create controls for the "General" tab
+static void create_general_tab(HWND hwnd_parent, NoSleepTray* tray) {
+    HINSTANCE hInst = GetModuleHandle(NULL);
+    int y = 10;
+
+    CreateWindowEx(0, "BUTTON", "Prevent display sleep",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 240, 25, hwnd_parent, (HMENU)IDC_PREVENT_DISPLAY, hInst, NULL);
+    if (tray->prevent_display) {
+        SendDlgItemMessage(hwnd_parent, IDC_PREVENT_DISPLAY, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "BUTTON", "Enable away mode",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 240, 25, hwnd_parent, (HMENU)IDC_AWAY_MODE, hInst, NULL);
+    if (tray->away_mode) {
+        SendDlgItemMessage(hwnd_parent, IDC_AWAY_MODE, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "BUTTON", "Auto-start with Windows",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 240, 25, hwnd_parent, (HMENU)IDC_AUTO_START, hInst, NULL);
+    if (tray->start_on_startup) {
+        SendDlgItemMessage(hwnd_parent, IDC_AUTO_START, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "BUTTON", "Enable verbose logging",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 240, 25, hwnd_parent, (HMENU)IDC_VERBOSE_LOGGING, hInst, NULL);
+    if (tray->verbose) {
+        SendDlgItemMessage(hwnd_parent, IDC_VERBOSE_LOGGING, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "BUTTON", "Check for updates on startup",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 240, 25, hwnd_parent, (HMENU)IDC_CHECK_UPDATES_STARTUP, hInst, NULL);
+    if (tray->check_updates_on_startup) {
+        SendDlgItemMessage(hwnd_parent, IDC_CHECK_UPDATES_STARTUP, BM_SETCHECK, BST_CHECKED, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "STATIC", "Auto check updates interval:",
+        WS_CHILD | WS_VISIBLE,
+        20, y, 180, 20, hwnd_parent, NULL, hInst, NULL);
+    y += 22;
+
+    HWND hCombo = CreateWindowEx(WS_EX_CLIENTEDGE, "COMBOBOX", NULL,
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_TABSTOP,
+        20, y, 200, 80, hwnd_parent, (HMENU)IDC_AUTO_CHECK_INTERVAL, hInst, NULL);
+    if (hCombo) {
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)"Never");
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)"Daily");
+        SendMessage(hCombo, CB_ADDSTRING, 0, (LPARAM)"Weekly");
+        int idx = tray->auto_check_interval;
+        if (idx < 0) idx = 0;
+        if (idx > 2) idx = 2;
+        SendMessage(hCombo, CB_SETCURSEL, (WPARAM)idx, 0);
+    }
+    y += 30;
+
+    CreateWindowEx(0, "BUTTON", "Add nosleep to environment PATH",
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+        20, y, 260, 25, hwnd_parent, (HMENU)IDC_ADD_TO_PATH, hInst, NULL);
+    if (tray->add_to_path) {
+        SendDlgItemMessage(hwnd_parent, IDC_ADD_TO_PATH, BM_SETCHECK, BST_CHECKED, 0);
+    }
+}
+
+// Create controls for the "Notifications" tab
+static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
+    HINSTANCE hInst = GetModuleHandle(NULL);
+    (void)tray;
+
+    // Create group listbox
+    CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+        15, 10, 280, 200,
+        hwnd_parent, (HMENU)IDC_NOTIFY_GROUP_LIST, hInst, NULL);
+
+    // Configure button
+    CreateWindowEx(0, "BUTTON", "Configure...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        305, 10, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_CONFIGURE_GROUP, hInst, NULL);
+
+    // Delete button
+    CreateWindowEx(0, "BUTTON", "Delete",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        305, 45, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_DEL_GROUP, hInst, NULL);
+
+    // Set Active button
+    CreateWindowEx(0, "BUTTON", "Set Active",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        305, 80, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_SET_ACTIVE, hInst, NULL);
+
+    // Add button
+    CreateWindowEx(0, "BUTTON", "Add Group...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        305, 115, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_ADD_GROUP, hInst, NULL);
+
+    // Help text for notification groups
+    CreateWindowEx(0, "STATIC", 
+        "Notification groups let you control which\n"
+        "notification types produce balloon messages.\n"
+        "Select a group from the list and click\n"
+        "\"Configure...\" to customize which events\n"
+        "produce notifications for that group.",
+        WS_CHILD | WS_VISIBLE,
+        15, 220, 410, 80, hwnd_parent, NULL, hInst, NULL);
+
+    refresh_notification_group_list(hwnd_parent, tray);
+}
+
+// Refresh the notification group listbox
+static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray) {
+    HWND hList = GetDlgItem(hwnd_parent, IDC_NOTIFY_GROUP_LIST);
+    if (!hList || !tray) return;
+
+    SendMessage(hList, LB_RESETCONTENT, 0, 0);
+
+    for (int i = 0; i < tray->notify_groups.count; i++) {
+        NotifyGroup* g = &tray->notify_groups.groups[i];
+        char display[256];
+        const char* marker = (i == tray->notify_groups.active_index) ? " [ACTIVE]" : "";
+        snprintf(display, sizeof(display), "%s%s%s", 
+                 g->name, marker, g->is_default ? " (default)" : "");
+        int idx = (int)SendMessage(hList, LB_ADDSTRING, 0, (LPARAM)display);
+        SendMessage(hList, LB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
+    }
+
+    // Select first item by default
+    if (tray->notify_groups.count > 0) {
+        SendMessage(hList, LB_SETCURSEL, 0, 0);
+    }
 }
 
 void tray_show_settings_dialog(NoSleepTray* tray) {
@@ -3281,7 +3530,7 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepSettingsDialog", "nosleep Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 290, 440,
+        CW_USEDEFAULT, CW_USEDEFAULT, 490, 440,
         tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
@@ -3298,6 +3547,232 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
     }
 
     UnregisterClass("NoSleepSettingsDialog", hInstance);
+}
+
+// === Notification Group Edit Dialog ===
+// Opens a popup to edit a notification group's name and event checkboxes
+
+static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    static NotifyGroupManager* edit_mgr = NULL;
+    static int edit_index = -1;
+    static HWND hCheckboxes[NOTIFY_EVENT_COUNT];
+    static HWND hNameEdit = NULL;
+
+    switch (msg) {
+        case WM_CREATE:
+        {
+            // Use the global context which was set before CreateWindowEx
+            edit_mgr = g_notify_edit_ctx.mgr;
+            edit_index = g_notify_edit_ctx.group_index;
+            
+            HINSTANCE hInst = GetModuleHandle(NULL);
+
+            int y = 15;
+
+            // Group name label
+            CreateWindowEx(0, "STATIC", "Group Name:",
+                WS_CHILD | WS_VISIBLE,
+                15, y, 100, 20, hwnd, NULL, hInst, NULL);
+
+            // Group name edit
+            hNameEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+                15, y + 22, 300, 25, hwnd, (HMENU)IDC_NOTIFY_GROUP_NAME, hInst, NULL);
+            SendMessage(hNameEdit, EM_SETLIMITTEXT, (WPARAM)(MAX_GROUP_NAME - 1), 0);
+            
+            // Set name if editing existing group
+            if (edit_index >= 0 && edit_mgr && edit_index < edit_mgr->count) {
+                SetWindowText(hNameEdit, edit_mgr->groups[edit_index].name);
+            } else {
+                SetWindowText(hNameEdit, "My Group");
+            }
+            
+            y += 55;
+
+            // Notification events checkboxes
+            CreateWindowEx(0, "STATIC", "Show notifications for these events:",
+                WS_CHILD | WS_VISIBLE,
+                15, y, 300, 20, hwnd, NULL, hInst, NULL);
+            y += 22;
+
+            unsigned int mask = 0;
+            if (edit_index >= 0 && edit_mgr && edit_index < edit_mgr->count) {
+                mask = edit_mgr->groups[edit_index].event_mask;
+            } else {
+                mask = 0xFFFFFFFF; // Default: all enabled for new groups
+            }
+
+            // Create checkboxes for each event
+            for (int i = 0; i < NOTIFY_EVENT_COUNT; i++) {
+                int row = i / 2;
+                int col = i % 2;
+                int cx = 15 + col * 220;
+                int cy = y + row * 24;
+
+                hCheckboxes[i] = CreateWindowEx(0, "BUTTON", NOTIFY_EVENT_NAMES[i],
+                    WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
+                    cx, cy, 210, 22, hwnd, (HMENU)(IDC_NOTIFY_EVENT_CHECK_START + i), hInst, NULL);
+                
+                if (mask & (1 << i)) {
+                    SendMessage(hCheckboxes[i], BM_SETCHECK, BST_CHECKED, 0);
+                }
+            }
+
+            // Calculate dialog size based on number of events
+            int num_rows = (NOTIFY_EVENT_COUNT + 1) / 2;
+            int dlg_height = y + num_rows * 24 + 60;
+
+            // OK and Cancel buttons
+            CreateWindowEx(0, "BUTTON", "OK",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                70, dlg_height - 40, 80, 28, hwnd, (HMENU)IDC_NOTIFY_GROUP_EDIT_OK, hInst, NULL);
+
+            CreateWindowEx(0, "BUTTON", "Cancel",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                190, dlg_height - 40, 80, 28, hwnd, (HMENU)IDC_NOTIFY_GROUP_EDIT_CANCEL, hInst, NULL);
+
+            // Resize window to fit content
+            RECT rc;
+            GetWindowRect(hwnd, &rc);
+            int new_width = 460;
+            SetWindowPos(hwnd, NULL, 0, 0, new_width, dlg_height, SWP_NOMOVE | SWP_NOZORDER);
+
+            // Apply font
+            HFONT editFont = create_dialog_font(14);
+            if (editFont) {
+                EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)editFont);
+                SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)editFont);
+            }
+
+            // Center on screen
+            GetWindowRect(hwnd, &rc);
+            int sw = GetSystemMetrics(SM_CXSCREEN);
+            int sh = GetSystemMetrics(SM_CYSCREEN);
+            SetWindowPos(hwnd, NULL, 
+                (sw - (rc.right - rc.left)) / 2,
+                (sh - (rc.bottom - rc.top)) / 2,
+                0, 0, SWP_NOSIZE | SWP_NOZORDER);
+
+            return 0;
+        }
+
+        case WM_COMMAND:
+            switch (LOWORD(wParam)) {
+                case IDC_NOTIFY_GROUP_EDIT_OK:
+                {
+                    if (!edit_mgr) break;
+
+                    // Read group name
+                    char name[MAX_GROUP_NAME] = "";
+                    GetWindowText(hNameEdit, name, MAX_GROUP_NAME);
+                    
+                    // Validate name
+                    if (name[0] == '\0') {
+                        MessageBox(hwnd, "Please enter a group name.", 
+                                   "Invalid Input", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                        SetFocus(hNameEdit);
+                        break;
+                    }
+
+                    // Read event mask from checkboxes
+                    unsigned int mask = 0;
+                    for (int i = 0; i < NOTIFY_EVENT_COUNT; i++) {
+                        if (SendMessage(hCheckboxes[i], BM_GETCHECK, 0, 0) == BST_CHECKED) {
+                            mask |= (1 << i);
+                        }
+                    }
+
+                    bool success = false;
+
+                    if (edit_index < 0) {
+                        // Add new group
+                        int new_idx = notify_groups_add(edit_mgr, name, mask);
+                        if (new_idx >= 0) {
+                            notify_groups_save(edit_mgr);
+                            success = true;
+                        }
+                    } else {
+                        // Update existing group
+                        success = notify_groups_update(edit_mgr, edit_index, name, mask);
+                        if (success) {
+                            notify_groups_save(edit_mgr);
+                        }
+                    }
+
+                    if (success) {
+                        DestroyWindow(hwnd);
+                    } else {
+                        MessageBox(hwnd, "Failed to save group. Max groups may be reached.",
+                                   "Error", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                    }
+                    break;
+                }
+
+                case IDC_NOTIFY_GROUP_EDIT_CANCEL:
+                    DestroyWindow(hwnd);
+                    break;
+            }
+            break;
+
+        case WM_DESTROY:
+            {
+                HFONT hFont = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+                if (hFont) DeleteObject(hFont);
+            }
+            edit_mgr = NULL;
+            edit_index = -1;
+            PostQuitMessage(0);
+            break;
+
+        case WM_CLOSE:
+            DestroyWindow(hwnd);
+            break;
+    }
+
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, int group_index) {
+    if (!mgr) return;
+
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+
+    WNDCLASS wc = {0};
+    wc.lpfnWndProc = notify_group_edit_proc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = "NoSleepNotifyGroupEditDialog";
+
+    RegisterClass(&wc);
+
+    const char* title = (group_index < 0) ? "New Notification Group" : "Edit Notification Group";
+
+    // Set global context before creating window (WM_CREATE reads it)
+    g_notify_edit_ctx.mgr = mgr;
+    g_notify_edit_ctx.group_index = group_index;
+    g_notify_edit_ctx.hwnd_parent = hwnd_parent;
+
+    HWND hwndDlg = CreateWindowEx(
+        0, "NoSleepNotifyGroupEditDialog", title,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
+        CW_USEDEFAULT, CW_USEDEFAULT, 460, 400,
+        hwnd_parent, NULL, hInstance, NULL
+    );
+
+    if (hwndDlg) {
+        ShowWindow(hwndDlg, SW_SHOW);
+
+        MSG msg;
+        while (GetMessage(&msg, NULL, 0, 0)) {
+            if (!IsDialogMessage(hwndDlg, &msg)) {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
+            }
+        }
+    }
+
+    UnregisterClass("NoSleepNotifyGroupEditDialog", hInstance);
 }
 
 void tray_show_about_dialog(NoSleepTray* tray) {
@@ -3437,169 +3912,73 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-// Update checking
+// Update checking - uses updater module
 void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     if (!tray) return;
 
     const char* debug = getenv("NOSLEEP_DEBUG");
-
-    HINTERNET hSession = WinHttpOpen(L"nosleep-updater/1.0",
-        WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
-    if (!hSession) {
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not initialize network", false);
-        }
-        return;
+    if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] tray_check_for_updates: checking for updates\n");
     }
 
-    HINTERNET hConnect = WinHttpConnect(hSession, L"api.github.com",
-        INTERNET_DEFAULT_HTTPS_PORT, 0);
-    if (!hConnect) {
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not connect to server", false);
-        }
-        return;
-    }
-
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET",
-        L"/repos/JohnXu22786/nosleep/releases/latest", NULL, NULL, NULL,
-        WINHTTP_FLAG_SECURE);
-    if (!hRequest) {
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not create request", false);
-        }
-        return;
-    }
-
-    BOOL sent = WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0);
-    if (!sent) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not send request", false);
-        }
-        return;
-    }
-
-    BOOL received = WinHttpReceiveResponse(hRequest, NULL);
-    if (!received) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not receive response", false);
-        }
-        return;
-    }
-
-    DWORD status_code = 0;
-    DWORD status_size = sizeof(status_code);
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        NULL, &status_code, &status_size, NULL);
-
-    if (status_code != 200) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Server returned status %lu", status_code);
-            tray_show_notification(tray, "Update Check Failed", msg, false);
-        }
-        return;
-    }
-
-    DWORD content_length = 0;
-    DWORD cl_size = sizeof(content_length);
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-        NULL, &content_length, &cl_size, NULL);
-
-    DWORD total_read = 0;
-    DWORD buffer_size = 4096;
-    if (content_length > 0) {
-        buffer_size = content_length + 1;
-    } else {
-        buffer_size = 8192;
-    }
-
-    char* response = (char*)malloc(buffer_size);
-    if (!response) {
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Out of memory", false);
-        }
-        return;
-    }
-    memset(response, 0, buffer_size);
-
-    DWORD bytes_read = 0;
-    while (WinHttpReadData(hRequest, response + total_read, buffer_size - total_read - 1, &bytes_read) && bytes_read > 0) {
-        total_read += bytes_read;
-        if (total_read >= buffer_size - 1) {
-            buffer_size *= 2;
-            char* new_response = (char*)realloc(response, buffer_size);
-            if (!new_response) break;
-            response = new_response;
-            memset(response + total_read, 0, buffer_size - total_read);
-        }
-    }
-    response[total_read] = '\0';
-
-    WinHttpCloseHandle(hRequest);
-    WinHttpCloseHandle(hConnect);
-    WinHttpCloseHandle(hSession);
+    UpdateInfo info;
+    bool check_ok = updater_check(&info, tray->hwnd);
 
     save_last_update_check_time();
 
-    // Parse JSON for "tag_name"
-    char* tag = strstr(response, "\"tag_name\"");
-    char latest_version[64] = "";
-    if (tag) {
-        char* quote1 = strchr(tag + 10, '"');
-        if (quote1) {
-            char* quote2 = strchr(quote1 + 1, '"');
-            if (quote2) {
-                size_t len = (size_t)(quote2 - quote1 - 1);
-                if (len > 0 && len < sizeof(latest_version)) {
-                    strncpy(latest_version, quote1 + 1, len);
-                    latest_version[len] = '\0';
-                }
-            }
-        }
-    }
-
-    free(response);
-
-    if (latest_version[0] == '\0') {
+    if (!check_ok) {
         if (!silent) {
-            tray_show_notification(tray, "Update Check Failed", "Could not parse version info", false);
+            tray_show_notification_event(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
+                "Update Check Failed", "Could not check for updates. Check your internet connection.", false);
         }
         return;
     }
 
-    // Strip leading 'v' if present
-    const char* remote_ver = latest_version;
-    if (remote_ver[0] == 'v' || remote_ver[0] == 'V') {
-        remote_ver++;
+    if (!info.update_available) {
+        if (!silent) {
+            tray_show_notification(tray, "No Updates", 
+                "You are running the latest version (v" CURRENT_VERSION ")", false);
+        }
+        return;
     }
 
-    if (strcmp(remote_ver, CURRENT_VERSION) > 0) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Version %s is available!\nYou have v" CURRENT_VERSION, latest_version);
-        tray_show_notification(tray, "Update Available", msg, false);
-    } else {
+    // Compare versions
+    if (updater_compare_versions(info.latest_version, CURRENT_VERSION) <= 0) {
         if (!silent) {
-            tray_show_notification(tray, "No Updates", "You are running the latest version (v" CURRENT_VERSION ")", false);
+            tray_show_notification(tray, "No Updates", 
+                "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
-        if (debug) {
-            fprintf(stderr, "[nosleep] Update check: current=%s, latest=%s - up to date\n", CURRENT_VERSION, latest_version);
-        }
+        return;
+    }
+
+    // New version available - show notification
+    {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Version %s is available! (You have v" CURRENT_VERSION ")", info.latest_version);
+        tray_show_notification_event(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
+    }
+
+    // Ask user if they want to download
+    bool want_download = updater_show_prompt_dialog(tray->hwnd, &info);
+    if (!want_download) {
+        return;
+    }
+
+    // Get current executable path
+    char* exe_path = get_exe_path();
+    if (!exe_path) {
+        MessageBox(tray->hwnd, "Could not determine executable path.", 
+                   "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return;
+    }
+
+    // Download and install
+    bool update_started = updater_download_and_install(&info, exe_path, tray->hwnd);
+    free(exe_path);
+
+    if (update_started) {
+        // Exit the application so the update can complete
+        PostMessage(tray->hwnd, WM_CLOSE, 0, 0);
     }
 }
 
