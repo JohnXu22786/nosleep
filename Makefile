@@ -7,7 +7,7 @@ VERSION ?= 0.0.0
 CC = gcc
 RC = windres
 CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"$(VERSION)\"
-LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp
+LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
 
 Comma := ,
 VERSION_COMMA := $(subst .,$(Comma),$(VERSION))
