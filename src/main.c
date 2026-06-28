@@ -28,6 +28,7 @@ static int parse_arguments(int argc, wchar_t* argv[],
                           int* notification_mode,
                           int* auto_check_interval,
                           int* check_updates_startup,
+                          int* add_to_path,
                           bool* configure_mode,
                           bool* show_version,
                           bool* prevent_display_set,
@@ -40,6 +41,7 @@ static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose,
                          int notification_mode,
                          int auto_check_interval,
                          int check_updates_startup,
+                         int add_to_path,
                          bool prevent_display_set,
                          bool away_mode_set,
                          bool verbose_set);
@@ -47,7 +49,8 @@ static int run_configure_mode(int session_finished,
                               int auto_start,
                               int notification_mode,
                               int auto_check_interval,
-                              int check_updates_startup);
+                              int check_updates_startup,
+                              int add_to_path);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Enable DPI awareness for proper font rendering on high-DPI displays
@@ -79,6 +82,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int notification_mode = CLI_UNSET;
     int auto_check_interval = CLI_UNSET;
     int check_updates_startup = CLI_UNSET;
+    int add_to_path = CLI_UNSET;
     bool configure_mode = false;
     bool show_version = false;
     
@@ -92,6 +96,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                             session_finished, auto_start,
                             notification_mode, auto_check_interval,
                             check_updates_startup,
+                            add_to_path,
                             prevent_display_set, away_mode_set, verbose_set);
     }
     
@@ -104,6 +109,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                                        &notification_mode,
                                        &auto_check_interval,
                                        &check_updates_startup,
+                                       &add_to_path,
                                        &configure_mode,
                                        &show_version,
                                        &prevent_display_set,
@@ -152,6 +158,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "  --no-auto-start           Disable auto-start with Windows\n"
             "  --check-updates-startup   Enable check for updates on startup\n"
             "  --no-check-updates-startup Disable check for updates on startup\n"
+            "  --add-to-path             Add nosleep directory to environment PATH\n"
+            "  --no-add-to-path          Remove nosleep directory from environment PATH\n"
             "  --configure               Save settings to registry and exit\n"
             "                            (use with above options to persist them)\n"
             "\n"
@@ -165,6 +173,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "  nosleep --tray\n"
             "  nosleep --session-finished shutdown --configure\n"
             "  nosleep --auto-start --notification-mode critical --configure\n"
+            "  nosleep --add-to-path --configure\n"
             "  nosleep --version\n"
             "  nosleep                     (starts tray mode)\n";
         
@@ -192,7 +201,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Check if any settings were actually provided
         if (session_finished == CLI_UNSET && auto_start == CLI_UNSET &&
             notification_mode == CLI_UNSET && auto_check_interval == CLI_UNSET &&
-            check_updates_startup == CLI_UNSET) {
+            check_updates_startup == CLI_UNSET && add_to_path == CLI_UNSET) {
             if (AttachConsole(ATTACH_PARENT_PROCESS)) {
                 freopen("CONOUT$", "w", stdout);
                 freopen("CONOUT$", "w", stderr);
@@ -202,7 +211,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
         return run_configure_mode(session_finished, auto_start,
                                   notification_mode, auto_check_interval,
-                                  check_updates_startup);
+                                  check_updates_startup, add_to_path);
     }
     
     // Default: run tray mode with CLI overrides
@@ -210,6 +219,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                          session_finished, auto_start,
                          notification_mode, auto_check_interval,
                          check_updates_startup,
+                         add_to_path,
                          prevent_display_set, away_mode_set, verbose_set);
 }
 
@@ -225,6 +235,7 @@ static int parse_arguments(int argc, wchar_t* argv[],
                           int* notification_mode,
                           int* auto_check_interval,
                           int* check_updates_startup,
+                          int* add_to_path,
                           bool* configure_mode,
                           bool* show_version,
                           bool* prevent_display_set,
@@ -329,6 +340,12 @@ static int parse_arguments(int argc, wchar_t* argv[],
         else if (strcmp(arg, "--no-check-updates-startup") == 0) {
             *check_updates_startup = CLI_DISABLE;
         }
+        else if (strcmp(arg, "--add-to-path") == 0) {
+            *add_to_path = CLI_ENABLE;
+        }
+        else if (strcmp(arg, "--no-add-to-path") == 0) {
+            *add_to_path = CLI_DISABLE;
+        }
         else {
             return 1; // Unknown argument
         }
@@ -343,7 +360,8 @@ static int run_configure_mode(int session_finished,
                               int auto_start,
                               int notification_mode,
                               int auto_check_interval,
-                              int check_updates_startup) {
+                              int check_updates_startup,
+                              int add_to_path) {
     // Attach to parent console for status output
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         freopen("CONOUT$", "w", stdout);
@@ -352,7 +370,7 @@ static int run_configure_mode(int session_finished,
     
     bool success = tray_save_settings_cli(session_finished, auto_start,
                            notification_mode, auto_check_interval,
-                           check_updates_startup);
+                           check_updates_startup, add_to_path);
     
     if (success) {
         printf("nosleep: Settings saved to registry.\n");
@@ -372,6 +390,7 @@ static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose,
                          int notification_mode,
                          int auto_check_interval,
                          int check_updates_startup,
+                         int add_to_path,
                          bool prevent_display_set,
                          bool away_mode_set,
                          bool verbose_set) {
@@ -422,6 +441,9 @@ static int run_tray_mode(bool prevent_display, bool away_mode, bool verbose,
     }
     if (check_updates_startup >= 0) {
         tray->check_updates_on_startup = (check_updates_startup != 0);
+    }
+    if (add_to_path >= 0) {
+        tray_set_add_to_path(tray, add_to_path != 0);
     }
     
     // If duration is specified, auto-start (0 = indefinite, >0 = minutes)

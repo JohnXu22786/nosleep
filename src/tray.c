@@ -2708,7 +2708,8 @@ bool tray_save_settings_cli(int session_finished_action,
                             int auto_start,
                             int notification_mode,
                             int auto_check_interval,
-                            int check_updates_startup) {
+                            int check_updates_startup,
+                            int add_to_path) {
     // Validate enum ranges
     if (session_finished_action >= 0 &&
         session_finished_action != SESSION_FINISHED_NONE &&
@@ -2730,6 +2731,7 @@ bool tray_save_settings_cli(int session_finished_action,
     }
     if (auto_start < -1 || auto_start > 1) return false;
     if (check_updates_startup < -1 || check_updates_startup > 1) return false;
+    if (add_to_path < -1 || add_to_path > 1) return false;
 
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
@@ -2754,6 +2756,15 @@ bool tray_save_settings_cli(int session_finished_action,
     if (check_updates_startup >= 0) {
         DWORD val = (DWORD)(check_updates_startup != 0 ? 1 : 0);
         RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    }
+    if (add_to_path >= 0) {
+        DWORD val = (DWORD)(add_to_path != 0 ? 1 : 0);
+        RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (add_to_path != 0) {
+            add_app_to_path();
+        } else {
+            remove_app_from_path();
+        }
     }
 
     RegCloseKey(hKey);
@@ -2820,6 +2831,16 @@ void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
     if (!tray) return;
     tray->start_on_startup = enable;
     set_startup_registry(enable);
+}
+
+void tray_set_add_to_path(NoSleepTray* tray, bool enable) {
+    if (!tray) return;
+    tray->add_to_path = enable;
+    if (enable) {
+        add_app_to_path();
+    } else {
+        remove_app_from_path();
+    }
 }
 
 void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical) {
