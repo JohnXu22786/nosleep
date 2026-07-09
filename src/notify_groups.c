@@ -228,10 +228,10 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         result = RegQueryValueEx(hKeyGroup, "name", NULL, &name_type, (LPBYTE)name, &name_size);
         if (result != ERROR_SUCCESS || name_type != REG_SZ || name[0] == '\0') {
             RegCloseKey(hKeyGroup);
-            break; // Corrupt entry, stop enumeration
+            continue; // Corrupt entry, skip and continue enumeration
         }
-        strncpy(mgr->groups[i].name, name, MAX_GROUP_NAME - 1);
-        mgr->groups[i].name[MAX_GROUP_NAME - 1] = '\0';
+        strncpy(mgr->groups[mgr->count].name, name, MAX_GROUP_NAME - 1);
+        mgr->groups[mgr->count].name[MAX_GROUP_NAME - 1] = '\0';
         
         // Read event mask
         val = 0;
@@ -241,14 +241,14 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         if (result != ERROR_SUCCESS || mask_type != REG_DWORD) {
             val = 0;
         }
-        mgr->groups[i].event_mask = (unsigned int)val;
+        mgr->groups[mgr->count].event_mask = (unsigned int)val;
         
         // Read is_default
         val = 0;
         size = sizeof(DWORD);
         DWORD def_type = 0;
         result = RegQueryValueEx(hKeyGroup, "is_default", NULL, &def_type, (LPBYTE)&val, &size);
-        mgr->groups[i].is_default = (result == ERROR_SUCCESS && def_type == REG_DWORD && val != 0);
+        mgr->groups[mgr->count].is_default = (result == ERROR_SUCCESS && def_type == REG_DWORD && val != 0);
         
         RegCloseKey(hKeyGroup);
         mgr->count++;
