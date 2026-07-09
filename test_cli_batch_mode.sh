@@ -20,7 +20,7 @@ trap "rm -rf $TMPDIR" EXIT
 echo "=== Test: --help output includes new flags ==="
 
 # Extract help text from main.c
-HELP_TEXT=$(sed -n '/const char\* help_text/,/^;/p' src/main.c | tr -d '\n' | sed 's/const char\* help_text = //' | sed 's/;$//' | sed 's/"//g')
+HELP_TEXT=$(sed -n '/HELP_TEXT/,/^;/p' src/main.c | tr -d '\n' | sed 's/static const char\* const HELP_TEXT = //' | sed 's/;$//' | sed 's/"//g')
 
 check_help_flag() {
     local flag="$1"
