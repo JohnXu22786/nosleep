@@ -36,6 +36,15 @@
 #define DEBUG_PRINT(fmt, ...) ((void)0)
 #endif
 
+// Runtime debug log macro - controlled by NOSLEEP_DEBUG=1 environment variable
+// Outputs to stderr with [nosleep] prefix and newline. Caches env var lookup.
+#define DEBUG_LOG(fmt, ...) do { \
+    static const char* _nosleep_d = NULL; \
+    if (!_nosleep_d) _nosleep_d = getenv("NOSLEEP_DEBUG"); \
+    if (_nosleep_d && _nosleep_d[0] == '1') \
+        fprintf(stderr, "[nosleep] " fmt "\n", ##__VA_ARGS__); \
+} while(0)
+
 // Forward declaration
 struct NoSleep;
 
