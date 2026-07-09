@@ -843,12 +843,8 @@ static void tray_create_icons(NoSleepTray* tray) {
         tray->hIconActive = system_icon_shield;
     }
     
-    // Pre-create all 60 numbered icons (0-59) for better performance
-    for (int i = 0; i < 60; i++) {
-        tray->hIconNumbered[i] = create_numbered_icon(i);
-        DEBUG_LOG("tray_create_icons: numbered icon %d %s",
-                i, tray->hIconNumbered[i] ? "created" : "failed");
-    }
+    // Numbered icons (0-59) are created lazily on demand in tray_update_icon()
+    // to avoid creating 60 GDI icon objects at startup.
     
     // Create transparent icon for countdown blink off state
     tray->hIconCountdownBlank = create_transparent_icon();
