@@ -5,12 +5,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <winhttp.h>
+#include "cJSON.h"
 
 // GitHub API endpoint
 #define GITHUB_API_HOST L"api.github.com"
 #define GITHUB_API_PATH L"/repos/JohnXu22786/nosleep/releases/latest"
 
 // Forward declarations
+static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest, 
+                               HINTERNET* hConnect, DWORD timeout_ms);
 static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t* path, 
                             bool* success, const char** error_msg);
 static bool download_file(const char* url, const char* output_path);
@@ -46,27 +49,30 @@ int updater_compare_versions(const char* v1, const char* v2) {
     return 0;
 }
 
-// Parse GitHub API response JSON
+// Parse GitHub API response JSON using cJSON
 bool updater_parse_response(const char* json_response, UpdateInfo* info) {
     if (!json_response || !info) return false;
     
     memset(info, 0, sizeof(UpdateInfo));
     
+    cJSON* root = cJSON_Parse(json_response);
+    if (!root) return false;
+    
     // Parse "tag_name"
-    const char* tag = strstr(json_response, "\"tag_name\"");
-    if (!tag) return false;
+    cJSON* tag_name = cJSON_GetObjectItemCaseSensitive(root, "tag_name");
+    if (!cJSON_IsString(tag_name) || !tag_name->valuestring) {
+        cJSON_Delete(root);
+        return false;
+    }
     
-    const char* quote1 = strchr(tag + 10, '"');
-    if (!quote1) return false;
+    size_t len = strlen(tag_name->valuestring);
+    if (len == 0 || len >= sizeof(info->tag_name)) {
+        cJSON_Delete(root);
+        return false;
+    }
     
-    const char* quote2 = strchr(quote1 + 1, '"');
-    if (!quote2) return false;
-    
-    size_t len = (size_t)(quote2 - quote1 - 1);
-    if (len == 0 || len >= sizeof(info->tag_name)) return false;
-    
-    strncpy(info->tag_name, quote1 + 1, len);
-    info->tag_name[len] = '\0';
+    strncpy(info->tag_name, tag_name->valuestring, sizeof(info->tag_name) - 1);
+    info->tag_name[sizeof(info->tag_name) - 1] = '\0';
     
     // Copy to latest_version, stripping leading v/V
     const char* ver = info->tag_name;
@@ -76,33 +82,25 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
     
     // Parse "assets" array for browser_download_url
     // Look for .exe file in the assets
-    const char* assets = strstr(json_response, "\"assets\"");
-    if (assets) {
-        // Search for browser_download_url within assets
-        const char* search_pos = assets;
-        while (1) {
-            const char* url_key = strstr(search_pos, "\"browser_download_url\"");
-            if (!url_key) break;
-            
-            const char* uq1 = strchr(url_key + 20, '"');
-            if (!uq1) break;
-            
-            const char* uq2 = strchr(uq1 + 1, '"');
-            if (!uq2) break;
-            
-            size_t url_len = (size_t)(uq2 - uq1 - 1);
-            if (url_len > 0 && url_len < sizeof(info->download_url) - 1) {
-                strncpy(info->download_url, uq1 + 1, url_len);
-                info->download_url[url_len] = '\0';
-                
-                // Check if this URL points to an EXE file
-                if (strstr(info->download_url, ".exe") != NULL) {
-                    info->update_available = true;
-                    return true;
+    cJSON* assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
+    if (cJSON_IsArray(assets)) {
+        cJSON* asset = NULL;
+        cJSON_ArrayForEach(asset, assets) {
+            cJSON* url = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
+            if (cJSON_IsString(url) && url->valuestring) {
+                size_t url_len = strlen(url->valuestring);
+                if (url_len > 0 && url_len < sizeof(info->download_url) - 1) {
+                    strncpy(info->download_url, url->valuestring, sizeof(info->download_url) - 1);
+                    info->download_url[sizeof(info->download_url) - 1] = '\0';
+                    
+                    // Check if this URL points to an EXE file
+                    if (strstr(info->download_url, ".exe") != NULL) {
+                        info->update_available = true;
+                        cJSON_Delete(root);
+                        return true;
+                    }
                 }
             }
-            
-            search_pos = uq2 + 1;
         }
     }
     
@@ -114,9 +112,11 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
         snprintf(info->download_url, sizeof(info->download_url),
             "https://github.com/JohnXu22786/nosleep/releases/download/%s/nosleep-%s.exe",
             info->tag_name, info->tag_name);
+        cJSON_Delete(root);
         return true;
     }
     
+    cJSON_Delete(root);
     return false;
 }
 
@@ -310,6 +310,111 @@ static char* get_temp_path_for(const char* prefix) {
     return path;
 }
 
+// Follow HTTP redirects (301, 302, 307, 308) up to 5 times
+// Updates hRequest and hConnect through pointers; sets them to NULL on error
+// Returns the final HTTP status code (0 if error occurred during redirect)
+static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest, 
+                               HINTERNET* hConnect, DWORD timeout_ms) {
+    DWORD status_code = 0;
+    DWORD status_size = sizeof(status_code);
+    
+    if (!hRequest || !*hRequest || !hConnect || !*hConnect) return 0;
+    
+    // Get initial status code
+    WinHttpQueryHeaders(*hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+        NULL, &status_code, &status_size, NULL);
+    
+    int redirect_count = 0;
+    while ((status_code == 301 || status_code == 302 || 
+            status_code == 307 || status_code == 308) && 
+           redirect_count < 5) {
+        
+        // Get redirect URL
+        wchar_t redirect_url[2048] = {0};
+        DWORD url_size = sizeof(redirect_url);
+        WinHttpQueryHeaders(*hRequest, WINHTTP_QUERY_LOCATION,
+            NULL, redirect_url, &url_size, NULL);
+        
+        if (redirect_url[0] == L'\0') {
+            *hRequest = NULL;
+            *hConnect = NULL;
+            break;
+        }
+        
+        // Close old handles
+        WinHttpCloseHandle(*hRequest);
+        *hRequest = NULL;
+        WinHttpCloseHandle(*hConnect);
+        *hConnect = NULL;
+        
+        // Parse new URL
+        URL_COMPONENTS newUrlComp = {0};
+        newUrlComp.dwStructSize = sizeof(newUrlComp);
+        wchar_t newHost[256] = {0};
+        wchar_t newPath[2048] = {0};
+        newUrlComp.lpszHostName = newHost;
+        newUrlComp.dwHostNameLength = 256;
+        newUrlComp.lpszUrlPath = newPath;
+        newUrlComp.dwUrlPathLength = 2048;
+        
+        if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp)) {
+            *hRequest = NULL;
+            *hConnect = NULL;
+            break;
+        }
+        
+        // Create new connection
+        *hConnect = WinHttpConnect(hSession, newHost,
+            newUrlComp.nScheme == INTERNET_SCHEME_HTTPS ? 
+                INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
+        if (!*hConnect) {
+            *hRequest = NULL;
+            break;
+        }
+        
+        // Create new request
+        DWORD newFlags = WINHTTP_FLAG_REFRESH;
+        if (newUrlComp.nScheme == INTERNET_SCHEME_HTTPS) {
+            newFlags |= WINHTTP_FLAG_SECURE;
+        }
+        
+        *hRequest = WinHttpOpenRequest(*hConnect, L"GET", newPath, 
+                                        NULL, NULL, NULL, newFlags);
+        if (!*hRequest) {
+            WinHttpCloseHandle(*hConnect);
+            *hConnect = NULL;
+            break;
+        }
+        
+        // Set timeouts
+        WinHttpSetOption(*hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, 
+                         &timeout_ms, sizeof(timeout_ms));
+        WinHttpSetOption(*hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, 
+                         &timeout_ms, sizeof(timeout_ms));
+        
+        // Send and receive
+        if (!WinHttpSendRequest(*hRequest, NULL, 0, NULL, 0, 0, 0)) {
+            *hRequest = NULL;
+            *hConnect = NULL;
+            break;
+        }
+        if (!WinHttpReceiveResponse(*hRequest, NULL)) {
+            *hRequest = NULL;
+            *hConnect = NULL;
+            break;
+        }
+        
+        // Query new status code
+        status_size = sizeof(status_code);
+        WinHttpQueryHeaders(*hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+            NULL, &status_code, &status_size, NULL);
+        
+        redirect_count++;
+    }
+    
+    return status_code;
+}
+
 // Fetch JSON from GitHub API via HTTPS
 static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t* path, 
                             bool* success, const char** error_msg) {
@@ -364,71 +469,20 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
         return NULL;
     }
     
-    DWORD status_code = 0;
-    DWORD status_size = sizeof(status_code);
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        NULL, &status_code, &status_size, NULL);
-    
     // Follow redirects (GitHub API may redirect)
-    int redirect_count = 0;
-    while ((status_code == 301 || status_code == 302 || status_code == 307 || status_code == 308) && 
-           redirect_count < 5) {
-        // Get redirect URL
-        wchar_t redirect_url[2048] = {0};
-        DWORD url_size = sizeof(redirect_url);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_LOCATION,
-            NULL, redirect_url, &url_size, NULL);
-        
-        if (redirect_url[0] == L'\0') break;
-        
-        WinHttpCloseHandle(hRequest);
-        WinHttpCloseHandle(hConnect);
-        
-        // Parse new URL
-        URL_COMPONENTS newUrlComp = {0};
-        newUrlComp.dwStructSize = sizeof(newUrlComp);
-        wchar_t newHost[256] = {0};
-        wchar_t newPath[2048] = {0};
-        newUrlComp.lpszHostName = newHost;
-        newUrlComp.dwHostNameLength = 256;
-        newUrlComp.lpszUrlPath = newPath;
-        newUrlComp.dwUrlPathLength = 2048;
-        
-        if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp)) break;
-        
-        hConnect = WinHttpConnect(hSession, newHost,
-            newUrlComp.nScheme == INTERNET_SCHEME_HTTPS ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
-        if (!hConnect) break;
-        
-        DWORD newFlags = WINHTTP_FLAG_REFRESH;
-        if (newUrlComp.nScheme == INTERNET_SCHEME_HTTPS) newFlags |= WINHTTP_FLAG_SECURE;
-        
-        hRequest = WinHttpOpenRequest(hConnect, L"GET", newPath, NULL, NULL, NULL, newFlags);
-        if (!hRequest) {
-            WinHttpCloseHandle(hConnect);
-            hConnect = NULL;
-            break;
-        }
-        
-        DWORD timeout = 10000;
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-        
-        if (!WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0)) break;
-        if (!WinHttpReceiveResponse(hRequest, NULL)) break;
-        
-        status_size = sizeof(status_code);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            NULL, &status_code, &status_size, NULL);
-        
-        redirect_count++;
-    }
+    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout);
     
-    if (status_code != 200) {
-        WinHttpCloseHandle(hRequest);
+    if (status_code == 0 || status_code != 200) {
+        if (hRequest) WinHttpCloseHandle(hRequest);
         if (hConnect) WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        if (error_msg) *error_msg = "Server returned non-200 status";
+        if (error_msg) {
+            if (status_code == 0) {
+                *error_msg = "Could not follow redirect";
+            } else {
+                *error_msg = "Server returned non-200 status";
+            }
+        }
         return NULL;
     }
     
@@ -554,79 +608,10 @@ static bool download_file(const char* url, const char* output_path) {
         return false;
     }
     
-    DWORD status_code = 0;
-    DWORD status_size = sizeof(status_code);
-    WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-        NULL, &status_code, &status_size, NULL);
-    
     // GitHub releases may redirect; follow redirects manually
-    int redirect_count = 0;
-    while ((status_code == 301 || status_code == 302 || status_code == 307 || status_code == 308) && 
-           redirect_count < 5) {
-        // Get redirect URL
-        wchar_t redirect_url[2048] = {0};
-        DWORD url_size = sizeof(redirect_url);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_LOCATION,
-            NULL, redirect_url, &url_size, NULL);
-        
-        if (redirect_url[0] == L'\0') {
-            hRequest = NULL;
-            hConnect = NULL;
-            break;
-        }
-        
-        WinHttpCloseHandle(hRequest);
-        hRequest = NULL;
-        WinHttpCloseHandle(hConnect);
-        hConnect = NULL;
-        
-        // Parse new URL
-        URL_COMPONENTS newUrlComp = {0};
-        newUrlComp.dwStructSize = sizeof(newUrlComp);
-        wchar_t newHost[256] = {0};
-        wchar_t newPath[2048] = {0};
-        newUrlComp.lpszHostName = newHost;
-        newUrlComp.dwHostNameLength = 256;
-        newUrlComp.lpszUrlPath = newPath;
-        newUrlComp.dwUrlPathLength = 2048;
-        
-        if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp)) {
-            hRequest = NULL;
-            hConnect = NULL;
-            break;
-        }
-        
-        hConnect = WinHttpConnect(hSession, newHost,
-            newUrlComp.nScheme == INTERNET_SCHEME_HTTPS ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
-        if (!hConnect) {
-            hRequest = NULL;
-            break;
-        }
-        
-        DWORD newFlags = WINHTTP_FLAG_REFRESH;
-        if (newUrlComp.nScheme == INTERNET_SCHEME_HTTPS) newFlags |= WINHTTP_FLAG_SECURE;
-        
-        hRequest = WinHttpOpenRequest(hConnect, L"GET", newPath, NULL, NULL, NULL, newFlags);
-        if (!hRequest) {
-            WinHttpCloseHandle(hConnect);
-            hConnect = NULL;
-            break;
-        }
-        
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, &timeout, sizeof(timeout));
-        WinHttpSetOption(hRequest, WINHTTP_OPTION_RECEIVE_TIMEOUT, &timeout, sizeof(timeout));
-        
-        if (!WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0)) break;
-        if (!WinHttpReceiveResponse(hRequest, NULL)) break;
-        
-        status_size = sizeof(status_code);
-        WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-            NULL, &status_code, &status_size, NULL);
-        
-        redirect_count++;
-    }
+    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout);
     
-    if (status_code != 200) {
+    if (status_code == 0 || status_code != 200) {
         if (hRequest) WinHttpCloseHandle(hRequest);
         if (hConnect) WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);

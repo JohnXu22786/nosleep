@@ -17,12 +17,12 @@ SRCDIR = src
 OBJDIR = obj
 BINDIR = bin
 
-SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c
+SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c $(SRCDIR)/cJSON.c
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
 
-.PHONY: all clean
+.PHONY: all clean test-unit
 
 all: $(TARGET)
 
@@ -53,9 +53,13 @@ run: $(TARGET)
 run-cli: $(TARGET)
 	./$(TARGET) --duration 30
 
-# Build and test
+# Build and run unit tests for updater module (JSON parsing, version comparison)
+test-unit: $(OBJDIR)
+	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
+
+# Build main binary (and test it exists)
 test: $(TARGET)
-	./$(TARGET) --help
+	$(TARGET) --help
 
 # Install (copy to current directory)
 install: $(TARGET)
