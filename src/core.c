@@ -6,6 +6,9 @@
 #include <string.h>
 #include <time.h>
 
+// SRWLOCK for thread-safe logging (Item 7) - statically initialized, Vista+ compatible
+static SRWLOCK g_log_lock = SRWLOCK_INIT;
+
 NoSleep* nosleep_create(void) {
     NoSleep* ns = (NoSleep*)malloc(sizeof(NoSleep));
     if (!ns) return NULL;
@@ -79,13 +82,10 @@ bool nosleep_allow_sleep(NoSleep* ns) {
     return result != 0;
 }
 
-static double get_elapsed_seconds(DWORD start_tick) {
-    DWORD current_tick = GetTickCount();
-    // Handle tick counter wrap-around (every 49.7 days)
-    if (current_tick < start_tick) {
-        return (double)((0xFFFFFFFF - start_tick) + current_tick) / 1000.0;
-    }
-    return (double)(current_tick - start_tick) / 1000.0;
+static double get_elapsed_seconds(ULONGLONG start_tick64) {
+    ULONGLONG current_tick64 = GetTickCount64();
+    // GetTickCount64 does not wrap for ~584 million years, no wrap handling needed
+    return (double)(current_tick64 - start_tick64) / 1000.0;
 }
 
 int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds, 
@@ -94,8 +94,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     if (!ns) return 1;
     
     ns->running = true;
-    ns->start_tick = GetTickCount();
-    GetSystemTime(&ns->start_time);
+    ns->start_tick64 = GetTickCount64();
     ns->refresh_count = 0;
     ns->failure_count = 0;
     
@@ -104,25 +103,14 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     nosleep_log_info("nosleep started - preventing system sleep");
     printf("Press Ctrl+C to stop and allow sleep\n");
     
-    SYSTEMTIME end_time;
     if (duration_minutes > 0) {
-        FILETIME ft_start, ft_end;
-        SystemTimeToFileTime(&ns->start_time, &ft_start);
-        
-        ULARGE_INTEGER uli;
-        uli.LowPart = ft_start.dwLowDateTime;
-        uli.HighPart = ft_start.dwHighDateTime;
-        
-        // Add duration in minutes (converted to 100-nanosecond intervals)
-        uli.QuadPart += (ULONGLONG)duration_minutes * 60 * 10000000LL;
-        
-        ft_end.dwLowDateTime = uli.LowPart;
-        ft_end.dwHighDateTime = uli.HighPart;
-        FileTimeToSystemTime(&ft_end, &end_time);
-        
+        // Compute approximate end time for display using time() (UTC)
+        time_t rawtime;
+        time(&rawtime);
+        rawtime += (time_t)duration_minutes * 60;
+        struct tm* end_tm = gmtime(&rawtime);
         char time_str[64];
-        sprintf(time_str, "%02d:%02d:%02d", 
-                end_time.wHour, end_time.wMinute, end_time.wSecond);
+        strftime(time_str, sizeof(time_str), "%H:%M:%S", end_tm);
         nosleep_log_info("Will run for %d minutes (until %s)", duration_minutes, time_str);
     }
     
@@ -148,7 +136,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         if (success) {
             ns->failure_count = 0; // Reset failure count on success
             
-            double elapsed = get_elapsed_seconds(ns->start_tick);
+            double elapsed = get_elapsed_seconds(ns->start_tick64);
             int minutes = (int)(elapsed / 60);
             int seconds = (int)(elapsed) % 60;
             
@@ -183,17 +171,11 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
             break;
         }
         
-        // Check if duration has elapsed
+        // Check if duration has elapsed (using GetTickCount64, no wrap issues)
         if (duration_minutes > 0) {
-            SYSTEMTIME now;
-            GetSystemTime(&now);
-            
-            FILETIME ft_now, ft_end;
-            SystemTimeToFileTime(&now, &ft_now);
-            SystemTimeToFileTime(&end_time, &ft_end);
-            
-            // Compare FILETIMEs
-            if (CompareFileTime(&ft_now, &ft_end) >= 0) {
+            ULONGLONG elapsed_ms = GetTickCount64() - ns->start_tick64;
+            ULONGLONG duration_ms = (ULONGLONG)duration_minutes * 60 * 1000;
+            if (elapsed_ms >= duration_ms) {
                 nosleep_log_info("Duration reached (%d minutes). Stopping...", duration_minutes);
                 break;
             }
@@ -217,7 +199,7 @@ void nosleep_stop(NoSleep* ns) {
             nosleep_log_warning("Failed to restore sleep behavior");
         }
         
-        double elapsed = get_elapsed_seconds(ns->start_tick);
+        double elapsed = get_elapsed_seconds(ns->start_tick64);
         int hours = (int)(elapsed / 3600);
         int minutes = (int)((elapsed - hours * 3600) / 60);
         int seconds = (int)(elapsed) % 60;
@@ -230,8 +212,10 @@ void nosleep_stop(NoSleep* ns) {
     }
 }
 
-// Logging functions
+// Logging functions - all protected by SRWLOCK for thread safety
 void nosleep_log_info(const char* format, ...) {
+    AcquireSRWLockExclusive(&g_log_lock);
+    
     SYSTEMTIME now;
     GetSystemTime(&now);
     
@@ -243,9 +227,13 @@ void nosleep_log_info(const char* format, ...) {
     printf("\n");
     
     va_end(args);
+    
+    ReleaseSRWLockExclusive(&g_log_lock);
 }
 
 void nosleep_log_warning(const char* format, ...) {
+    AcquireSRWLockExclusive(&g_log_lock);
+    
     SYSTEMTIME now;
     GetSystemTime(&now);
     
@@ -257,9 +245,13 @@ void nosleep_log_warning(const char* format, ...) {
     printf("\n");
     
     va_end(args);
+    
+    ReleaseSRWLockExclusive(&g_log_lock);
 }
 
 void nosleep_log_error(const char* format, ...) {
+    AcquireSRWLockExclusive(&g_log_lock);
+    
     SYSTEMTIME now;
     GetSystemTime(&now);
     
@@ -271,4 +263,6 @@ void nosleep_log_error(const char* format, ...) {
     printf("\n");
     
     va_end(args);
+    
+    ReleaseSRWLockExclusive(&g_log_lock);
 }

@@ -2,6 +2,10 @@
 #ifndef CORE_H
 #define CORE_H
 
+// Require Windows Vista+ APIs (GetTickCount64, SRWLOCK, etc.)
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 #include <windows.h>
 #include <stdbool.h>
 
@@ -13,9 +17,8 @@
 
 typedef struct NoSleep {
     bool running;
-    SYSTEMTIME start_time;
-    DWORD start_tick;
     HANDLE stop_event;
+    ULONGLONG start_tick64;
     int refresh_count;
     int failure_count;
 } NoSleep;
