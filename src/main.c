@@ -213,6 +213,9 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             char value[256];
             WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
             opts->duration = atoi(value);
+            if (opts->duration < 0) {
+                opts->duration = 0; // -1 is the unset sentinel; 0 means indefinite.
+            }
         }
         else if (strcmp(arg, "--interval") == 0 || strcmp(arg, "-i") == 0) {
             if (i + 1 >= argc) return 1;
