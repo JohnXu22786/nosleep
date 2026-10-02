@@ -5,6 +5,7 @@
 #include "resources.h"
 #include "notify_groups.h"
 #include "updater.h"
+#include "tray_stop_guard.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,6 +105,7 @@ NoSleepTray* tray_create(void) {
     if (!tray) return NULL;
     
     memset(tray, 0, sizeof(NoSleepTray));
+    InitializeSRWLock(&tray->delayed_action_lock);
     tray->duration_minutes = -1; // Not set
     tray->current_number = -1;   // No numbered icon displayed
     tray->prevent_display = false;
@@ -1030,14 +1032,19 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     // Prevent re-entrant calls - use atomic exchange to check and set stopping flag
     if (!tray) return;
     
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     if (was_stopping) {
         DEBUG_LOG("tray_stop_nosleep: already stopping, returning");
         return;
     }
 
-    if (!ATOMIC_LOAD_BOOL(&tray->is_running) && !ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
-        DEBUG_LOG("tray_stop_nosleep: neither running nor in countdown, resetting stopping flag and returning");
+    if (!tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                            tray->sleep_timer != NULL,
+                            tray->shutdown_timer != NULL)) {
+        DEBUG_LOG("tray_stop_nosleep: no active session, countdown, or delayed action; resetting stopping flag and returning");
         ATOMIC_STORE_BOOL(&tray->stopping, false);
         return;
     }
@@ -1071,7 +1078,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         DWORD current_thread_id = GetCurrentThreadId();
         DWORD sleep_timer_thread_id = GetThreadId(tray->sleep_timer);
         if (current_thread_id != sleep_timer_thread_id) {
-            WaitForSingleObject(tray->sleep_timer, 2000);
+            WaitForSingleObject(tray->sleep_timer, INFINITE);
         }
         CloseHandle(tray->sleep_timer);
         tray->sleep_timer = NULL;
@@ -1088,7 +1095,7 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
         DWORD current_thread_id = GetCurrentThreadId();
         DWORD shutdown_timer_thread_id = GetThreadId(tray->shutdown_timer);
         if (current_thread_id != shutdown_timer_thread_id) {
-            WaitForSingleObject(tray->shutdown_timer, 2000);
+            WaitForSingleObject(tray->shutdown_timer, INFINITE);
         }
         CloseHandle(tray->shutdown_timer);
         tray->shutdown_timer = NULL;
@@ -1493,19 +1500,19 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
         ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
         
         if (elapsed_100ns >= delay_100ns) {
-            // Timeout reached, but check if we should still sleep
-            // Double-check stop condition to prevent race condition
+            // Stop the display before deciding atomically whether to trigger sleep.
+            tray_stop_countdown(tray);
+            AcquireSRWLockExclusive(&tray->delayed_action_lock);
             if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
-                // Already stopped, don't trigger sleep
-                DEBUG_LOG("delayed_sleep_thread: race condition detected, not sleeping");
+                DEBUG_LOG("delayed_sleep_thread: cancelled before sleep could start");
             } else {
-                // Trigger sleep
+                // Stop and action initiation are serialized by delayed_action_lock.
                 DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
-                // Stop countdown display before sleep
-                tray_stop_countdown(tray);
                 trigger_system_sleep(tray);
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                 return 0;
             }
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             break;
         }
         
@@ -1564,19 +1571,19 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
         ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
         
         if (elapsed_100ns >= delay_100ns) {
-            // Timeout reached, but check if we should still shutdown
-            // Double-check stop condition to prevent race condition
+            // Stop the display before deciding atomically whether to trigger shutdown.
+            tray_stop_countdown(tray);
+            AcquireSRWLockExclusive(&tray->delayed_action_lock);
             if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
-                // Already stopped, don't trigger shutdown
-                DEBUG_LOG("delayed_shutdown_thread: race condition detected, not shutting down");
+                DEBUG_LOG("delayed_shutdown_thread: cancelled before shutdown could start");
             } else {
-                // Trigger shutdown
+                // Stop and action initiation are serialized by delayed_action_lock.
                 DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
-                // Stop countdown display before shutdown
-                tray_stop_countdown(tray);
                 trigger_system_shutdown(tray);
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                 return 0;
             }
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             break;
         }
         
@@ -1637,8 +1644,9 @@ void tray_stop_countdown(NoSleepTray* tray) {
         return;
     }
     
-    if (!ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
-        DEBUG_LOG("tray_stop_countdown: already not active, returning");
+    if (!tray_countdown_has_work(ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                 tray->countdown_timer_thread != NULL)) {
+        DEBUG_LOG("tray_stop_countdown: no active countdown or countdown thread, returning");
         return;
     }
     
@@ -3804,7 +3812,10 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
             // Enable/disable Stop menu item based on running state
-            if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+            if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                                   ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                   tray->sleep_timer != NULL,
+                                   tray->shutdown_timer != NULL)) {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
             } else {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
@@ -3840,10 +3851,15 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_STOP:
                     {
-                        DEBUG_LOG("IDM_STOP: is_running=%s, delayed_sleep_countdown_active=%s",
+                        DEBUG_LOG("IDM_STOP: is_running=%s, delayed_sleep_countdown_active=%s, sleep_timer=%s, shutdown_timer=%s",
                                 ATOMIC_LOAD_BOOL(&tray->is_running) ? "true" : "false",
-                                ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
-                        if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                                ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false",
+                                tray->sleep_timer ? "active" : "inactive",
+                                tray->shutdown_timer ? "active" : "inactive");
+                        if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                                               ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                               tray->sleep_timer != NULL,
+                                               tray->shutdown_timer != NULL)) {
                             tray_stop_nosleep(tray, false, false); // show notification when manually stopping
                         }
                     }
@@ -3965,7 +3981,10 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     GetCursorPos(&pt);
                     SetForegroundWindow(hwnd);
                     // Enable/disable Stop menu item based on running state
-                    if (ATOMIC_LOAD_BOOL(&tray->is_running) || ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                    if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                                           ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                           tray->sleep_timer != NULL,
+                                           tray->shutdown_timer != NULL)) {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
                     } else {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
