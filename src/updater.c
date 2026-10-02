@@ -6,6 +6,7 @@
 #include <string.h>
 #include <winhttp.h>
 #include "cJSON.h"
+#include "updater_stream.h"
 
 // GitHub API endpoint
 #define GITHUB_API_HOST L"api.github.com"
@@ -23,6 +24,22 @@ static bool create_update_batch_script(const char* current_exe_path,
                                         char* script_path, size_t script_path_size);
 static char* get_exe_name_from_path(const char* path);
 static char* get_temp_path_for(const char* prefix);
+
+static bool updater_read_winhttp(void* context, void* buffer, size_t capacity,
+                                 size_t* bytes_read) {
+    DWORD bytes = 0;
+    BOOL success = WinHttpReadData((HINTERNET)context, buffer, (DWORD)capacity, &bytes);
+    *bytes_read = bytes;
+    return success != FALSE;
+}
+
+static bool updater_write_file(void* context, const void* buffer, size_t bytes_to_write,
+                               size_t* bytes_written) {
+    DWORD bytes = 0;
+    BOOL success = WriteFile((HANDLE)context, buffer, (DWORD)bytes_to_write, &bytes, NULL);
+    *bytes_written = bytes;
+    return success != FALSE;
+}
 
 // Compare two version strings (e.g., "2.0.0" > "1.5.0")
 // Returns: 1 if v1 > v2, 0 if equal, -1 if v1 < v2
@@ -639,17 +656,9 @@ static bool download_file(const char* url, const char* output_path) {
         return false;
     }
     
-    DWORD bytes_read = 0;
-    DWORD total_bytes = 0;
-    bool write_error = false;
-    while (WinHttpReadData(hRequest, buffer, buffer_size, &bytes_read) && bytes_read > 0) {
-        DWORD bytes_written = 0;
-        if (!WriteFile(hFile, buffer, bytes_read, &bytes_written, NULL) || bytes_written != bytes_read) {
-            write_error = true;
-            break;
-        }
-        total_bytes += bytes_written;
-    }
+    bool copy_ok = updater_copy_stream(updater_read_winhttp, hRequest,
+                                       updater_write_file, hFile,
+                                       buffer, buffer_size);
     
     free(buffer);
     CloseHandle(hFile);
@@ -657,8 +666,7 @@ static bool download_file(const char* url, const char* output_path) {
     if (hConnect) WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
     
-    // Return true only if we wrote data and had no write errors
-    return total_bytes > 0 && !write_error;
+    return copy_ok;
 }
 
 // Create a batch script that:
