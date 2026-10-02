@@ -11,6 +11,7 @@
 #include "tray.h"
 #include "constants.h"
 #include "cli_duration.h"
+#include "cli_interval.h"
 
 // Sentinel values for tri-state CLI options (-1 = not specified)
 #define CLI_UNSET -1
@@ -221,9 +222,8 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
         else if (strcmp(arg, "--interval") == 0 || strcmp(arg, "-i") == 0) {
             if (i + 1 >= argc) return 1;
             char value[256];
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
-            opts->interval = atoi(value);
-            if (opts->interval <= 0) return 1;
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
+            if (!cli_parse_refresh_interval(value, &opts->interval)) return 1;
         }
         else if (strcmp(arg, "--prevent-display") == 0 || strcmp(arg, "-p") == 0) {
             opts->prevent_display = true;
@@ -371,6 +371,7 @@ static int run_tray_mode(const CLIOptions* opts) {
     if (opts->verbose_set) {
         tray->verbose = opts->verbose;
     }
+    tray->refresh_interval_seconds = opts->interval;
     
     if (opts->session_finished >= 0) {
         tray->session_finished_action = (SessionFinishedAction)opts->session_finished;

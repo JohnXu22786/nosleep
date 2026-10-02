@@ -101,6 +101,7 @@ typedef struct NoSleepTray {
     bool prevent_display;       // Also prevent display from sleeping
     bool away_mode;             // Enable away mode
     bool verbose;               // Print verbose status
+    int refresh_interval_seconds; // Interval between sleep-prevention refreshes
     SessionFinishedAction session_finished_action; // Action to take when session finishes
     bool sleep_after_timeout;   // Whether to sleep after timeout expires (deprecated, use session_finished_action)
     HANDLE sleep_timer;         // Timer handle for delayed sleep
