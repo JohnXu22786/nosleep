@@ -17,7 +17,7 @@ duration_branch = re.search(
 assert duration_branch, "could not find the --duration parsing branch"
 branch = duration_branch.group(0)
 assert re.search(
-    r"opts->duration\s*=\s*atoi\(value\)\s*;\s*"
+    r"if\s*\(!cli_parse_duration\(value,\s*&opts->duration\)\)\s*return 1\s*;\s*"
     r"if\s*\(opts->duration\s*<\s*0\)\s*\{?\s*"
     r"opts->duration\s*=\s*0\s*;",
     branch,

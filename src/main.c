@@ -10,6 +10,7 @@
 #include "core.h"
 #include "tray.h"
 #include "constants.h"
+#include "cli_duration.h"
 
 // Sentinel values for tri-state CLI options (-1 = not specified)
 #define CLI_UNSET -1
@@ -211,8 +212,8 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
         else if (strcmp(arg, "--duration") == 0 || strcmp(arg, "-d") == 0) {
             if (i + 1 >= argc) return 1;
             char value[256];
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
-            opts->duration = atoi(value);
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
+            if (!cli_parse_duration(value, &opts->duration)) return 1;
             if (opts->duration < 0) {
                 opts->duration = 0; // -1 is the unset sentinel; 0 means indefinite.
             }
