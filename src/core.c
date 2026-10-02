@@ -88,8 +88,18 @@ static double get_elapsed_seconds(ULONGLONG start_tick64) {
     return (double)(current_tick64 - start_tick64) / 1000.0;
 }
 
+static bool wait_for_stop_event(NoSleep* ns, HANDLE external_stop_event, DWORD timeout) {
+    HANDLE stop_events[2] = { ns->stop_event, external_stop_event };
+    DWORD stop_event_count = external_stop_event && external_stop_event != ns->stop_event ? 2 : 1;
+    DWORD wait_result = WaitForMultipleObjects(stop_event_count, stop_events, FALSE, timeout);
+
+    return wait_result == WAIT_OBJECT_0 ||
+           (stop_event_count == 2 && wait_result == WAIT_OBJECT_0 + 1);
+}
+
 int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds, 
-                bool prevent_display, bool away_mode, bool verbose) {
+                bool prevent_display, bool away_mode, bool verbose,
+                HANDLE external_stop_event) {
     
     if (!ns) return 1;
     
@@ -124,8 +134,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     
     while (ns->running) {
         // Check for stop event (for external stop signal)
-        if (WaitForSingleObject(ns->stop_event, 0) == WAIT_OBJECT_0) {
-            ns->running = false;
+        if (wait_for_stop_event(ns, external_stop_event, 0)) {
             break;
         }
         
@@ -165,9 +174,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         
         // Sleep for the specified interval, but check stop_event periodically
         DWORD sleep_interval = interval_seconds * 1000;
-        DWORD wait_result = WaitForSingleObject(ns->stop_event, sleep_interval);
-        if (wait_result == WAIT_OBJECT_0) {
-            ns->running = false;
+        if (wait_for_stop_event(ns, external_stop_event, sleep_interval)) {
             break;
         }
         

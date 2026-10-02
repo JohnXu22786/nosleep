@@ -31,7 +31,8 @@ bool nosleep_prevent_sleep(NoSleep* ns, bool prevent_display, bool away_mode, bo
 bool nosleep_allow_sleep(NoSleep* ns);
 
 int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds, 
-                bool prevent_display, bool away_mode, bool verbose);
+                bool prevent_display, bool away_mode, bool verbose,
+                HANDLE external_stop_event);
 
 void nosleep_stop(NoSleep* ns);
 
