@@ -1,6 +1,7 @@
 // Updater implementation for nosleep
 #include "updater.h"
 #include "constants.h"
+#include "updater_batch.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -695,6 +696,16 @@ static bool create_update_batch_script(const char* current_exe_path,
     // 3. Starts the new EXE with the same arguments
     // 4. Deletes itself
     
+    char* escaped_current_exe_path = updater_escape_batch_path(current_exe_path);
+    char* escaped_downloaded_path = updater_escape_batch_path(downloaded_path);
+    char* escaped_exe_name = updater_escape_batch_path(exe_name);
+    if (!escaped_current_exe_path || !escaped_downloaded_path || !escaped_exe_name) {
+        free(escaped_current_exe_path);
+        free(escaped_downloaded_path);
+        free(escaped_exe_name);
+        return false;
+    }
+
     char script_content[4096];
     int written = snprintf(script_content, sizeof(script_content),
         "@echo off\r\n"
@@ -722,14 +733,18 @@ static bool create_update_batch_script(const char* current_exe_path,
         "echo Cleaning up...\r\n"
         "del \"%s\" > nul 2>&1\r\n"
         "del \"%%~f0\" > nul 2>&1\r\n",
-        exe_name,                    // for tasklist filter
-        exe_name,                    // for find
-        downloaded_path,             // source file to copy from
-        current_exe_path,            // destination (original EXE path)
-        downloaded_path,             // info message about temp file
-        current_exe_path,            // to start the new version
-        downloaded_path              // delete temp file
+        escaped_exe_name,            // for tasklist filter
+        escaped_exe_name,            // for find
+        escaped_downloaded_path,     // source file to copy from
+        escaped_current_exe_path,    // destination (original EXE path)
+        escaped_downloaded_path,     // info message about temp file
+        escaped_current_exe_path,    // to start the new version
+        escaped_downloaded_path      // delete temp file
     );
+
+    free(escaped_current_exe_path);
+    free(escaped_downloaded_path);
+    free(escaped_exe_name);
     
     if (written <= 0 || (size_t)written >= sizeof(script_content)) {
         return false;
