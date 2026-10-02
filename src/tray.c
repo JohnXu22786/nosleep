@@ -1336,7 +1336,8 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         tray->refresh_interval_seconds, // interval_seconds
         tray->prevent_display, // prevent_display
         tray->away_mode, // away_mode
-        tray->verbose  // verbose
+        tray->verbose, // verbose
+        tray->stop_event // external stop event
     );
     
     nosleep_destroy(ns);
