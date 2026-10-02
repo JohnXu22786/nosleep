@@ -109,6 +109,7 @@ NoSleepTray* tray_create(void) {
     tray->prevent_display = false;
     tray->away_mode = false;
     tray->verbose = false;
+    tray->refresh_interval_seconds = 20;
     tray->session_finished_action = SESSION_FINISHED_NONE;
     tray->sleep_after_timeout = false;
     tray->countdown_stopping = false;
@@ -1332,7 +1333,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     int result = nosleep_run(
         ns,
         0, // duration_minutes (0 = indefinite, controlled by timer thread)
-        20, // interval_seconds
+        tray->refresh_interval_seconds, // interval_seconds
         tray->prevent_display, // prevent_display
         tray->away_mode, // away_mode
         tray->verbose  // verbose
