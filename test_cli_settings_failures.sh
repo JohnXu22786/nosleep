@@ -1,0 +1,382 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+python3 - "$SCRIPT_DIR" <<'PY'
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+root = Path(sys.argv[1])
+tray = (root / "src/tray.c").read_text()
+
+
+def extract_function(name):
+    definition = re.search(
+        r"\b(?:static\s+)?(?:void|bool)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        tray,
+        re.S,
+    )
+    assert definition, f"could not find definition for {name}"
+    start = definition.start()
+    opening = definition.end() - 1
+
+    depth = 0
+    state = "code"
+    i = opening
+    while i < len(tray):
+        char = tray[i]
+        next_two = tray[i : i + 2]
+        if state == "code":
+            if next_two == "//":
+                state = "line_comment"
+                i += 2
+                continue
+            if next_two == "/*":
+                state = "block_comment"
+                i += 2
+                continue
+            if char == '"':
+                state = "string"
+            elif char == "'":
+                state = "char"
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return tray[start : i + 1]
+        elif state == "line_comment":
+            if char == "\n":
+                state = "code"
+        elif state == "block_comment":
+            if next_two == "*/":
+                state = "code"
+                i += 2
+                continue
+        elif state in ("string", "char"):
+            if char == "\\":
+                i += 2
+                continue
+            if (state == "string" and char == '"') or (state == "char" and char == "'"):
+                state = "code"
+        i += 1
+    raise AssertionError(f"unterminated function: {name}")
+
+
+windows_stubs = r"""
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef unsigned int DWORD;
+typedef long LONG;
+typedef unsigned char BYTE;
+typedef BYTE *LPBYTE;
+typedef void *HKEY;
+typedef void *HWND;
+typedef intptr_t LPARAM;
+
+#define ERROR_SUCCESS 0
+#define ERROR_FILE_NOT_FOUND 2
+#define ERROR_ACCESS_DENIED 5
+#define ERROR_MORE_DATA 234
+#define KEY_READ 1
+#define KEY_WRITE 2
+#define REG_SZ 1
+#define REG_DWORD 4
+#define REG_EXPAND_SZ 2
+#define REG_OPTION_NON_VOLATILE 0
+#define HKEY_CURRENT_USER ((HKEY)1)
+#define HWND_BROADCAST ((HWND)(uintptr_t)0xffff)
+#define WM_SETTINGCHANGE 0x001a
+#define SMTO_ABORTIFHUNG 0x0002
+#define SETTINGS_REG_KEY "Software\\nosleep\\settings"
+#define SESSION_FINISHED_NONE 0
+#define SESSION_FINISHED_SHUTDOWN 1
+#define SESSION_FINISHED_SLEEP 2
+#define NOTIFY_ALL 0
+#define NOTIFY_CRITICAL_ONLY 1
+#define NOTIFY_NONE 2
+
+static LONG settings_create_result;
+static LONG startup_open_result;
+static LONG environment_open_result;
+static LONG path_query_result;
+static LONG path_data_query_result;
+static LONG registry_write_result;
+static LONG registry_delete_result;
+static const char *failed_value_name;
+static bool add_path_result;
+static const BYTE *path_data;
+static DWORD path_data_size;
+static int registry_write_count;
+static int registry_close_count;
+static int add_path_count;
+static int environment_open_count;
+
+static void reset_mocks(void) {
+    settings_create_result = ERROR_SUCCESS;
+    startup_open_result = ERROR_SUCCESS;
+    environment_open_result = ERROR_SUCCESS;
+    path_query_result = ERROR_FILE_NOT_FOUND;
+    path_data_query_result = ERROR_SUCCESS;
+    registry_write_result = ERROR_SUCCESS;
+    registry_delete_result = ERROR_SUCCESS;
+    failed_value_name = NULL;
+    add_path_result = true;
+    path_data = NULL;
+    path_data_size = 0;
+    registry_write_count = 0;
+    registry_close_count = 0;
+    add_path_count = 0;
+    environment_open_count = 0;
+}
+
+LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
+                    const char *class_name, DWORD options, DWORD access,
+                    void *security, HKEY *key, DWORD *disposition) {
+    (void)root; (void)path; (void)reserved; (void)class_name; (void)options;
+    (void)access; (void)security; (void)disposition;
+    if (settings_create_result == ERROR_SUCCESS) *key = (HKEY)2;
+    return settings_create_result;
+}
+
+LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access, HKEY *key) {
+    (void)root; (void)reserved; (void)access;
+    if (strcmp(path, "Environment") == 0) {
+        ++environment_open_count;
+        if (environment_open_result == ERROR_SUCCESS) *key = (HKEY)4;
+        return environment_open_result;
+    }
+    if (startup_open_result == ERROR_SUCCESS) *key = (HKEY)3;
+    return startup_open_result;
+}
+
+LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
+                   const BYTE *value, DWORD size) {
+    (void)key; (void)reserved; (void)type; (void)value; (void)size;
+    ++registry_write_count;
+    if (failed_value_name && strcmp(name, failed_value_name) == 0) {
+        return registry_write_result;
+    }
+    return ERROR_SUCCESS;
+}
+
+LONG RegDeleteValue(HKEY key, const char *name) {
+    (void)key; (void)name;
+    return registry_delete_result;
+}
+
+LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
+                     BYTE *value, DWORD *size) {
+    (void)key; (void)reserved; (void)type;
+    if (strcmp(name, "Path") != 0) return ERROR_FILE_NOT_FOUND;
+    if (!value) {
+        if (path_query_result != ERROR_SUCCESS) return path_query_result;
+        *size = path_data_size;
+        return ERROR_SUCCESS;
+    }
+    if (path_data_query_result != ERROR_SUCCESS) return path_data_query_result;
+    if (*size < path_data_size) {
+        *size = path_data_size;
+        return ERROR_MORE_DATA;
+    }
+    if (path_data_size > 0) memcpy(value, path_data, path_data_size);
+    *size = path_data_size;
+    return ERROR_SUCCESS;
+}
+
+LONG RegCloseKey(HKEY key) {
+    (void)key;
+    ++registry_close_count;
+    return ERROR_SUCCESS;
+}
+
+static char *get_exe_path(void) {
+    const char *path = "C:\\NoSleep\\nosleep.exe";
+    char *copy = (char *)malloc(strlen(path) + 1);
+    if (copy) strcpy(copy, path);
+    return copy;
+}
+
+static char *get_exe_dir(void) {
+    const char *dir = "C:\\NoSleep";
+    char *copy = (char *)malloc(strlen(dir) + 1);
+    if (copy) strcpy(copy, dir);
+    return copy;
+}
+
+static int str_icmp_n(const char *a, const char *b, size_t n) {
+    for (size_t i = 0; i < n; ++i) {
+        char ca = a[i];
+        char cb = b[i];
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (ca == '\0') return 0;
+    }
+    return 0;
+}
+
+uintptr_t SendMessageTimeout(HWND hwnd, DWORD message, uintptr_t wparam,
+                             LPARAM lparam, DWORD flags, DWORD timeout,
+                             uintptr_t *result) {
+    (void)hwnd; (void)message; (void)wparam; (void)lparam;
+    (void)flags; (void)timeout; (void)result;
+    return 1;
+}
+
+static bool add_app_to_path(void) {
+    ++add_path_count;
+    return add_path_result;
+}
+
+static int failures;
+static void expect(bool condition, const char *message) {
+    if (!condition) {
+        fprintf(stderr, "FAIL: %s\n", message);
+        ++failures;
+    }
+}
+"""
+
+behavior_main = r"""
+static void expect_write_failure(const char *name, int session_finished_action,
+                                 int auto_start, int notification_mode,
+                                 int auto_check_interval, int check_updates_startup,
+                                 int add_to_path) {
+    reset_mocks();
+    failed_value_name = name;
+    registry_write_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(session_finished_action, auto_start,
+                                   notification_mode, auto_check_interval,
+                                   check_updates_startup, add_to_path),
+           "a failed requested settings value write must make CLI save fail");
+    expect(registry_close_count == 1,
+           "the settings registry handle must close after a failed value write");
+}
+
+int main(void) {
+    reset_mocks();
+    settings_create_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1),
+           "failure to open the settings key must be reported");
+
+    expect_write_failure("session_finished_action", SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1);
+    expect_write_failure("notification_mode", -1, -1, NOTIFY_NONE, -1, -1, -1);
+    expect_write_failure("auto_check_interval", -1, -1, -1, 2, -1, -1);
+    expect_write_failure("check_updates_on_startup", -1, -1, -1, -1, 0, -1);
+    expect_write_failure("add_to_path", -1, -1, -1, -1, -1, 1);
+
+    reset_mocks();
+    startup_open_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(-1, 1, -1, -1, -1, -1),
+           "failure to open the startup registry key must be reported");
+
+    reset_mocks();
+    failed_value_name = "nosleep";
+    registry_write_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(-1, 1, -1, -1, -1, -1),
+           "failure to write the startup registry value must be reported");
+
+    reset_mocks();
+    registry_delete_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(-1, 0, -1, -1, -1, -1),
+           "failure to remove the startup registry value must be reported");
+
+    reset_mocks();
+    startup_open_result = ERROR_FILE_NOT_FOUND;
+    expect(tray_save_settings_cli(-1, 0, -1, -1, -1, -1),
+           "removing startup when the Run key is absent must succeed");
+
+    reset_mocks();
+    registry_delete_result = ERROR_FILE_NOT_FOUND;
+    expect(tray_save_settings_cli(-1, 0, -1, -1, -1, -1),
+           "removing startup when its value is absent must succeed");
+
+    reset_mocks();
+    add_path_result = false;
+    expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 1),
+           "failure to add the application to PATH must be reported");
+    expect(add_path_count == 1, "the requested PATH add helper must run");
+
+    reset_mocks();
+    environment_open_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
+           "failure to remove the application from PATH must be reported");
+    expect(environment_open_count == 1, "the requested PATH remove helper must run");
+
+    reset_mocks();
+    static const char existing_path[] = "C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
+    path_query_result = ERROR_SUCCESS;
+    path_data = (const BYTE *)existing_path;
+    path_data_size = sizeof(existing_path);
+    failed_value_name = "Path";
+    registry_write_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
+           "failure to write the updated PATH must be reported");
+
+    reset_mocks();
+    static const char path_removed_during_read[] = "C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
+    path_query_result = ERROR_SUCCESS;
+    path_data_query_result = ERROR_FILE_NOT_FOUND;
+    path_data = (const BYTE *)path_removed_during_read;
+    path_data_size = sizeof(path_removed_during_read);
+    expect(remove_app_from_path(),
+           "PATH removal must succeed when the value disappears after its size query");
+
+    reset_mocks();
+    path_query_result = ERROR_SUCCESS;
+    path_data_query_result = ERROR_FILE_NOT_FOUND;
+    path_data = (const BYTE *)path_removed_during_read;
+    path_data_size = sizeof(path_removed_during_read);
+    expect(tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
+           "CLI PATH removal must succeed when the value disappears during the read");
+
+    reset_mocks();
+    environment_open_result = ERROR_FILE_NOT_FOUND;
+    expect(tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
+           "removing PATH when the Environment key is absent must succeed");
+
+    reset_mocks();
+    expect(tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
+           "removing PATH when the Path value is absent must succeed");
+
+    reset_mocks();
+    expect(tray_save_settings_cli(SESSION_FINISHED_SLEEP, 1, NOTIFY_ALL, 2, 1, 1),
+           "successful registry, startup, and PATH writes must still report success");
+
+    if (failures) return 1;
+    puts("PASS: CLI settings persistence failures are reported");
+    return 0;
+}
+"""
+
+source = (
+    windows_stubs
+    + "\n"
+    + extract_function("remove_app_from_path")
+    + "\n"
+    + extract_function("set_startup_registry")
+    + "\n"
+    + extract_function("tray_save_settings_cli")
+    + "\n"
+    + behavior_main
+)
+
+with tempfile.TemporaryDirectory() as temp_dir:
+    source_path = Path(temp_dir) / "test_cli_settings_failures.c"
+    binary_path = Path(temp_dir) / "test_cli_settings_failures"
+    source_path.write_text(source)
+    subprocess.run(
+        ["gcc", "-std=c99", "-Wall", "-Wextra", "-o", str(binary_path), str(source_path)],
+        check=True,
+    )
+    subprocess.run([str(binary_path)], check=True)
+PY

@@ -70,7 +70,7 @@ static void trigger_system_sleep(NoSleepTray* tray);
 static void trigger_system_shutdown(NoSleepTray* tray);
 static char* get_exe_path(void);
 static bool is_startup_enabled(void);
-static void set_startup_registry(bool enable);
+static bool set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
 static void tray_setup_update_timer(NoSleepTray* tray);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -2301,13 +2301,18 @@ static bool remove_app_from_path(void) {
         "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
     if (result != ERROR_SUCCESS) {
         free(dir);
-        return false;
+        return result == ERROR_FILE_NOT_FOUND;
     }
     
     // Read current PATH
     DWORD path_size = 0;
     result = RegQueryValueEx(hKey, "Path", NULL, NULL, NULL, &path_size);
-    if (result != ERROR_SUCCESS || path_size == 0) {
+    if (result == ERROR_FILE_NOT_FOUND || (result == ERROR_SUCCESS && path_size == 0)) {
+        RegCloseKey(hKey);
+        free(dir);
+        return true;
+    }
+    if (result != ERROR_SUCCESS) {
         RegCloseKey(hKey);
         free(dir);
         return false;
@@ -2336,6 +2341,12 @@ static bool remove_app_from_path(void) {
         }
         current_path = realloc_path;
         result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+    }
+    if (result == ERROR_FILE_NOT_FOUND) {
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return true;
     }
     if (result != ERROR_SUCCESS) {
         free(current_path);
@@ -2466,32 +2477,41 @@ static bool is_startup_enabled(void) {
     return enabled;
 }
 
-static void set_startup_registry(bool enable) {
+static bool set_startup_registry(bool enable) {
     HKEY hKey;
     LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
         "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         0, KEY_WRITE, &hKey);
-    if (result != ERROR_SUCCESS) return;
+    if (result != ERROR_SUCCESS) {
+        return !enable && result == ERROR_FILE_NOT_FOUND;
+    }
 
     if (enable) {
         char* exe_path = get_exe_path();
-        if (exe_path) {
-            // Store as: "exe_path" --startup
-            size_t value_len = strlen(exe_path) + 13;
-            char* value = (char*)malloc(value_len);
-            if (value) {
-                snprintf(value, value_len, "\"%s\" --startup", exe_path);
-                RegSetValueEx(hKey, "nosleep", 0, REG_SZ,
-                              (LPBYTE)value, (DWORD)(strlen(value) + 1));
-                free(value);
-            }
-            free(exe_path);
+        if (!exe_path) {
+            RegCloseKey(hKey);
+            return false;
         }
+
+        // Store as: "exe_path" --startup
+        size_t value_len = strlen(exe_path) + 13;
+        char* value = (char*)malloc(value_len);
+        if (!value) {
+            free(exe_path);
+            RegCloseKey(hKey);
+            return false;
+        }
+        snprintf(value, value_len, "\"%s\" --startup", exe_path);
+        result = RegSetValueEx(hKey, "nosleep", 0, REG_SZ,
+                               (LPBYTE)value, (DWORD)(strlen(value) + 1));
+        free(value);
+        free(exe_path);
     } else {
-        RegDeleteValue(hKey, "nosleep");
+        result = RegDeleteValue(hKey, "nosleep");
     }
 
     RegCloseKey(hKey);
+    return result == ERROR_SUCCESS || (!enable && result == ERROR_FILE_NOT_FOUND);
 }
 
 #define SETTINGS_REG_KEY "Software\\nosleep\\settings"
@@ -2613,37 +2633,52 @@ bool tray_save_settings_cli(int session_finished_action,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
     if (result != ERROR_SUCCESS) return false;
 
+    bool success = true;
     if (session_finished_action >= 0) {
         DWORD val = (DWORD)session_finished_action;
-        RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
     }
-    if (auto_start >= 0) {
-        set_startup_registry(auto_start != 0);
+    if (auto_start >= 0 && !set_startup_registry(auto_start != 0)) {
+        success = false;
     }
     if (notification_mode >= 0) {
         DWORD val = (DWORD)notification_mode;
-        RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
     }
     if (auto_check_interval >= 0) {
         DWORD val = (DWORD)auto_check_interval;
-        RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
     }
     if (check_updates_startup >= 0) {
         DWORD val = (DWORD)(check_updates_startup != 0 ? 1 : 0);
-        RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
     }
     if (add_to_path >= 0) {
         DWORD val = (DWORD)(add_to_path != 0 ? 1 : 0);
-        RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-        if (add_to_path != 0) {
-            add_app_to_path();
-        } else {
-            remove_app_from_path();
+        if (RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
+        bool path_success = add_to_path != 0 ? add_app_to_path() : remove_app_from_path();
+        if (!path_success) {
+            success = false;
         }
     }
 
     RegCloseKey(hKey);
-    return true;
+    return success;
 }
 
 static void save_last_update_check_time(void) {
