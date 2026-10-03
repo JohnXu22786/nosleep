@@ -113,6 +113,7 @@ typedef struct NoSleepTray {
     HANDLE shutdown_timer;      // Timer handle for delayed shutdown
     HANDLE shutdown_stop_event; // Event to signal stop delayed shutdown
     bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown) - accessed atomically
+    SessionFinishedAction countdown_action; // Action scheduled for the active countdown
     int countdown_seconds;               // Remaining seconds (60 to 0) - accessed atomically
     HANDLE countdown_timer_thread; // Countdown update thread handle
     bool countdown_blink_state; // Current blink state (true=show number, false=show default icon) - accessed atomically
@@ -166,7 +167,7 @@ void tray_show_about_dialog(NoSleepTray* tray);
 void tray_check_for_updates(NoSleepTray* tray, bool silent);
 
 // Countdown display functions
-void tray_start_countdown(NoSleepTray* tray);  // Start 60-second countdown display
+void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action); // Start 60-second countdown display
 void tray_stop_countdown(NoSleepTray* tray);   // Stop countdown display
 DWORD WINAPI countdown_thread(LPVOID lpParam); // Countdown thread function
 
