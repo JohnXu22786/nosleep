@@ -159,6 +159,9 @@ static MockHandle action_handle, replacement_worker_handle;
 static MockHandle* action_stop_event_to_watch;
 static MockHandle start_worker_handle, start_timer_handle;
 static pthread_t start_worker_thread;
+static bool fail_initial_worker_creation;
+static bool icon_running_states[4];
+static unsigned int icon_update_count;
 
 static void* run_start_failure_worker(void* context) {
     mock_thread_id = 42;
@@ -210,6 +213,9 @@ static HANDLE CreateThread(void* attributes, size_t stack_size,
     (void)attributes;
     (void)stack_size;
     (void)flags;
+    if (fail_initial_worker_creation && start == tray_nosleep_thread) {
+        return NULL;
+    }
     if (start_test_active && start == tray_nosleep_thread) {
         start_worker_handle.thread_id = 42;
         start_worker_handle.closed = false;
@@ -272,7 +278,10 @@ static void tray_stop_countdown(NoSleepTray* tray) {
 }
 static void tray_update_stop_menu_item(NoSleepTray* tray) { (void)tray; }
 static void tray_update_icon(NoSleepTray* tray) {
-    (void)tray;
+    if (icon_update_count < sizeof(icon_running_states) / sizeof(icon_running_states[0])) {
+        icon_running_states[icon_update_count] = ATOMIC_LOAD_BOOL(&tray->is_running);
+    }
+    ++icon_update_count;
 }
 static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
                                    const char* title, const char* message,
@@ -622,6 +631,53 @@ static int check_startup_failure_race(void) {
     return failures;
 }
 
+static int check_worker_thread_creation_failure_resets_icon(void) {
+    NoSleepTray tray;
+    MockHandle events[3] = {{0}};
+    memset(&tray, 0, sizeof(tray));
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.stop_event = &events[0];
+    tray.sleep_stop_event = &events[1];
+    tray.shutdown_stop_event = &events[2];
+    mock_thread_id = 43;
+    error_notifications = 0;
+    icon_update_count = 0;
+    fail_initial_worker_creation = true;
+
+    tray_start_nosleep(&tray, 30);
+
+    fail_initial_worker_creation = false;
+    int failures = 0;
+    if (tray.is_running || tray.duration_minutes != -1 || tray.starting_nosleep ||
+        tray.nosleep_thread != NULL || tray.timer_thread != NULL) {
+        fprintf(stderr, "FAIL: worker creation failure did not restore the idle session state\n");
+        ++failures;
+    }
+    if (icon_update_count != 2 || !icon_running_states[0] || icon_running_states[1]) {
+        fprintf(stderr, "FAIL: worker creation failure did not refresh the icon after rolling back running state\n");
+        ++failures;
+    }
+    if (error_notifications != 1) {
+        fprintf(stderr, "FAIL: worker creation failure did not report the start error\n");
+        ++failures;
+    }
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+
+    NoSleepTray successful_tray;
+    MockHandle successful_stop_event = {0};
+    memset(&successful_tray, 0, sizeof(successful_tray));
+    pthread_mutex_init(&successful_tray.delayed_action_lock, NULL);
+    successful_tray.stop_event = &successful_stop_event;
+    icon_update_count = 0;
+    tray_start_nosleep(&successful_tray, 0);
+    if (!successful_tray.is_running || icon_update_count != 1 || !icon_running_states[0]) {
+        fprintf(stderr, "FAIL: successful worker start did not keep the active icon state\n");
+        ++failures;
+    }
+    pthread_mutex_destroy(&successful_tray.delayed_action_lock);
+    return failures;
+}
+
 static int check_normal_expiry(SessionFinishedAction action, const char* label) {
     NoSleepTray tray;
     MockHandle events[3] = {{0}};
@@ -719,6 +775,7 @@ int main(void) {
     failures += check_restart_during_initialization_wait(SESSION_FINISHED_SHUTDOWN, "shutdown restart during init wait");
     failures += check_restart_cancels_pending_action(SESSION_FINISHED_SLEEP, "sleep pending action restart race");
     failures += check_restart_cancels_pending_action(SESSION_FINISHED_SHUTDOWN, "shutdown pending action restart race");
+    failures += check_worker_thread_creation_failure_resets_icon();
     failures += check_startup_failure_race();
     failures += check_expiry_waits_for_core_initialization(SESSION_FINISHED_SLEEP, "sleep initialization wait");
     failures += check_expiry_waits_for_core_initialization(SESSION_FINISHED_SHUTDOWN, "shutdown initialization wait");
