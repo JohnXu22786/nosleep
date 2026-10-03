@@ -6,10 +6,12 @@
 #include "notify_groups.h"
 #include "updater.h"
 #include "tray_stop_guard.h"
+#include "tray_indefinite_icon.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <wchar.h>
 #include <powrprof.h>
 #include <winhttp.h>
 #include <commctrl.h>
@@ -576,11 +578,11 @@ static HICON create_numbered_icon(int number) {
     PatBlt(hdcMask, 0, 0, width, height, WHITENESS);
     
     // Prepare text
-    char text[16];
+    wchar_t text[16];
     if (number < 0) {
-        strcpy(text, "∞");
+        wcscpy(text, L"\u221E");
     } else {
-        snprintf(text, sizeof(text), "%d", number);
+        swprintf(text, sizeof(text) / sizeof(text[0]), L"%d", number);
     }
     
     // Dynamic font scaling algorithm matching Python version
@@ -596,21 +598,21 @@ static HICON create_numbered_icon(int number) {
     int fontSize = startFontSize;
     
     // Try to create font with Arial, fallback to default if needed
-    hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                      CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
+    hFont = CreateFontW(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
     if (!hFont) {
         // Fallback to system font
-        hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                          DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                          CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, NULL);
+        hFont = CreateFontW(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, NULL);
     }
     
     if (hFont) {
         oldFont = (HFONT)SelectObject(hdcMem, hFont);
         
         // Measure text
-        GetTextExtentPoint32(hdcMem, text, (int)strlen(text), &textSize);
+        GetTextExtentPoint32W(hdcMem, text, (int)wcslen(text), &textSize);
         
         // Scale down if text is too wide or tall
         if (textSize.cx > maxDim || textSize.cy > maxDim) {
@@ -625,19 +627,19 @@ static HICON create_numbered_icon(int number) {
             SelectObject(hdcMem, oldFont);
             DeleteObject(hFont);
             
-            hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                              CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Arial");
+            hFont = CreateFontW(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                               CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Arial");
             if (!hFont) {
-                hFont = CreateFont(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, NULL);
+                hFont = CreateFontW(fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                   CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, NULL);
             }
             
             if (hFont) {
                 oldFont = (HFONT)SelectObject(hdcMem, hFont);
                 // Remeasure with new font
-                GetTextExtentPoint32(hdcMem, text, (int)strlen(text), &textSize);
+                GetTextExtentPoint32W(hdcMem, text, (int)wcslen(text), &textSize);
             }
         }
     }
@@ -652,7 +654,7 @@ static HICON create_numbered_icon(int number) {
     int textY = (height - textSize.cy) / 2;
     
     // Draw text centered on color bitmap (white text on transparent background)
-    TextOut(hdcMem, textX, textY, text, (int)strlen(text));
+    TextOutW(hdcMem, textX, textY, text, (int)wcslen(text));
     
     // For each pixel, set alpha based on luminance (max component) where text is drawn
     // This preserves anti-aliasing edges by using alpha blending
@@ -678,7 +680,7 @@ static HICON create_numbered_icon(int number) {
         SetTextColor(hdcMask, RGB(0, 0, 0)); // Black (opaque in mask)
         SetBkMode(hdcMask, TRANSPARENT);
         SetTextAlign(hdcMask, TA_LEFT | TA_TOP); // Match color bitmap alignment
-        TextOut(hdcMask, textX, textY, text, (int)strlen(text));
+        TextOutW(hdcMask, textX, textY, text, (int)wcslen(text));
     }
     
     // Clean up GDI objects
@@ -1984,22 +1986,8 @@ void tray_update_icon(NoSleepTray* tray) {
             DEBUG_LOG("tray_update_icon: tooltip='%s'", tip);
         } else {
             // Indefinite
-            // Clean up any numbered icon currently displayed
-            if (tray->hIconCurrentNumbered) {
-                // If not cached (-1 or >=60), destroy it
-                if (tray->current_number < 0 || tray->current_number >= 60) {
-                    DestroyIcon(tray->hIconCurrentNumbered);
-                }
-                tray->hIconCurrentNumbered = NULL;
-                tray->current_number = -1;
-            }
-            
-            // Create or get infinite icon
-            if (tray->current_number != -1) {
-                // Create infinite icon if needed
-                tray->hIconCurrentNumbered = create_numbered_icon(-1);
-                tray->current_number = -1;
-            }
+            tray_ensure_indefinite_icon(&tray->hIconCurrentNumbered, &tray->current_number,
+                                        create_numbered_icon, DestroyIcon);
             
             tray->nid.hIcon = tray->hIconCurrentNumbered ? tray->hIconCurrentNumbered : tray->hIconActive;
             strcpy(tray->nid.szTip, "nosleep - Active (indefinite)");
