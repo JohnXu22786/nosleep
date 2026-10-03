@@ -73,6 +73,7 @@ static bool is_startup_enabled(void);
 static bool set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
 static void tray_setup_update_timer(NoSleepTray* tray);
+static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static bool add_app_to_path(void);
 static bool remove_app_from_path(void);
@@ -3112,9 +3113,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     settings_tray->check_updates_on_startup = (SendDlgItemMessage(hGeneralTab, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (hIntervalCombo) {
                         int sel = (int)SendMessage(hIntervalCombo, CB_GETCURSEL, 0, 0);
-                        if (sel != CB_ERR) {
-                            settings_tray->auto_check_interval = sel;
-                        }
+                        tray_apply_auto_check_interval(settings_tray, sel);
                     }
                     bool new_add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (new_add_to_path != settings_tray->add_to_path) {
@@ -3835,6 +3834,13 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         // Exit the application so the update can complete
         PostMessage(tray->hwnd, WM_CLOSE, 0, 0);
     }
+}
+
+static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
+    if (!tray || interval == CB_ERR || tray->auto_check_interval == interval) return;
+
+    tray->auto_check_interval = interval;
+    tray_setup_update_timer(tray);
 }
 
 static void tray_setup_update_timer(NoSleepTray* tray) {
