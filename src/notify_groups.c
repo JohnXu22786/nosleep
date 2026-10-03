@@ -15,7 +15,8 @@ const char* NOTIFY_EVENT_NAMES[NOTIFY_EVENT_COUNT] = {
     "Update available",
     "Update check failed",
     "Sleep detected",
-    "Action failed"
+    "Action failed",
+    "Update check completed"
 };
 
 // Default event masks (bit N = 1 means event N is enabled)

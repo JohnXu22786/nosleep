@@ -31,7 +31,8 @@ typedef enum {
     NOTIFY_EVENT_UPDATE_CHECK_FAILED = 7, // "Update check failed" - shown when network fails
     NOTIFY_EVENT_SLEEP_DETECTED = 8,    // "Sleep detected" - shown when system goes to sleep
     NOTIFY_EVENT_ACTION_FAILED = 9,     // "Action failed" - shown when sleep/shutdown fails
-    NOTIFY_EVENT_COUNT = 10             // Total number of defined events
+    NOTIFY_EVENT_UPDATE_CHECK_COMPLETED = 10, // "Update check completed" - shown when no update is available
+    NOTIFY_EVENT_COUNT = 11             // Total number of defined events
 } NotifyEventId;
 
 // Human-readable names for each event

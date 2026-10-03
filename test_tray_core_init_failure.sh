@@ -97,6 +97,13 @@ typedef enum {
     SESSION_FINISHED_SLEEP,
     SESSION_FINISHED_SHUTDOWN
 } SessionFinishedAction;
+typedef enum {
+    NOTIFY_EVENT_SESSION_START = 1,
+    NOTIFY_EVENT_SESSION_STOP = 2,
+    NOTIFY_EVENT_TIMER_EXPIRED = 3,
+    NOTIFY_EVENT_ERROR = 4,
+    NOTIFY_EVENT_COUNTDOWN_CANCEL = 5
+} NotifyEventId;
 
 #define TRUE 1
 #define FALSE 0
@@ -267,9 +274,11 @@ static void tray_update_stop_menu_item(NoSleepTray* tray) { (void)tray; }
 static void tray_update_icon(NoSleepTray* tray) {
     (void)tray;
 }
-static void tray_show_notification(NoSleepTray* tray, const char* title,
-                                   const char* message, bool critical) {
+static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
+                                   const char* title, const char* message,
+                                   bool critical) {
     (void)tray;
+    (void)event_type;
     (void)message;
     (void)critical;
     if (strcmp(title, "Error") == 0) ++error_notifications;
