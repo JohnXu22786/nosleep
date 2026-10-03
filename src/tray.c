@@ -2064,8 +2064,8 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     
     DEBUG_LOG("tray_update_session_finished_menu: action=%d", tray->session_finished_action);
     
-    // Get the When finished submenu (position 1 in main menu, after Set Duration at position 0)
-    HMENU hSubMenu = GetSubMenu(tray->hmenu, 1);
+    // Get the When finished submenu (position 0 in the main menu)
+    HMENU hSubMenu = GetSubMenu(tray->hmenu, 0);
     if (!hSubMenu) return;
     
     // Update checkmarks for all three radio items in the submenu
@@ -2098,8 +2098,8 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     mii.fMask = MIIM_STRING;
     mii.dwTypeData = finished_text;
     
-    // Update the main menu item (position 1 = When finished submenu)
-    SetMenuItemInfo(tray->hmenu, 1, TRUE, &mii);
+    // Update the main menu item (position 0 = When finished submenu)
+    SetMenuItemInfo(tray->hmenu, 0, TRUE, &mii);
     
     DEBUG_LOG("tray_update_session_finished_menu: updated to '%s'", finished_text);
 }
