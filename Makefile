@@ -59,7 +59,8 @@ test-unit: $(OBJDIR)
 	./tests/test_updater_stream_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_batch_escape.c -o tests/test_updater_batch_escape_t.exe
 	./tests/test_updater_batch_escape_t.exe
-	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
+	$(CC) -std=c99 -Wall -Wextra -Itests/win32_stubs -Isrc tests/test_updater.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
+	./tests/test_updater_t.exe
 
 # Build main binary (and test it exists)
 test: $(TARGET)

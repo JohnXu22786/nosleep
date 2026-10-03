@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 typedef struct TestIcon *HICON;
+typedef void *HWND;
 typedef int BOOL;
 typedef unsigned int DWORD;
 typedef long LONG;
