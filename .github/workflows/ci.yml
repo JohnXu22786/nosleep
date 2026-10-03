@@ -43,6 +43,9 @@ jobs:
       - name: Test tray cancellation notice action
         run: bash test_tray_cancellation_notice_action.sh
 
+      - name: Test countdown tooltip rounding
+        run: bash test_tray_countdown_action.sh
+
       - name: Install MinGW cross-compiler
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
