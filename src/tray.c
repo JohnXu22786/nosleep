@@ -1096,6 +1096,9 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         return expected_thread_id != 0;
     }
+    // Preserve countdown state before its worker observes cancellation and clears it.
+    bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+    SessionFinishedAction countdown_action = tray->countdown_action;
     ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -1156,8 +1159,6 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     // Cancel sleep if active
     DEBUG_LOG("tray_stop_nosleep: calling tray_stop_countdown, delayed_sleep_countdown_active=%s", 
             ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false");
-    bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
-    int countdown_action = tray->session_finished_action; // SESSION_FINISHED_SLEEP or SESSION_FINISHED_SHUTDOWN
     tray_stop_countdown(tray);
 
     // Reset execution state to allow Windows to sleep normally
