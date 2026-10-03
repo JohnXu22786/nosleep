@@ -41,14 +41,18 @@ mingw32-make run      # Compile and run in tray mode
 
 ### Manual Compilation
 
-If you prefer to compile manually, you can use the following commands (ensure MinGW's `gcc` and `windres` are in your PATH):
+If you prefer to compile manually, run these commands from the project root in an MSYS2 MinGW shell with MinGW's `gcc` and `windres` in your PATH. The version below matches the Makefile default; update `VERSION` to change the executable and resource versions together:
 
 ```bash
-gcc -std=c99 -Wall -Wextra -O2 -Isrc -c src/core.c -o obj/core.o
-gcc -std=c99 -Wall -Wextra -O2 -Isrc -c src/tray.c -o obj/tray.o
-gcc -std=c99 -Wall -Wextra -O2 -Isrc -c src/main.c -o obj/main.o
-windres src/resources.rc -o obj/resources.o
-gcc obj/core.o obj/tray.o obj/main.o obj/resources.o -o bin/nosleep.exe -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32
+mkdir -p obj bin
+VERSION=0.0.0
+VERSION_COMMA=$(printf '%s\n' "$VERSION" | sed 's/\./,/g'),0
+sed "s/@VERSION_COMMA@/$VERSION_COMMA/g; s/@VERSION_STRING@/$VERSION/g" src/resources.rc > obj/resources_built.rc
+windres --include-dir src -i obj/resources_built.rc -o obj/resources.o
+gcc -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"${VERSION}\" \
+    src/core.c src/tray.c src/main.c src/notify_groups.c src/updater.c src/cJSON.c \
+    obj/resources.o -o bin/nosleep.exe \
+    -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
 ```
 
 ### Adding to PATH (Optional)
