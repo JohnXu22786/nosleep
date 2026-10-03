@@ -79,10 +79,9 @@ assert re.search(
     notification,
 ), "direct notification dispatch must require an explicit event type"
 group_gate = notification.find("notify_groups_should_show(&tray->notify_groups, event_type)")
-legacy_gate = notification.find("tray->notification_mode == NOTIFY_NONE")
 display = notification.find("Shell_NotifyIcon(NIM_MODIFY")
-assert group_gate >= 0 and group_gate < legacy_gate < display, (
-    "direct dispatch must apply the active event group before legacy filtering and display"
+assert group_gate >= 0 and group_gate < display, (
+    "direct dispatch must apply the active event group before displaying a notification"
 )
 
 assert re.search(
@@ -242,24 +241,25 @@ int main(void) {
     expect(shell_notify_calls == 1,
            "a disabled event in a custom group must remain suppressed");
 
-    tray.notify_groups.groups[0].event_mask = 1u << NOTIFY_EVENT_SESSION_START;
-    tray.notification_mode = NOTIFY_NONE;
-    tray_show_notification(&tray, NOTIFY_EVENT_SESSION_START, "Starting", "test", false);
-    expect(shell_notify_calls == 1,
-           "the existing legacy none check must remain in effect");
-
+    tray.notify_groups.groups[0].event_mask = 1u << NOTIFY_EVENT_UPDATE_AVAILABLE;
     tray.notification_mode = NOTIFY_CRITICAL_ONLY;
-    tray_show_notification(&tray, NOTIFY_EVENT_SESSION_START, "Starting", "test", false);
-    expect(shell_notify_calls == 1,
-           "the existing legacy critical-only check must remain in effect");
+    tray_show_notification(&tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", "test", false);
+    expect(shell_notify_calls == 2,
+           "critical-only legacy mode must not suppress an update enabled by the active group");
+
+    tray.notification_mode = NOTIFY_NONE;
+    tray_show_notification(&tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", "test", false);
+    expect(shell_notify_calls == 3,
+           "none legacy mode must not suppress an update enabled by the active group");
 
     tray.notification_mode = NOTIFY_ALL;
+    tray.notify_groups.groups[0].event_mask = 1u << NOTIFY_EVENT_SESSION_START;
     tray_show_notification(&tray, NOTIFY_EVENT_SESSION_START, "Starting", "test", true);
-    expect(shell_notify_calls == 2,
+    expect(shell_notify_calls == 4,
            "enabled critical notifications must reach the tray when legacy mode is all");
 
     if (failures != 0) return 1;
-    puts("PASS: direct notification group and legacy filters");
+    puts("PASS: direct notifications honor active event groups");
     return 0;
 }
 """
