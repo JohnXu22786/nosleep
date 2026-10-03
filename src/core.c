@@ -1,6 +1,7 @@
 // Core NoSleep implementation
 #include "core.h"
 #include "constants.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,9 +156,9 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
             if (verbose) {
                 SYSTEMTIME now;
                 GetSystemTime(&now);
-                nosleep_log_info("[%02d:%02d:%02d] Active: %dm %ds (#%d)",
-                                now.wHour, now.wMinute, now.wSecond,
-                                minutes, seconds, ns->refresh_count);
+                nosleep_log_verbose("[%02d:%02d:%02d] Active: %dm %ds (#%d)",
+                                    now.wHour, now.wMinute, now.wSecond,
+                                    minutes, seconds, ns->refresh_count);
             } else {
                 nosleep_log_info("Status: Active for %dm %ds (refresh #%d)",
                                 minutes, seconds, ns->refresh_count);
@@ -234,23 +235,73 @@ void nosleep_stop(NoSleep* ns) {
     }
 }
 
-// Logging functions - all protected by SRWLOCK for thread safety
-void nosleep_log_info(const char* format, ...) {
+static void nosleep_output_debug_log(const SYSTEMTIME* now, const char* format,
+                                     va_list args) {
+    va_list sizing_args;
+    va_copy(sizing_args, args);
+    int message_length = vsnprintf(NULL, 0, format, sizing_args);
+    va_end(sizing_args);
+    if (message_length < 0) return;
+
+    char prefix[64];
+    int prefix_length = snprintf(prefix, sizeof(prefix), "[%02d:%02d:%02d] INFO - ",
+                                 now->wHour, now->wMinute, now->wSecond);
+    if (prefix_length < 0 || (size_t)prefix_length >= sizeof(prefix)) return;
+
+    size_t output_size = (size_t)prefix_length + (size_t)message_length + 2;
+    char* output = (char*)malloc(output_size);
+    if (!output) return;
+
+    memcpy(output, prefix, (size_t)prefix_length);
+    va_list output_args;
+    va_copy(output_args, args);
+    int formatted_length = vsnprintf(output + prefix_length,
+                                     (size_t)message_length + 1,
+                                     format, output_args);
+    va_end(output_args);
+    if (formatted_length == message_length) {
+        size_t body_end = (size_t)prefix_length + (size_t)message_length;
+        output[body_end] = '\n';
+        output[body_end + 1] = '\0';
+        OutputDebugStringA(output);
+    }
+
+    free(output);
+}
+
+// Info logging and verbose status output are protected by the log lock.
+static void nosleep_log_info_message(const char* format, va_list args,
+                                     bool debug_output) {
     AcquireSRWLockExclusive(&g_log_lock);
-    
+
     SYSTEMTIME now;
     GetSystemTime(&now);
-    
+    if (debug_output) {
+        nosleep_output_debug_log(&now, format, args);
+    }
+
+    printf("[%02d:%02d:%02d] INFO - ", now.wHour, now.wMinute, now.wSecond);
+    va_list console_args;
+    va_copy(console_args, args);
+    vprintf(format, console_args);
+    va_end(console_args);
+    printf("\n");
+
+    ReleaseSRWLockExclusive(&g_log_lock);
+}
+
+void nosleep_log_info(const char* format, ...) {
     va_list args;
     va_start(args, format);
-    
-    printf("[%02d:%02d:%02d] INFO - ", now.wHour, now.wMinute, now.wSecond);
-    vprintf(format, args);
-    printf("\n");
-    
+    nosleep_log_info_message(format, args, false);
     va_end(args);
-    
-    ReleaseSRWLockExclusive(&g_log_lock);
+}
+
+void nosleep_log_verbose(const char* format, ...) {
+    va_list args;
+    va_start(args, format);
+    nosleep_log_info_message(format, args, true);
+    va_end(args);
 }
 
 void nosleep_log_warning(const char* format, ...) {

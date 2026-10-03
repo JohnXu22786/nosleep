@@ -41,6 +41,7 @@ ULONGLONG GetTickCount64(void);
 DWORD SetThreadExecutionState(DWORD flags);
 void Sleep(DWORD milliseconds);
 void GetSystemTime(SYSTEMTIME *time);
+void OutputDebugStringA(const char *output);
 void AcquireSRWLockExclusive(SRWLOCK *lock);
 void ReleaseSRWLockExclusive(SRWLOCK *lock);
 

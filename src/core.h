@@ -38,6 +38,7 @@ void nosleep_stop(NoSleep* ns);
 
 // Helper functions
 void nosleep_log_info(const char* format, ...);
+void nosleep_log_verbose(const char* format, ...);
 void nosleep_log_warning(const char* format, ...);
 void nosleep_log_error(const char* format, ...);
 

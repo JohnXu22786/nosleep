@@ -83,6 +83,10 @@ void GetSystemTime(SYSTEMTIME *time) {
     time->wSecond = 0;
 }
 
+void OutputDebugStringA(const char *output) {
+    (void)output;
+}
+
 void AcquireSRWLockExclusive(SRWLOCK *lock) {
     (void)lock;
 }
