@@ -45,6 +45,11 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 static HICON system_icon_default = NULL;
 static HICON system_icon_shield = NULL;
 
+static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
+    // GetTickCount64 is monotonic and does not wrap for ~584 million years.
+    return GetTickCount64() - start_tick64;
+}
+
 // Forward declarations of helper functions
 static void tray_create_icons(NoSleepTray* tray);
 static void tray_destroy_icons(NoSleepTray* tray);
@@ -1002,7 +1007,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     ATOMIC_STORE_BOOL(&tray->core_init_succeeded, false);
     tray->timer_thread_id = 0;
     tray->nosleep_thread_id = 0;
-    GetSystemTime(&tray->start_time);
+    tray->start_tick64 = GetTickCount64();
     ResetEvent(tray->stop_event);
     
     // Update icon
@@ -1173,22 +1178,8 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     // This ensures that any previous ES_SYSTEM_REQUIRED flags are cleared
     SetThreadExecutionState(ES_CONTINUOUS);
     
-    // Calculate elapsed time
-    SYSTEMTIME now;
-    GetSystemTime(&now);
-    
-    FILETIME ft_start, ft_now;
-    SystemTimeToFileTime(&tray->start_time, &ft_start);
-    SystemTimeToFileTime(&now, &ft_now);
-    
-    ULARGE_INTEGER uli_start, uli_now;
-    uli_start.LowPart = ft_start.dwLowDateTime;
-    uli_start.HighPart = ft_start.dwHighDateTime;
-    uli_now.LowPart = ft_now.dwLowDateTime;
-    uli_now.HighPart = ft_now.dwHighDateTime;
-    
-    ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-    ULONGLONG elapsed_seconds = elapsed_100ns / 10000000LL;
+    // Calculate elapsed time from the monotonic session start tick.
+    ULONGLONG elapsed_seconds = get_elapsed_milliseconds(tray->start_tick64) / 1000;
     
     int hours = (int)(elapsed_seconds / 3600);
     int minutes = (int)((elapsed_seconds % 3600) / 60);
@@ -1268,30 +1259,12 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         return 0;
     }
     
-    // Convert duration to 100-nanosecond intervals (1 minute = 60 * 1000 * 10000 = 600,000,000 100-ns intervals)
-    ULONGLONG duration_100ns = (ULONGLONG)tray->duration_minutes * 60 * 1000 * 10000;
-    
-    // Convert start time to FILETIME for calculation
-    FILETIME ft_start;
-    SystemTimeToFileTime(&tray->start_time, &ft_start);
-    ULARGE_INTEGER uli_start;
-    uli_start.LowPart = ft_start.dwLowDateTime;
-    uli_start.HighPart = ft_start.dwHighDateTime;
+    ULONGLONG duration_ms = (ULONGLONG)tray->duration_minutes * 60 * 1000;
     
     while (ATOMIC_LOAD_BOOL(&tray->is_running)) {
-        // Get current system time
-        SYSTEMTIME now;
-        GetSystemTime(&now);
-        FILETIME ft_now;
-        SystemTimeToFileTime(&now, &ft_now);
+        ULONGLONG elapsed_ms = get_elapsed_milliseconds(tray->start_tick64);
         
-        ULARGE_INTEGER uli_now;
-        uli_now.LowPart = ft_now.dwLowDateTime;
-        uli_now.HighPart = ft_now.dwHighDateTime;
-        
-        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-        
-        if (elapsed_100ns >= duration_100ns) {
+        if (elapsed_ms >= duration_ms) {
             if (tray->session_finished_action != SESSION_FINISHED_NONE) {
                 // Do not honor a follow-up action until the NoSleep core is known to exist.
                 for (;;) {
@@ -1318,29 +1291,15 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             DEBUG_LOG("tray_duration_timer: duration reached, stopping with timer_expired=true");
             ATOMIC_STORE_BOOL(&tray->duration_expired, true);
             
-            DEBUG_LOG("tray_duration_timer: elapsed=%llu 100-ns intervals, duration=%llu 100-ns intervals, calling tray_stop_nosleep",
-                    elapsed_100ns, duration_100ns);
+            DEBUG_LOG("tray_duration_timer: elapsed=%llu ms, duration=%llu ms, calling tray_stop_nosleep",
+                    elapsed_ms, duration_ms);
             
             // Check what action to take when session finishes
             bool suppress_notification = (tray->session_finished_action != SESSION_FINISHED_NONE);
             tray_stop_nosleep(tray, true, suppress_notification); // suppress notification if we have follow-up action
             
-            // Calculate elapsed time for notifications
-            SYSTEMTIME now;
-            GetSystemTime(&now);
-            
-            FILETIME ft_start, ft_now;
-            SystemTimeToFileTime(&tray->start_time, &ft_start);
-            SystemTimeToFileTime(&now, &ft_now);
-            
-            ULARGE_INTEGER uli_start, uli_now;
-            uli_start.LowPart = ft_start.dwLowDateTime;
-            uli_start.HighPart = ft_start.dwHighDateTime;
-            uli_now.LowPart = ft_now.dwLowDateTime;
-            uli_now.HighPart = ft_now.dwHighDateTime;
-            
-            ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-            ULONGLONG elapsed_seconds = elapsed_100ns / 10000000LL;
+            // Calculate elapsed time for notifications from the monotonic tick.
+            ULONGLONG elapsed_seconds = get_elapsed_milliseconds(tray->start_tick64) / 1000;
             
             int hours = (int)(elapsed_seconds / 3600);
             int minutes = (int)((elapsed_seconds % 3600) / 60);
@@ -1644,17 +1603,8 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     // Start countdown display
     tray_start_countdown(tray);
 
-    // Record start time using system time (FILETIME in 100-nanosecond intervals)
-    SYSTEMTIME start_time;
-    GetSystemTime(&start_time);
-    FILETIME ft_start;
-    SystemTimeToFileTime(&start_time, &ft_start);
-    ULARGE_INTEGER uli_start;
-    uli_start.LowPart = ft_start.dwLowDateTime;
-    uli_start.HighPart = ft_start.dwHighDateTime;
-    
-    // 60 seconds in 100-nanosecond intervals
-    ULONGLONG delay_100ns = 60 * 1000 * 10000LL;
+    ULONGLONG start_tick64 = GetTickCount64();
+    ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
         // Check for cancellation first
@@ -1664,18 +1614,9 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             break;
         }
         
-        // Get current system time
-        SYSTEMTIME now;
-        GetSystemTime(&now);
-        FILETIME ft_now;
-        SystemTimeToFileTime(&now, &ft_now);
-        ULARGE_INTEGER uli_now;
-        uli_now.LowPart = ft_now.dwLowDateTime;
-        uli_now.HighPart = ft_now.dwHighDateTime;
+        ULONGLONG elapsed_ms = get_elapsed_milliseconds(start_tick64);
         
-        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-        
-        if (elapsed_100ns >= delay_100ns) {
+        if (elapsed_ms >= delay_ms) {
             // Stop the display before deciding atomically whether to trigger sleep.
             tray_stop_countdown(tray);
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
@@ -1715,17 +1656,8 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     // Start countdown display
     tray_start_countdown(tray);
 
-    // Record start time using system time (FILETIME in 100-nanosecond intervals)
-    SYSTEMTIME start_time;
-    GetSystemTime(&start_time);
-    FILETIME ft_start;
-    SystemTimeToFileTime(&start_time, &ft_start);
-    ULARGE_INTEGER uli_start;
-    uli_start.LowPart = ft_start.dwLowDateTime;
-    uli_start.HighPart = ft_start.dwHighDateTime;
-    
-    // 60 seconds in 100-nanosecond intervals
-    ULONGLONG delay_100ns = 60 * 1000 * 10000LL;
+    ULONGLONG start_tick64 = GetTickCount64();
+    ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
         // Check for cancellation first
@@ -1735,18 +1667,9 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             break;
         }
         
-        // Get current system time
-        SYSTEMTIME now;
-        GetSystemTime(&now);
-        FILETIME ft_now;
-        SystemTimeToFileTime(&now, &ft_now);
-        ULARGE_INTEGER uli_now;
-        uli_now.LowPart = ft_now.dwLowDateTime;
-        uli_now.HighPart = ft_now.dwHighDateTime;
+        ULONGLONG elapsed_ms = get_elapsed_milliseconds(start_tick64);
         
-        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-        
-        if (elapsed_100ns >= delay_100ns) {
+        if (elapsed_ms >= delay_ms) {
             // Stop the display before deciding atomically whether to trigger shutdown.
             tray_stop_countdown(tray);
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
@@ -1868,44 +1791,25 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
     
     DEBUG_LOG("countdown_thread: started");
     
-    // Record start time using system time (FILETIME in 100-nanosecond intervals)
-    SYSTEMTIME start_time;
-    GetSystemTime(&start_time);
-    FILETIME ft_start;
-    SystemTimeToFileTime(&start_time, &ft_start);
-    ULARGE_INTEGER uli_start;
-    uli_start.LowPart = ft_start.dwLowDateTime;
-    uli_start.HighPart = ft_start.dwHighDateTime;
-    
-    // Total countdown duration: 60 seconds in 100-nanosecond intervals
-    ULONGLONG total_duration_100ns = 60 * 1000 * 10000LL;
+    ULONGLONG start_tick64 = GetTickCount64();
+    ULONGLONG total_duration_ms = 60 * 1000;
     
     while (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
-        // Get current system time
-        SYSTEMTIME now;
-        GetSystemTime(&now);
-        FILETIME ft_now;
-        SystemTimeToFileTime(&now, &ft_now);
-        ULARGE_INTEGER uli_now;
-        uli_now.LowPart = ft_now.dwLowDateTime;
-        uli_now.HighPart = ft_now.dwHighDateTime;
-        
-        ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
+        ULONGLONG elapsed_ms = get_elapsed_milliseconds(start_tick64);
         
         // Check if countdown finished
-        if (elapsed_100ns >= total_duration_100ns) {
+        if (elapsed_ms >= total_duration_ms) {
             DEBUG_LOG("countdown_thread: countdown finished");
             ATOMIC_STORE_INT(&tray->countdown_seconds, 0);
             break;
         }
         
         // Calculate remaining seconds
-        ULONGLONG remaining_100ns = total_duration_100ns - elapsed_100ns;
-        int remaining_seconds = (int)(remaining_100ns / (1000 * 10000LL)); // Convert to seconds
+        ULONGLONG remaining_ms = total_duration_ms - elapsed_ms;
+        int remaining_seconds = (int)(remaining_ms / 1000);
         
         // Calculate blink state based on elapsed milliseconds
         // We want to blink every 500ms (0.5 seconds)
-        ULONGLONG elapsed_ms = elapsed_100ns / (10 * 1000LL); // Convert to milliseconds
         bool blink_state = ((elapsed_ms / 500) % 2) == 0; // True for first 500ms of each second
         
         // Update atomic variables
@@ -2019,21 +1923,7 @@ void tray_update_icon(NoSleepTray* tray) {
     if (is_running) {
         if (tray->duration_minutes > 0) {
             // Calculate remaining minutes
-            SYSTEMTIME now;
-            GetSystemTime(&now);
-            
-            FILETIME ft_start, ft_now;
-            SystemTimeToFileTime(&tray->start_time, &ft_start);
-            SystemTimeToFileTime(&now, &ft_now);
-            
-            ULARGE_INTEGER uli_start, uli_now;
-            uli_start.LowPart = ft_start.dwLowDateTime;
-            uli_start.HighPart = ft_start.dwHighDateTime;
-            uli_now.LowPart = ft_now.dwLowDateTime;
-            uli_now.HighPart = ft_now.dwHighDateTime;
-            
-            ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
-            ULONGLONG elapsed_seconds = elapsed_100ns / 10000000LL;
+            ULONGLONG elapsed_seconds = get_elapsed_milliseconds(tray->start_tick64) / 1000;
             ULONGLONG total_seconds = tray->duration_minutes * 60ULL;
             ULONGLONG remaining_seconds = total_seconds > elapsed_seconds ? total_seconds - elapsed_seconds : 0;
             remaining_minutes = (int)(remaining_seconds / 60);

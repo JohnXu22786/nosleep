@@ -114,7 +114,7 @@ typedef struct NoSleepTray {
     bool core_init_succeeded, starting_nosleep;
     SRWLOCK delayed_action_lock;
     int duration_minutes;
-    SYSTEMTIME start_time;
+    ULONGLONG start_tick64;
     HANDLE stop_event, timer_thread, nosleep_thread;
     DWORD timer_thread_id, nosleep_thread_id;
     bool prevent_display, away_mode, verbose;
@@ -147,7 +147,7 @@ static bool pause_core_resolution, timer_waiting_for_init;
 static bool action_attempted_before_init, release_core_resolution;
 static unsigned int action_threads_started, error_notifications;
 static unsigned int action_stop_signals;
-static SYSTEMTIME mock_now;
+static ULONGLONG mock_tick64;
 static MockHandle action_handle, replacement_worker_handle;
 static MockHandle* action_stop_event_to_watch;
 static MockHandle start_worker_handle, start_timer_handle;
@@ -177,6 +177,7 @@ static void AcquireSRWLockExclusive(SRWLOCK* lock) {
 }
 static void ReleaseSRWLockExclusive(SRWLOCK* lock) { pthread_mutex_unlock(lock); }
 static DWORD GetCurrentThreadId(void) { return mock_thread_id; }
+static ULONGLONG GetTickCount64(void) { return mock_tick64; }
 static DWORD GetThreadId(HANDLE handle) { return ((MockHandle*)handle)->thread_id; }
 static DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
     (void)handle;
@@ -259,14 +260,6 @@ static void Sleep(DWORD milliseconds) {
     pthread_mutex_unlock(&gate_lock);
 }
 static unsigned long GetLastError(void) { return 123; }
-static void GetSystemTime(SYSTEMTIME* value) { *value = mock_now; }
-static void SystemTimeToFileTime(const SYSTEMTIME* value, FILETIME* file_time) {
-    uint64_t seconds = (uint64_t)value->wHour * 3600 +
-                       (uint64_t)value->wMinute * 60 + value->wSecond;
-    uint64_t ticks = seconds * 10000000ULL;
-    file_time->dwLowDateTime = (DWORD)ticks;
-    file_time->dwHighDateTime = (DWORD)(ticks >> 32);
-}
 static void tray_stop_countdown(NoSleepTray* tray) {
     tray->delayed_sleep_countdown_active = false;
 }
@@ -315,7 +308,7 @@ static int check_direct_failure(SessionFinishedAction action, const char* label)
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
     tray.is_running = true;
     tray.duration_minutes = 30;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
@@ -324,7 +317,7 @@ static int check_direct_failure(SessionFinishedAction action, const char* label)
     tray.nosleep_thread_id = 43;
     tray.sleep_stop_event = &events[3];
     tray.shutdown_stop_event = &events[4];
-    mock_now = (SYSTEMTIME){0, 1, 0};
+    mock_tick64 = 60000;
     mock_thread_id = 43;
     action_threads_started = 0;
     error_notifications = 0;
@@ -411,7 +404,7 @@ static int check_failure_race(SessionFinishedAction action, const char* label) {
     tray.is_running = true;
     tray.duration_minutes = 1;
     tray.core_init_succeeded = false;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
@@ -419,7 +412,7 @@ static int check_failure_race(SessionFinishedAction action, const char* label) {
     tray.nosleep_thread_id = 43;
     tray.sleep_stop_event = &events[2];
     tray.shutdown_stop_event = &events[2];
-    mock_now = (SYSTEMTIME){0, 2, 0};
+    mock_tick64 = 120000;
     mock_thread_id = 43;
     action_threads_started = 0;
     error_notifications = 0;
@@ -474,7 +467,7 @@ static int check_restart_during_initialization_wait(SessionFinishedAction action
     tray.is_running = true;
     tray.duration_minutes = 1;
     tray.core_init_succeeded = false;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
@@ -482,7 +475,7 @@ static int check_restart_during_initialization_wait(SessionFinishedAction action
     tray.nosleep_thread_id = 43;
     tray.sleep_stop_event = &events[0];
     tray.shutdown_stop_event = &events[0];
-    mock_now = (SYSTEMTIME){0, 2, 0};
+    mock_tick64 = 120000;
     mock_thread_id = 43;
     action_threads_started = 0;
     error_notifications = 0;
@@ -538,7 +531,7 @@ static int check_restart_cancels_pending_action(SessionFinishedAction action, co
     tray.is_running = true;
     tray.duration_minutes = 1;
     tray.core_init_succeeded = true;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
@@ -546,7 +539,7 @@ static int check_restart_cancels_pending_action(SessionFinishedAction action, co
     tray.nosleep_thread_id = 43;
     tray.sleep_stop_event = &events[2];
     tray.shutdown_stop_event = &events[2];
-    mock_now = (SYSTEMTIME){0, 2, 0};
+    mock_tick64 = 120000;
     action_threads_started = 0;
     error_notifications = 0;
     action_stop_signals = 0;
@@ -588,7 +581,7 @@ static int check_startup_failure_race(void) {
     tray.sleep_stop_event = &events[1];
     tray.shutdown_stop_event = &events[2];
     tray.session_finished_action = SESSION_FINISHED_SLEEP;
-    mock_now = (SYSTEMTIME){0, 0, 0};
+    mock_tick64 = 0;
     mock_thread_id = 43;
     action_threads_started = 0;
     error_notifications = 0;
@@ -628,14 +621,14 @@ static int check_normal_expiry(SessionFinishedAction action, const char* label) 
     tray.is_running = true;
     tray.duration_minutes = 1;
     tray.core_init_succeeded = true;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
     tray.timer_thread_id = 42;
     tray.sleep_stop_event = &events[2];
     tray.shutdown_stop_event = &events[2];
-    mock_now = (SYSTEMTIME){0, 2, 0};
+    mock_tick64 = 120000;
     action_threads_started = 0;
 
     run_duration_timer(&tray);
@@ -657,14 +650,14 @@ static int check_expiry_waits_for_core_initialization(SessionFinishedAction acti
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
     tray.is_running = true;
     tray.duration_minutes = 1;
-    tray.start_time = (SYSTEMTIME){0, 0, 0};
+    tray.start_tick64 = 0;
     tray.session_finished_action = action;
     tray.stop_event = &events[0];
     tray.timer_thread = &events[1];
     tray.timer_thread_id = 42;
     tray.sleep_stop_event = &events[2];
     tray.shutdown_stop_event = &events[2];
-    mock_now = (SYSTEMTIME){0, 2, 0};
+    mock_tick64 = 120000;
     action_threads_started = 0;
     pause_core_resolution = true;
     timer_waiting_for_init = false;
@@ -731,6 +724,7 @@ int main(void) {
 functions = "\n\n".join(
     extract_function(signature)
     for signature in (
+        "static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64)",
         "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n                                          DWORD expected_thread_id,\n                                          bool timer_expired,\n                                          bool suppress_notification)",
         "void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification)",
         "void tray_start_nosleep(NoSleepTray* tray, int duration_minutes)",
