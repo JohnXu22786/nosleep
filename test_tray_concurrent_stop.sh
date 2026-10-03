@@ -94,6 +94,7 @@ typedef enum {
 #define FALSE 0
 #define INFINITE 0xffffffffu
 #define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 258
 #define ES_CONTINUOUS 0x80000000u
 #define DEBUG_LOG(...) do { if (0) fprintf(stderr, __VA_ARGS__); } while (0)
 #define ATOMIC_STORE_BOOL(destination, value) \
@@ -152,6 +153,12 @@ static bool owner_timer_tail_finished;
 static bool destroy_waiting_for_timer;
 static bool destroy_freed_tray;
 static bool freed_after_owner_completion;
+static bool worker_timeout_observed;
+static bool worker_retained_after_timeout;
+static bool worker_joined_after_timeout;
+static bool worker_handle_closed;
+static bool worker_handle_closed_too_early;
+static bool freed_after_worker_join;
 static volatile ULONGLONG post_stop_tick;
 
 static void test_free(void *pointer) {
@@ -159,6 +166,9 @@ static void test_free(void *pointer) {
     destroy_freed_tray = true;
     freed_after_owner_completion = owner_completion_released &&
                                    owner_timer_tail_finished;
+    freed_after_worker_join = worker_timeout_observed &&
+                              worker_joined_after_timeout &&
+                              worker_handle_closed;
     pthread_cond_broadcast(&harness_changed);
     pthread_mutex_unlock(&harness_lock);
     (void)pointer;
@@ -222,7 +232,16 @@ static BOOL ResetEvent(HANDLE event) {
 }
 
 static DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
-    (void)milliseconds;
+    if (active_tray && handle == active_tray->nosleep_thread) {
+        if (milliseconds == 2000) {
+            worker_timeout_observed = true;
+            return WAIT_TIMEOUT;
+        }
+        if (milliseconds == INFINITE) {
+            worker_joined_after_timeout = true;
+            return WAIT_OBJECT_0;
+        }
+    }
     if (active_tray && handle == active_tray->timer_thread &&
         current_thread_id == 2) {
         pthread_mutex_lock(&harness_lock);
@@ -237,7 +256,12 @@ static DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
 }
 
 static BOOL CloseHandle(HANDLE handle) {
-    (void)handle;
+    if (active_tray && handle == active_tray->nosleep_thread) {
+        worker_handle_closed = true;
+        if (!worker_joined_after_timeout) {
+            worker_handle_closed_too_early = true;
+        }
+    }
     return TRUE;
 }
 
@@ -325,6 +349,8 @@ static void *owner_stop(void *argument) {
     current_thread_id = 1;
     NoSleepTray *tray = (NoSleepTray *)argument;
     tray_stop_nosleep(tray, false, true);
+    worker_retained_after_timeout =
+        tray->nosleep_thread == (HANDLE)(uintptr_t)3;
     pthread_mutex_lock(&harness_lock);
     owner_in_timer_tail = true;
     pthread_cond_broadcast(&harness_changed);
@@ -371,6 +397,8 @@ int main(void) {
     tray.stop_event = (HANDLE)(uintptr_t)1;
     tray.timer_thread = (HANDLE)(uintptr_t)2;
     tray.timer_thread_id = 1;
+    tray.nosleep_thread = (HANDLE)(uintptr_t)3;
+    tray.nosleep_thread_id = 3;
     tray.start_tick64 = 12345;
     active_tray = &tray;
 
@@ -438,8 +466,15 @@ int main(void) {
                 "FAIL: teardown freed tray before the stop owner finished using it\n");
         return 1;
     }
+    if (!worker_timeout_observed || !worker_retained_after_timeout ||
+        !worker_joined_after_timeout || worker_handle_closed_too_early ||
+        !worker_handle_closed || !freed_after_worker_join) {
+        fprintf(stderr,
+                "FAIL: timed-out worker handle was not retained and joined before tray teardown\n");
+        return 1;
+    }
 
-    puts("PASS: concurrent tray teardown waits for the active stop");
+    puts("PASS: tray teardown waits for the active stop and joins a retained worker handle");
     return 0;
 }
 """
