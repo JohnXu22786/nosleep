@@ -1803,7 +1803,7 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
         
         // Calculate remaining seconds
         ULONGLONG remaining_ms = total_duration_ms - elapsed_ms;
-        int remaining_seconds = (int)(remaining_ms / 1000);
+        int remaining_seconds = tray_countdown_display_seconds(remaining_ms);
         
         // Calculate blink state based on elapsed milliseconds
         // We want to blink every 500ms (0.5 seconds)

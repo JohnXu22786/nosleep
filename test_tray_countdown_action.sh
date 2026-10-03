@@ -99,6 +99,7 @@ assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SHUTDOWN\)", s
 )
 
 update = extract_function("tray_update_icon")
+countdown_thread = extract_function("countdown_thread")
 countdown_display = update.split("// Handle delayed sleep countdown display", 1)[1].split(
     "\n    if (is_running)", 1
 )[0]
@@ -111,6 +112,14 @@ assert re.search(
 assert "tray->session_finished_action" not in countdown_display, (
     "changing the When finished preference must not relabel an existing countdown"
 )
+assert re.search(
+    r"tray_countdown_display_seconds\(\s*remaining_ms\s*\)",
+    countdown_thread,
+), "the tooltip countdown must round positive remaining milliseconds up"
+assert re.search(
+    r"elapsed_ms\s*>=\s*total_duration_ms[\s\S]*?ATOMIC_STORE_INT\(&tray->countdown_seconds,\s*0\)",
+    countdown_thread,
+), "an expired countdown must still set its displayed seconds to zero"
 
 harness = r'''#include <stdbool.h>
 #include <stdio.h>
@@ -138,6 +147,19 @@ static int expect_tooltip_after_preference_change(const char* scenario,
     return 0;
 }
 
+static int expect_tooltip_for_remaining_time(const char* scenario,
+                                             unsigned long long remaining_ms,
+                                             const char* expected) {
+    int countdown_seconds = tray_countdown_display_seconds(remaining_ms);
+    char tip[128];
+    tray_format_countdown_tooltip(tip, sizeof(tip), false, countdown_seconds);
+    if (strcmp(tip, expected) != 0) {
+        fprintf(stderr, "FAIL: %s produced '%s'\n", scenario, tip);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += expect_tooltip_after_preference_change(
@@ -146,8 +168,14 @@ int main(void) {
     failures += expect_tooltip_after_preference_change(
         "shutdown countdown changed to sleep", true, false,
         "nosleep - System will shut down in 27 seconds");
+    failures += expect_tooltip_for_remaining_time(
+        "positive sub-second sleep countdown", 1,
+        "nosleep - System will sleep in 1 seconds");
+    failures += expect_tooltip_for_remaining_time(
+        "zero remaining sleep countdown", 0,
+        "nosleep - System will sleep in 0 seconds");
     if (failures) return 1;
-    puts("PASS: tooltip keeps its scheduled action after the preference changes");
+    puts("PASS: countdown tooltip preserves scheduled action and rounds positive time up");
     return 0;
 }
 '''
