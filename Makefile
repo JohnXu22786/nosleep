@@ -61,6 +61,8 @@ test-unit: $(OBJDIR)
 	./tests/test_updater_redirect_target_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_batch_escape.c -o tests/test_updater_batch_escape_t.exe
 	./tests/test_updater_batch_escape_t.exe
+	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_command_line.c -o tests/test_updater_command_line_t.exe
+	./tests/test_updater_command_line_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Itests/win32_stubs -Isrc tests/test_updater.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
 	./tests/test_updater_t.exe
 

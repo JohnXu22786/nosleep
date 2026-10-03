@@ -2,10 +2,12 @@
 #include "updater.h"
 #include "constants.h"
 #include "updater_batch.h"
+#include "updater_command_line.h"
 #include "updater_redirect.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <shellapi.h>
 #include <winhttp.h>
 #include "cJSON.h"
 #include "updater_stream.h"
@@ -23,7 +25,8 @@ static bool download_file(const char* url, const char* output_path);
 static bool create_update_batch_script(const char* current_exe_path, 
                                         const char* downloaded_path,
                                         const char* exe_name,
-                                        char* script_path, size_t script_path_size);
+                                        char* script_path, size_t script_path_size,
+                                        char* arguments_path, size_t arguments_path_size);
 static char* get_exe_name_from_path(const char* path);
 static char* get_temp_path_for(const char* prefix);
 
@@ -41,6 +44,27 @@ static bool updater_write_file(void* context, const void* buffer, size_t bytes_t
     BOOL success = WriteFile((HANDLE)context, buffer, (DWORD)bytes_to_write, &bytes, NULL);
     *bytes_written = bytes;
     return success != FALSE;
+}
+
+static bool updater_write_path(const char* path, const void* contents, size_t length,
+                               DWORD creation_disposition) {
+    if (!path || (!contents && length > 0) || length > MAXDWORD) return false;
+
+    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, creation_disposition,
+                              FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    DWORD bytes_written = 0;
+    BOOL write_ok = TRUE;
+    if (length > 0) {
+        write_ok = WriteFile(file, contents, (DWORD)length, &bytes_written, NULL);
+    }
+    CloseHandle(file);
+    if (!write_ok || bytes_written != (DWORD)length) {
+        DeleteFileA(path);
+        return false;
+    }
+    return true;
 }
 
 // Compare two version strings (e.g., "2.0.0" > "1.5.0")
@@ -262,8 +286,10 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     
     // Create update batch script in temp directory
     char script_path[MAX_PATH];
+    char arguments_path[MAX_PATH];
     if (!create_update_batch_script(current_exe_path, temp_path, exe_name, 
-                                    script_path, sizeof(script_path))) {
+                                    script_path, sizeof(script_path),
+                                    arguments_path, sizeof(arguments_path))) {
         free(exe_name);
         free(temp_path);
         MessageBox(hwnd_parent, "Failed to create update script.", 
@@ -286,6 +312,8 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     sei.nShow = SW_HIDE;
     
     if (!ShellExecuteEx(&sei)) {
+        DeleteFileA(script_path);
+        DeleteFileA(arguments_path);
         free(exe_name);
         free(temp_path);
         MessageBox(hwnd_parent, "Failed to launch update process.\nPlease run the update manually.",
@@ -691,37 +719,89 @@ static bool download_file(const char* url, const char* output_path) {
 static bool create_update_batch_script(const char* current_exe_path, 
                                         const char* downloaded_path,
                                         const char* exe_name,
-                                        char* script_path, size_t script_path_size) {
-    if (!current_exe_path || !downloaded_path || !exe_name) return false;
-    
-    // Create script in temp directory
+                                        char* script_path, size_t script_path_size,
+                                        char* arguments_path, size_t arguments_path_size) {
+    if (!current_exe_path || !downloaded_path || !exe_name || !script_path ||
+        script_path_size == 0 || !arguments_path || arguments_path_size == 0) return false;
+
+    // Reserve a unique temp file name for the arguments and matching batch script.
     char temp_dir[MAX_PATH];
     DWORD len = GetTempPath(MAX_PATH, temp_dir);
     if (len == 0 || len >= MAX_PATH) return false;
-    
-    snprintf(script_path, script_path_size, "%snosleep_update_%lu.bat", 
-             temp_dir, GetTickCount());
-    
+
+    if (arguments_path_size < MAX_PATH ||
+        !GetTempFileNameA(temp_dir, "nsl", 0, arguments_path)) {
+        return false;
+    }
+    size_t arguments_path_length = strlen(arguments_path);
+    const size_t temp_extension_length = sizeof(".tmp") - 1;
+    if (arguments_path_length < temp_extension_length ||
+        script_path_size <= arguments_path_length) {
+        DeleteFileA(arguments_path);
+        return false;
+    }
+    memcpy(script_path, arguments_path, arguments_path_length + 1);
+    memcpy(script_path + arguments_path_length - temp_extension_length, ".bat",
+           sizeof(".bat"));
+
+    int original_argc = 0;
+    wchar_t** original_argv = CommandLineToArgvW(GetCommandLineW(), &original_argc);
+    if (!original_argv || original_argc < 1) {
+        if (original_argv) LocalFree(original_argv);
+        DeleteFileA(arguments_path);
+        return false;
+    }
+    wchar_t* original_arguments = updater_build_windows_command_line(original_argc, original_argv);
+    LocalFree(original_argv);
+    if (!original_arguments) {
+        DeleteFileA(arguments_path);
+        return false;
+    }
+
+    size_t original_arguments_length = wcslen(original_arguments);
+    if (original_arguments_length >= UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS ||
+        original_arguments_length > (size_t)MAXDWORD / sizeof(wchar_t)) {
+        free(original_arguments);
+        DeleteFileA(arguments_path);
+        return false;
+    }
+    bool arguments_written = updater_write_path(arguments_path, original_arguments,
+                                                original_arguments_length * sizeof(wchar_t),
+                                                CREATE_ALWAYS);
+    free(original_arguments);
+    if (!arguments_written) {
+        DeleteFileA(arguments_path);
+        return false;
+    }
+
     // Build the batch script
     // The script:
     // 1. Waits for nosleep to exit by polling tasklist
     // 2. Copies the downloaded file over the current EXE (renaming it)
-    // 3. Starts the new EXE with the same arguments
+    // 3. Starts the new EXE with the original command-line arguments
     // 4. Deletes itself
     
     char* escaped_current_exe_path = updater_escape_batch_path(current_exe_path);
     char* escaped_downloaded_path = updater_escape_batch_path(downloaded_path);
     char* escaped_exe_name = updater_escape_batch_path(exe_name);
-    if (!escaped_current_exe_path || !escaped_downloaded_path || !escaped_exe_name) {
+    char* escaped_arguments_path = updater_escape_batch_path(arguments_path);
+    char* escaped_internal_marker =
+        updater_escape_batch_path(UPDATER_INTERNAL_RELAUNCH_OPTION);
+    if (!escaped_current_exe_path || !escaped_downloaded_path || !escaped_exe_name ||
+        !escaped_arguments_path || !escaped_internal_marker) {
         free(escaped_current_exe_path);
         free(escaped_downloaded_path);
         free(escaped_exe_name);
+        free(escaped_arguments_path);
+        free(escaped_internal_marker);
+        DeleteFileA(arguments_path);
         return false;
     }
 
-    char script_content[4096];
+    char script_content[8192];
     int written = snprintf(script_content, sizeof(script_content),
         "@echo off\r\n"
+        "setlocal DisableDelayedExpansion\r\n"
         "title Updating nosleep...\r\n"
         "echo Waiting for nosleep to close...\r\n"
         ":WAITLOOP\r\n"
@@ -738,12 +818,14 @@ static bool create_update_batch_script(const char* current_exe_path,
         "    echo The downloaded file is at:\r\n"
         "    echo   %s\r\n"
         "    echo.\r\n"
+        "    del \"%s\" > nul 2>&1\r\n"
         "    pause\r\n"
         "    exit /b 1\r\n"
         ")\r\n"
         "echo Update complete! Starting nosleep...\r\n"
-        "start \"\" \"%s\"\r\n"
+        "start /wait \"\" \"%s\" %s \"%s\"\r\n"
         "echo Cleaning up...\r\n"
+        "del \"%s\" > nul 2>&1\r\n"
         "del \"%s\" > nul 2>&1\r\n"
         "del \"%%~f0\" > nul 2>&1\r\n",
         escaped_exe_name,            // for tasklist filter
@@ -751,29 +833,28 @@ static bool create_update_batch_script(const char* current_exe_path,
         escaped_downloaded_path,     // source file to copy from
         escaped_current_exe_path,    // destination (original EXE path)
         escaped_downloaded_path,     // info message about temp file
-        escaped_current_exe_path,    // to start the new version
-        escaped_downloaded_path      // delete temp file
+        escaped_arguments_path,      // remove original arguments after copy failure
+        escaped_current_exe_path,    // executable to start the argument-file relay
+        escaped_internal_marker,     // select relay mode in the updated executable
+        escaped_arguments_path,      // original command-line arguments
+        escaped_arguments_path,      // remove original arguments after the relay exits
+        escaped_downloaded_path      // delete downloaded file
     );
 
     free(escaped_current_exe_path);
     free(escaped_downloaded_path);
     free(escaped_exe_name);
+    free(escaped_arguments_path);
+    free(escaped_internal_marker);
     
     if (written <= 0 || (size_t)written >= sizeof(script_content)) {
+        DeleteFileA(arguments_path);
         return false;
     }
     
     // Write script file
-    HANDLE hFile = CreateFile(script_path, GENERIC_WRITE, 0, NULL,
-        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) return false;
-    
-    DWORD bytes_written;
-    BOOL write_ok = WriteFile(hFile, script_content, (DWORD)strlen(script_content), &bytes_written, NULL);
-    CloseHandle(hFile);
-    
-    if (!write_ok || bytes_written != strlen(script_content)) {
-        DeleteFile(script_path);
+    if (!updater_write_path(script_path, script_content, strlen(script_content), CREATE_NEW)) {
+        DeleteFileA(arguments_path);
         return false;
     }
     
