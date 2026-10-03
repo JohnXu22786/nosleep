@@ -82,6 +82,8 @@ typedef unsigned long long ULONGLONG;
 typedef void* HANDLE;
 typedef void* LPVOID;
 typedef pthread_mutex_t SRWLOCK;
+typedef struct { int unused; } CONDITION_VARIABLE;
+typedef unsigned long ULONG;
 typedef DWORD (WINAPI *LPTHREAD_START_ROUTINE)(LPVOID);
 typedef struct { unsigned short wHour, wMinute, wSecond; } SYSTEMTIME;
 typedef struct { DWORD dwLowDateTime, dwHighDateTime; } FILETIME;
@@ -120,6 +122,8 @@ typedef struct NoSleepTray {
     bool is_running, duration_expired, stopping, core_init_failed;
     bool core_init_succeeded, starting_nosleep;
     SRWLOCK delayed_action_lock;
+    CONDITION_VARIABLE stop_condition;
+    DWORD stopping_thread_id;
     int duration_minutes;
     ULONGLONG start_tick64;
     HANDLE stop_event, timer_thread, nosleep_thread;
@@ -187,6 +191,16 @@ static void AcquireSRWLockExclusive(SRWLOCK* lock) {
     pthread_mutex_lock(lock);
 }
 static void ReleaseSRWLockExclusive(SRWLOCK* lock) { pthread_mutex_unlock(lock); }
+static int SleepConditionVariableSRW(CONDITION_VARIABLE* condition,
+                                     SRWLOCK* lock, DWORD milliseconds,
+                                     ULONG flags) {
+    (void)condition;
+    (void)lock;
+    (void)milliseconds;
+    (void)flags;
+    return TRUE;
+}
+static void WakeAllConditionVariable(CONDITION_VARIABLE* condition) { (void)condition; }
 static DWORD GetCurrentThreadId(void) { return mock_thread_id; }
 static ULONGLONG GetTickCount64(void) { return mock_tick64; }
 static DWORD GetThreadId(HANDLE handle) { return ((MockHandle*)handle)->thread_id; }
@@ -344,6 +358,11 @@ static int check_direct_failure(SessionFinishedAction action, const char* label)
     int failures = 0;
     if (tray_nosleep_thread(&tray) != 1) {
         fprintf(stderr, "FAIL: %s did not report core initialization failure\n", label);
+        ++failures;
+    }
+    mock_thread_id = 99; // Reap worker handles after the simulated worker returns.
+    if (!tray_wait_for_worker_threads(&tray)) {
+        fprintf(stderr, "FAIL: %s could not join its completed worker threads\n", label);
         ++failures;
     }
     if (tray.is_running || tray.timer_thread != NULL || !events[1].closed ||
@@ -612,6 +631,11 @@ static int check_startup_failure_race(void) {
 
     tray_start_nosleep(&tray, 30);
     pthread_join(start_worker_thread, NULL);
+    mock_thread_id = 43; // The failed worker leaves its handle for an external reaper.
+    if (!tray_wait_for_worker_threads(&tray)) {
+        fprintf(stderr, "FAIL: startup failure could not join its worker threads\n");
+        return 1;
+    }
 
     int failures = 0;
     if (tray.is_running || tray.timer_thread != NULL || !start_timer_handle.closed) {
@@ -792,6 +816,7 @@ functions = "\n\n".join(
     extract_function(signature)
     for signature in (
         "static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64)",
+        "static bool tray_wait_for_worker_threads(NoSleepTray* tray)",
         "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n                                          DWORD expected_thread_id,\n                                          bool timer_expired,\n                                          bool suppress_notification)",
         "void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification)",
         "void tray_start_nosleep(NoSleepTray* tray, int duration_minutes)",

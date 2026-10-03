@@ -78,9 +78,11 @@ prelude = r'''
 #include "tray_stop_guard.h"
 
 typedef unsigned long DWORD;
+typedef unsigned long ULONG;
 typedef unsigned long long ULONGLONG;
 typedef void *HANDLE;
 typedef struct { int unused; } SRWLOCK;
+typedef struct { int unused; } CONDITION_VARIABLE;
 typedef struct { int unused; } MockHandle;
 typedef enum {
     SESSION_FINISHED_NONE,
@@ -89,6 +91,7 @@ typedef enum {
 } SessionFinishedAction;
 
 #define INFINITE 0xffffffffUL
+#define WAIT_OBJECT_0 0
 #define ES_CONTINUOUS 0x80000000UL
 #define NOTIFY_EVENT_COUNTDOWN_CANCEL 1
 #define NOTIFY_EVENT_TIMER_EXPIRED 2
@@ -106,6 +109,8 @@ static bool atomic_exchange_bool(bool *value, bool replacement) {
 
 typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
+    CONDITION_VARIABLE stop_condition;
+    DWORD stopping_thread_id;
     bool is_running;
     bool duration_expired;
     bool stopping;
@@ -134,6 +139,16 @@ static bool countdown_stop_called;
 
 static void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 static void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+static bool SleepConditionVariableSRW(CONDITION_VARIABLE *condition,
+                                      SRWLOCK *lock, DWORD milliseconds,
+                                      ULONG flags) {
+    (void)condition;
+    (void)lock;
+    (void)milliseconds;
+    (void)flags;
+    return true;
+}
+static void WakeAllConditionVariable(CONDITION_VARIABLE *condition) { (void)condition; }
 static void SetEvent(HANDLE event) { (void)event; }
 static void ResetEvent(HANDLE event) { (void)event; }
 static DWORD GetCurrentThreadId(void) { return 1; }

@@ -59,6 +59,7 @@ static void tray_destroy_icons(NoSleepTray* tray);
 static void tray_create_menu(NoSleepTray* tray);
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam);
 static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam);
+static bool tray_wait_for_worker_threads(NoSleepTray* tray);
 static int tray_show_custom_dialog(NoSleepTray* tray);
 static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
@@ -115,6 +116,7 @@ NoSleepTray* tray_create(void) {
     
     memset(tray, 0, sizeof(NoSleepTray));
     InitializeSRWLock(&tray->delayed_action_lock);
+    InitializeConditionVariable(&tray->stop_condition);
     tray->duration_minutes = -1; // Not set
     tray->current_number = -1;   // No numbered icon displayed
     tray->prevent_display = false;
@@ -164,10 +166,42 @@ NoSleepTray* tray_create(void) {
     return tray;
 }
 
+static bool tray_wait_for_worker_threads(NoSleepTray* tray) {
+    DWORD current_thread_id = GetCurrentThreadId();
+    if ((tray->timer_thread && current_thread_id == tray->timer_thread_id) ||
+        (tray->nosleep_thread && current_thread_id == tray->nosleep_thread_id)) {
+        return false;
+    }
+
+    if (tray->timer_thread) {
+        WaitForSingleObject(tray->timer_thread, INFINITE);
+        CloseHandle(tray->timer_thread);
+        tray->timer_thread = NULL;
+    }
+
+    if (tray->nosleep_thread) {
+        WaitForSingleObject(tray->nosleep_thread, INFINITE);
+        CloseHandle(tray->nosleep_thread);
+        tray->nosleep_thread = NULL;
+    }
+
+    return true;
+}
+
 void tray_destroy(NoSleepTray* tray) {
     if (!tray) return;
+
+    // Prevent a finishing duration thread from publishing a delayed action.
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray->starting_nosleep = true;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     tray_stop_nosleep(tray, false, false);
+
+    if (!tray_wait_for_worker_threads(tray)) {
+        DEBUG_LOG("tray_destroy: cannot destroy tray from one of its worker threads");
+        return;
+    }
     
     if (tray->stop_event) {
         CloseHandle(tray->stop_event);
@@ -970,6 +1004,14 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     // Stop the current session and cancel any delayed action left by its expiry.
     tray_stop_nosleep(tray, false, true);
 
+    // A worker that owned the previous stop may retain its handle until it exits.
+    if (!tray_wait_for_worker_threads(tray)) {
+        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+        tray->starting_nosleep = false;
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        return;
+    }
+
     // Do not publish a new session while stop cleanup is still running.
     for (;;) {
         AcquireSRWLockExclusive(&tray->delayed_action_lock);
@@ -1060,41 +1102,66 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
                                           bool suppress_notification) {
     DEBUG_LOG("tray_stop_nosleep called with timer_expired=%s, suppress_notification=%s", timer_expired ? "true" : "false", suppress_notification ? "true" : "false");
     
-    // Prevent re-entrant calls - use atomic exchange to check and set stopping flag
+    // Serialize stop cleanup and let concurrent callers wait for the active stop.
     if (!tray) return false;
     
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
-    if (expected_thread_id != 0 && tray->nosleep_thread_id != expected_thread_id) {
+    bool is_nosleep_thread = expected_thread_id != 0 &&
+                             tray->nosleep_thread_id == expected_thread_id;
+    bool is_timer_thread = expected_thread_id != 0 &&
+                           tray->timer_thread_id == expected_thread_id;
+    if (expected_thread_id != 0 && !is_nosleep_thread && !is_timer_thread) {
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         DEBUG_LOG("tray_stop_nosleep: ignoring cleanup from an ended session");
         return false;
     }
-    if (expected_thread_id != 0) {
+    if (is_nosleep_thread) {
         ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
     }
 
+    DWORD current_thread_id = GetCurrentThreadId();
     bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
     if (was_stopping) {
+        // Calls made again by the cleanup owner are re-entrant. Session worker
+        // callbacks must also return without waiting, because cleanup joins them.
+        bool is_reentrant = tray->stopping_thread_id == current_thread_id;
+        bool is_stop_worker = current_thread_id == tray->nosleep_thread_id ||
+                              current_thread_id == tray->timer_thread_id;
+        bool waited_for_stop = !is_reentrant && !is_stop_worker;
+        if (waited_for_stop) {
+            while (ATOMIC_LOAD_BOOL(&tray->stopping)) {
+                SleepConditionVariableSRW(&tray->stop_condition,
+                                          &tray->delayed_action_lock,
+                                          INFINITE, 0);
+            }
+        }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-        DEBUG_LOG("tray_stop_nosleep: already stopping, returning");
-        return expected_thread_id != 0;
+        DEBUG_LOG("tray_stop_nosleep: duplicate stop %s",
+                  waited_for_stop ? "waited for active cleanup" :
+                  is_reentrant ? "reentrant call returned" : "stop worker returned");
+        return expected_thread_id != 0 && is_reentrant;
     }
+    tray->stopping_thread_id = current_thread_id;
 
     bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
                                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
                                        tray->sleep_timer != NULL,
                                        tray->shutdown_timer != NULL);
-    if (expected_thread_id != 0 && !has_work) {
+    if (is_nosleep_thread && !has_work) {
+        tray->stopping_thread_id = 0;
         ATOMIC_STORE_BOOL(&tray->stopping, false);
+        WakeAllConditionVariable(&tray->stop_condition);
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         DEBUG_LOG("tray_stop_nosleep: ended session has no cleanup work");
         return true;
     }
     if (!has_work) {
         DEBUG_LOG("tray_stop_nosleep: no active session, countdown, or delayed action; resetting stopping flag and returning");
+        tray->stopping_thread_id = 0;
         ATOMIC_STORE_BOOL(&tray->stopping, false);
+        WakeAllConditionVariable(&tray->stop_condition);
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-        return expected_thread_id != 0;
+        return is_nosleep_thread;
     }
     // Preserve countdown state before its worker observes cancellation and clears it.
     bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
@@ -1107,19 +1174,21 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     if (tray->timer_thread) {
         DWORD current_thread_id = GetCurrentThreadId();
         if (current_thread_id != tray->timer_thread_id) {
-            WaitForSingleObject(tray->timer_thread, 2000);
+            if (WaitForSingleObject(tray->timer_thread, 2000) == WAIT_OBJECT_0) {
+                CloseHandle(tray->timer_thread);
+                tray->timer_thread = NULL;
+            }
         }
-        CloseHandle(tray->timer_thread);
-        tray->timer_thread = NULL;
     }
     
     if (tray->nosleep_thread) {
         DWORD current_thread_id = GetCurrentThreadId();
         if (current_thread_id != tray->nosleep_thread_id) {
-            WaitForSingleObject(tray->nosleep_thread, 2000);
+            if (WaitForSingleObject(tray->nosleep_thread, 2000) == WAIT_OBJECT_0) {
+                CloseHandle(tray->nosleep_thread);
+                tray->nosleep_thread = NULL;
+            }
         }
-        CloseHandle(tray->nosleep_thread);
-        tray->nosleep_thread = NULL;
     }
     
     // Cancel and wait for sleep timer thread if active
@@ -1218,7 +1287,9 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     
     // Reset stopping flag
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray->stopping_thread_id = 0;
     ATOMIC_STORE_BOOL(&tray->stopping, false);
+    WakeAllConditionVariable(&tray->stop_condition);
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     return true;
 }
@@ -1285,7 +1356,10 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             
             // Check what action to take when session finishes
             bool suppress_notification = (tray->session_finished_action != SESSION_FINISHED_NONE);
-            tray_stop_nosleep(tray, true, suppress_notification); // suppress notification if we have follow-up action
+            if (!tray_stop_nosleep_for_session(
+                    tray, timer_thread_id, true, suppress_notification)) {
+                return 0;
+            }
             
             // Calculate elapsed time for notifications from the monotonic tick.
             ULONGLONG elapsed_seconds = get_elapsed_milliseconds(tray->start_tick64) / 1000;
@@ -1482,7 +1556,9 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     DEBUG_LOG("tray_nosleep_thread: nosleep completed, tray->is_running=%s", ATOMIC_LOAD_BOOL(&tray->is_running) ? "true" : "false");
     if (ATOMIC_LOAD_BOOL(&tray->is_running)) {
         DEBUG_LOG("tray_nosleep_thread: calling tray_stop_nosleep with timer_expired=false");
-        tray_stop_nosleep(tray, false, false);
+        (void)tray_stop_nosleep_for_session(
+            tray, GetCurrentThreadId(), false, false
+        );
     }
     
     return result;
