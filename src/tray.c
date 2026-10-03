@@ -276,9 +276,6 @@ bool tray_init(NoSleepTray* tray) {
         DEBUG_PRINT("tray_init: Tray icon version set to %u (legacy mouse messages)\n", tray->nid.uVersion);
     }
     
-    // Show notification balloon
-    tray_show_notification(tray, "nosleep started", "System tray icon created", false);
-    
     // Read startup state from registry
     tray->start_on_startup = is_startup_enabled();
 
@@ -317,6 +314,10 @@ bool tray_init(NoSleepTray* tray) {
         // use the old notification_mode value to select active group
         notify_groups_migrate_old_settings(&tray->notify_groups, tray->notification_mode);
     }
+
+    // Show the startup notification only after the active notification group is known.
+    tray_show_notification(tray, NOTIFY_EVENT_APP_START,
+        "nosleep started", "System tray icon created", false);
 
     // Check for updates on startup if enabled
     if (tray->check_updates_on_startup && should_check_for_updates()) {
@@ -1021,9 +1022,10 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     if (duration_minutes > 0) {
         char message[256];
         sprintf(message, "Preventing system sleep for %d minutes", duration_minutes);
-        tray_show_notification(tray, "Starting", message, false);
+        tray_show_notification(tray, NOTIFY_EVENT_SESSION_START, "Starting", message, false);
     } else {
-        tray_show_notification(tray, "Starting", "Preventing system sleep indefinitely", false);
+        tray_show_notification(tray, NOTIFY_EVENT_SESSION_START,
+            "Starting", "Preventing system sleep indefinitely", false);
     }
     
     // Start nosleep thread
@@ -1038,7 +1040,8 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         tray->duration_minutes = -1;
         tray->starting_nosleep = false;
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-        tray_show_notification(tray, "Error", "Failed to create nosleep thread", true);
+        tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+            "Error", "Failed to create nosleep thread", true);
         return;
     }
     
@@ -1060,7 +1063,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             
             char error_msg[256];
             sprintf(error_msg, "Failed to create timer thread. Error code: %lu", GetLastError());
-            tray_show_notification(tray, "Error", error_msg, true);
+            tray_show_notification(tray, NOTIFY_EVENT_ERROR, "Error", error_msg, true);
             return;
         }
     }
@@ -1198,9 +1201,11 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
             // Countdown was cancelled
             DEBUG_LOG("tray_stop_nosleep: showing countdown cancellation notification");
             if (countdown_action == SESSION_FINISHED_SHUTDOWN) {
-                tray_show_notification(tray, "Shutdown cancelled", "System shutdown has been cancelled", true);
+                tray_show_notification(tray, NOTIFY_EVENT_COUNTDOWN_CANCEL,
+                    "Shutdown cancelled", "System shutdown has been cancelled", true);
             } else {
-                tray_show_notification(tray, "Sleep cancelled", "System sleep has been cancelled", true);
+                tray_show_notification(tray, NOTIFY_EVENT_COUNTDOWN_CANCEL,
+                    "Sleep cancelled", "System sleep has been cancelled", true);
             }
         } else if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
             // Timer expired (nosleep session finished naturally)
@@ -1210,7 +1215,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
             } else {
                 sprintf(message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
             }
-            tray_show_notification(tray, "Time's up!", message, false);
+            tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED, "Time's up!", message, false);
         } else {
             // Nosleep session manually stopped
             DEBUG_LOG("tray_stop_nosleep: showing Stopped notification");
@@ -1219,7 +1224,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
             } else {
                 sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
             }
-            tray_show_notification(tray, "Stopped", message, false);
+            tray_show_notification(tray, NOTIFY_EVENT_SESSION_STOP, "Stopped", message, false);
         }
     } else {
         DEBUG_LOG("tray_stop_nosleep: notification suppressed");
@@ -1359,12 +1364,14 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     if (!sleep_timer) {
                         DEBUG_LOG("tray_duration_timer: failed to create sleep timer thread");
                         // Show error notification
-                        tray_show_notification(tray, "Error", "Failed to start sleep timer", true);
+                        tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                            "Error", "Failed to start sleep timer", true);
                     } else {
                         // Show notification about delayed sleep
                         char sleep_message[512];
                         sprintf(sleep_message, "%s\nSystem will sleep in 60 seconds...", duration_message);
-                        tray_show_notification(tray, "Time's up!", sleep_message, true);
+                        tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
+                            "Time's up!", sleep_message, true);
                         DEBUG_LOG("tray_duration_timer: delayed sleep thread created successfully");
                         // Countdown display will be started by delayed_sleep_thread
                     }
@@ -1413,12 +1420,14 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     if (!shutdown_timer) {
                         DEBUG_LOG("tray_duration_timer: failed to create shutdown timer thread");
                         // Show error notification
-                        tray_show_notification(tray, "Error", "Failed to start shutdown timer", true);
+                        tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                            "Error", "Failed to start shutdown timer", true);
                     } else {
                         // Show notification about delayed shutdown
                         char shutdown_message[512];
                         sprintf(shutdown_message, "%s\nSystem will shut down in 60 seconds...", duration_message);
-                        tray_show_notification(tray, "Time's up!", shutdown_message, true);
+                        tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
+                            "Time's up!", shutdown_message, true);
                         DEBUG_LOG("tray_duration_timer: delayed shutdown thread created successfully");
                         // Countdown display will be started by delayed_shutdown_thread
                     }
@@ -1456,7 +1465,8 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
             tray, GetCurrentThreadId(), false, true
         );
         if (is_current_session) {
-            tray_show_notification(tray, "Error", "Failed to create NoSleep instance", true);
+            tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                "Error", "Failed to create NoSleep instance", true);
         } else {
             DEBUG_LOG("tray_nosleep_thread: ignoring core initialization failure from an ended session");
         }
@@ -1539,7 +1549,8 @@ static void trigger_system_sleep(NoSleepTray* tray) {
         DEBUG_LOG("trigger_system_sleep: both sleep methods failed");
         
         // Both methods failed, show notification to user
-        tray_show_notification(tray, "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
+        tray_show_notification(tray, NOTIFY_EVENT_ACTION_FAILED,
+            "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
     }
 }
 
@@ -1596,7 +1607,8 @@ static void trigger_system_shutdown(NoSleepTray* tray) {
     DEBUG_LOG("trigger_system_shutdown: both shutdown methods failed");
     
     // Show notification to user
-    tray_show_notification(tray, "Shutdown Failed", "Failed to shut down system. Check permissions.", true);
+    tray_show_notification(tray, NOTIFY_EVENT_ACTION_FAILED,
+        "Shutdown Failed", "Failed to shut down system. Check permissions.", true);
 }
 
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
@@ -2706,8 +2718,12 @@ void tray_set_add_to_path(NoSleepTray* tray, bool enable) {
     }
 }
 
-void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical) {
+void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
+                            const char* title, const char* message, bool critical) {
     if (!tray || !tray->hwnd) return;
+
+    // Filter direct and event-originated notifications through the same active group.
+    if (!notify_groups_should_show(&tray->notify_groups, event_type)) return;
     
     // Check notification mode (legacy check)
     if (tray->notification_mode == NOTIFY_NONE) return;
@@ -2729,20 +2745,6 @@ void tray_show_notification(NoSleepTray* tray, const char* title, const char* me
     
     // Reset flags
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-}
-
-// Event-aware notification: checks notification group filtering before showing
-void tray_show_notification_event(NoSleepTray* tray, int event_type, const char* title, const char* message, bool critical) {
-    if (!tray) return;
-    
-    // Check if this event type is enabled in the current notification group
-    if (!notify_groups_should_show(&tray->notify_groups, (NotifyEventId)event_type)) {
-        return;
-    }
-    
-    // Also respect the legacy notification_mode as a fallback
-    // (the group system is the primary filter now)
-    tray_show_notification(tray, title, message, critical);
 }
 
 // Simple input dialog window procedure
@@ -3747,7 +3749,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
 
     if (!check_ok) {
         if (!silent) {
-            tray_show_notification_event(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
+            tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
                 "Update Check Failed", "Could not check for updates. Check your internet connection.", false);
         }
         return;
@@ -3755,7 +3757,8 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
 
     if (!info.update_available) {
         if (!silent) {
-            tray_show_notification(tray, "No Updates", 
+            tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
+                "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
         return;
@@ -3764,7 +3767,8 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     // Compare versions
     if (updater_compare_versions(info.latest_version, CURRENT_VERSION) <= 0) {
         if (!silent) {
-            tray_show_notification(tray, "No Updates", 
+            tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
+                "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
         return;
@@ -3774,7 +3778,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     {
         char msg[256];
         snprintf(msg, sizeof(msg), "Version %s is available! (You have v" CURRENT_VERSION ")", info.latest_version);
-        tray_show_notification_event(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
+        tray_show_notification(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
     }
 
     // Ask user if they want to download
@@ -4014,7 +4018,8 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         }
                         
                         // Show notification
-                        tray_show_notification(tray, "Sleep Detected", "System sleep cancelled all pending actions", false);
+                        tray_show_notification(tray, NOTIFY_EVENT_SLEEP_DETECTED,
+                            "Sleep Detected", "System sleep cancelled all pending actions", false);
                         break;
                         
                     case PBT_APMRESUMESUSPEND:

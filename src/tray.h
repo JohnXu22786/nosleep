@@ -142,9 +142,9 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
 void tray_set_duration(NoSleepTray* tray, int minutes);
 
 void tray_update_icon(NoSleepTray* tray);
-// Includes notification event type for per-event filtering
-void tray_show_notification(NoSleepTray* tray, const char* title, const char* message, bool critical);
-void tray_show_notification_event(NoSleepTray* tray, int event_type, const char* title, const char* message, bool critical);
+// Notification event type is required so the active group can filter every notification.
+void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
+                            const char* title, const char* message, bool critical);
 void tray_update_stop_menu_item(NoSleepTray* tray);
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 void tray_set_add_to_path(NoSleepTray* tray, bool enable);
