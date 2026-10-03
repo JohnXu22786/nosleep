@@ -14,7 +14,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name):
     definition = re.search(
-        r"\b(?:static\s+)?(?:void|bool|DWORD\s+WINAPI|ULONGLONG)\s+"
+        r"\b(?:static\s+)?(?:void|bool|DWORD\s+WINAPI|ULONGLONG|LRESULT\s+CALLBACK)\s+"
         + re.escape(name)
         + r"\s*\([^;]*?\)\s*\{",
         tray,
@@ -69,6 +69,7 @@ def extract_function(name):
 
 menu = extract_function("tray_create_menu")
 update = extract_function("tray_update_session_finished_menu")
+command_handler = extract_function("tray_window_proc")
 
 finished_item = re.search(
     r"AppendMenu\(tray->hmenu,\s*MF_STRING\s*\|\s*MF_POPUP,\s*"
@@ -91,5 +92,25 @@ assert re.search(r"SetMenuItemInfo\(tray->hmenu,\s*0,\s*TRUE,\s*&mii\)", update)
     "the selected action caption must update the When finished item at position 0"
 )
 
-print("PASS: When finished checkmarks and caption update the submenu at main-menu position 0")
+for command, action in (
+    ("IDM_SESSION_FINISHED_NONE", "SESSION_FINISHED_NONE"),
+    ("IDM_SESSION_FINISHED_SHUTDOWN", "SESSION_FINISHED_SHUTDOWN"),
+    ("IDM_SESSION_FINISHED_SLEEP", "SESSION_FINISHED_SLEEP"),
+):
+    case = re.search(
+        rf"case {command}:(?P<body>.*?)(?=^\s*break;)",
+        command_handler,
+        re.S | re.M,
+    )
+    assert case, f"could not find command handler for {command}"
+    assignment = re.search(
+        rf"tray->session_finished_action\s*=\s*{action}\s*;", case["body"]
+    )
+    save = re.search(r"tray_save_settings\(tray\)\s*;", case["body"])
+    assert assignment, f"{command} must select {action}"
+    assert save and assignment.start() < save.start(), (
+        f"{command} must persist the selected session-finished action"
+    )
+
+print("PASS: When finished menu updates its checkmarks, caption, and persisted action")
 PY

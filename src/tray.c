@@ -4002,16 +4002,19 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray->session_finished_action = SESSION_FINISHED_NONE;
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
+                    tray_save_settings(tray);
                     break;
                 case IDM_SESSION_FINISHED_SHUTDOWN:
                     tray->session_finished_action = SESSION_FINISHED_SHUTDOWN;
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
+                    tray_save_settings(tray);
                     break;
                 case IDM_SESSION_FINISHED_SLEEP:
                     tray->session_finished_action = SESSION_FINISHED_SLEEP;
                     tray->sleep_after_timeout = true;
                     tray_update_session_finished_menu(tray);
+                    tray_save_settings(tray);
                     break;
             }
             break;
