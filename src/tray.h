@@ -91,7 +91,7 @@ typedef struct NoSleepTray {
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
-    SYSTEMTIME start_time;      // When nosleep started
+    ULONGLONG start_tick64;     // Monotonic tick count when nosleep started
     HANDLE stop_event;          // Event to signal stop
     HANDLE timer_thread;        // Thread for duration timer
     HANDLE nosleep_thread;      // Thread for nosleep execution
