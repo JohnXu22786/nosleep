@@ -1017,6 +1017,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         ATOMIC_STORE_BOOL(&tray->is_running, false);
         tray->duration_minutes = -1;
         tray->starting_nosleep = false;
+        tray_update_icon(tray);
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         tray_show_notification(tray, NOTIFY_EVENT_ERROR,
             "Error", "Failed to create nosleep thread", true);
