@@ -3,6 +3,9 @@
 #ifndef TRAY_H
 #define TRAY_H
 
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
 #include <windows.h>
 #include <stdbool.h>
 #include "notify_groups.h"
@@ -86,6 +89,8 @@ typedef struct NoSleepTray {
     bool is_running;            // Whether nosleep is active - accessed atomically
     bool duration_expired;      // Whether the timer duration has expired (to show correct notification) - accessed atomically
     bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep - accessed atomically
+    DWORD stopping_thread_id;   // Thread completing stop cleanup - protected by delayed_action_lock
+    CONDITION_VARIABLE stop_condition; // Wakes concurrent stops after cleanup completes
     bool core_init_failed;      // Suppress follow-up actions if NoSleep initialization fails - accessed atomically
     bool core_init_succeeded;   // Allow follow-up actions only after NoSleep initialization succeeds - accessed atomically
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock

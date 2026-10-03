@@ -74,6 +74,7 @@ prelude = r"""
 
 typedef void *HANDLE;
 typedef struct { int unused; } SRWLOCK;
+typedef struct { int unused; } CONDITION_VARIABLE;
 typedef struct { unsigned int close_count; } MockHandle;
 typedef enum { SESSION_FINISHED_NONE, SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SLEEP } SessionFinishedAction;
 #define TRUE 1
@@ -81,6 +82,7 @@ typedef enum { SESSION_FINISHED_NONE, SESSION_FINISHED_SHUTDOWN, SESSION_FINISHE
 #define NOTIFY_ALL 0
 typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
+    CONDITION_VARIABLE stop_condition;
     int duration_minutes;
     int current_number;
     bool prevent_display;
@@ -111,6 +113,7 @@ static int close_calls;
 static int unexpected_close_calls;
 
 static void InitializeSRWLock(SRWLOCK *lock) { (void)lock; }
+static void InitializeConditionVariable(CONDITION_VARIABLE *condition) { (void)condition; }
 
 static HANDLE CreateEvent(void *attributes, int manual_reset, int initial_state, const char *name) {
     (void)attributes;
