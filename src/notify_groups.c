@@ -56,7 +56,7 @@ static void init_default_groups(NotifyGroupManager* mgr) {
     mgr->groups[2].is_default = true;
 }
 
-void notify_groups_init(NotifyGroupManager* mgr) {
+void notify_groups_init(NotifyGroupManager* mgr, int old_notification_mode) {
     if (!mgr) return;
     
     memset(mgr, 0, sizeof(NotifyGroupManager));
@@ -67,6 +67,7 @@ void notify_groups_init(NotifyGroupManager* mgr) {
     // If no groups found in registry, initialize defaults
     if (mgr->count == 0) {
         init_default_groups(mgr);
+        notify_groups_migrate_old_settings(mgr, old_notification_mode);
     }
 }
 

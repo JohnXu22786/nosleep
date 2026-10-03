@@ -289,32 +289,8 @@ bool tray_init(NoSleepTray* tray) {
     }
 
     // Initialize notification groups and migrate old settings
-    notify_groups_init(&tray->notify_groups);
-    // The old notification_mode is used for migration if no groups exist
-    // Migration happens inside notify_groups_init if registry is empty
-    // We still check to see if migration is needed
-    {
-        // Check if old notification_mode key exists and no groups yet
-        HKEY hKey;
-        LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, 
-            "Software\\nosleep\\settings", 0, KEY_READ, &hKey);
-        if (result == ERROR_SUCCESS) {
-            DWORD old_mode;
-            DWORD size = sizeof(DWORD);
-            result = RegQueryValueEx(hKey, "notification_mode", NULL, NULL, 
-                                     (LPBYTE)&old_mode, &size);
-            RegCloseKey(hKey);
-            
-            if (result == ERROR_SUCCESS && tray->notify_groups.count == 0) {
-                // No groups loaded from registry - this is a fresh start
-                // Use the old notification_mode to set active group
-                tray->notification_mode = (int)old_mode;
-            }
-        }
-        // Migrate: if groups were just loaded from registry with defaults,
-        // use the old notification_mode value to select active group
-        notify_groups_migrate_old_settings(&tray->notify_groups, tray->notification_mode);
-    }
+    // Migrate the old mode only if no groups were loaded from the registry.
+    notify_groups_init(&tray->notify_groups, tray->notification_mode);
 
     // Show the startup notification only after the active notification group is known.
     tray_show_notification(tray, NOTIFY_EVENT_APP_START,

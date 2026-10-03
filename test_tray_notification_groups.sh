@@ -90,7 +90,7 @@ assert re.search(
 ), "session start notifications must use the session-start group setting"
 
 initialization = extract_function("tray_init")
-assert initialization.index("notify_groups_init(&tray->notify_groups)") < initialization.index(
+assert initialization.index("notify_groups_init(&tray->notify_groups, tray->notification_mode)") < initialization.index(
     "tray_show_notification(tray, NOTIFY_EVENT_APP_START"
 ), "the application-start notification must wait until notification groups are loaded"
 
