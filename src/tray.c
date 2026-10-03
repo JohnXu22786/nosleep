@@ -2721,13 +2721,10 @@ void tray_set_add_to_path(NoSleepTray* tray, bool enable) {
 void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
                             const char* title, const char* message, bool critical) {
     if (!tray || !tray->hwnd) return;
+    (void)critical; // Retained for existing callers; event groups define visibility.
 
-    // Filter direct and event-originated notifications through the same active group.
+    // The active event group is authoritative for direct and event-originated notifications.
     if (!notify_groups_should_show(&tray->notify_groups, event_type)) return;
-    
-    // Check notification mode (legacy check)
-    if (tray->notification_mode == NOTIFY_NONE) return;
-    if (tray->notification_mode == NOTIFY_CRITICAL_ONLY && !critical) return;
     
     DEBUG_LOG("tray_show_notification: title='%s', message='%s'", title, message);
     

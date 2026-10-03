@@ -381,6 +381,8 @@ static int run_tray_mode(const CLIOptions* opts) {
     }
     if (opts->notification_mode >= 0) {
         tray->notification_mode = opts->notification_mode;
+        // Keep the legacy CLI option by selecting its corresponding built-in group.
+        notify_groups_set_active(&tray->notify_groups, opts->notification_mode);
     }
     if (opts->auto_check_interval >= 0) {
         tray->auto_check_interval = opts->auto_check_interval;
