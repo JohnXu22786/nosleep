@@ -966,15 +966,42 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         return;
     }
     
-    // If already running, stop it first
-    if (ATOMIC_LOAD_BOOL(&tray->is_running)) {
-        tray_stop_nosleep(tray, false, true); // suppress notification when switching
+    // Claim the transition so an expiring duration timer cannot publish an action
+    // between cleanup and publication of the replacement session.
+    for (;;) {
+        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+        if (!ATOMIC_LOAD_BOOL(&tray->stopping) && !tray->starting_nosleep) {
+            tray->starting_nosleep = true;
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+            break;
+        }
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        Sleep(10);
     }
-    
+
+    // Stop the current session and cancel any delayed action left by its expiry.
+    tray_stop_nosleep(tray, false, true);
+
+    // Do not publish a new session while stop cleanup is still running.
+    for (;;) {
+        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+        if (!ATOMIC_LOAD_BOOL(&tray->stopping)) {
+            break;
+        }
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        Sleep(10);
+    }
+
+    // Keep the worker from handling failure until this session's thread handles
+    // and IDs have been published.
     tray->duration_minutes = duration_minutes;
     ATOMIC_STORE_BOOL(&tray->is_running, true);
     ATOMIC_STORE_BOOL(&tray->duration_expired, false);
     ATOMIC_STORE_BOOL(&tray->stopping, false);
+    ATOMIC_STORE_BOOL(&tray->core_init_failed, false);
+    ATOMIC_STORE_BOOL(&tray->core_init_succeeded, false);
+    tray->timer_thread_id = 0;
+    tray->nosleep_thread_id = 0;
     GetSystemTime(&tray->start_time);
     ResetEvent(tray->stop_event);
     
@@ -1000,6 +1027,8 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
         // Thread creation failed, restore state and notify user
         ATOMIC_STORE_BOOL(&tray->is_running, false);
         tray->duration_minutes = -1;
+        tray->starting_nosleep = false;
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         tray_show_notification(tray, "Error", "Failed to create nosleep thread", true);
         return;
     }
@@ -1013,7 +1042,12 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             tray->timer_thread_id = GetThreadId(tray->timer_thread);
         } else {
             // Timer thread creation failed, stop nosleep thread and restore state
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             tray_stop_nosleep(tray, false, true); // suppress notification
+
+            AcquireSRWLockExclusive(&tray->delayed_action_lock);
+            tray->starting_nosleep = false;
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             
             char error_msg[256];
             sprintf(error_msg, "Failed to create timer thread. Error code: %lu", GetLastError());
@@ -1021,35 +1055,59 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             return;
         }
     }
+
+    tray->starting_nosleep = false;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     // Update stop menu item text
     tray_update_stop_menu_item(tray);
 }
 
-void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification) {
+static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
+                                          DWORD expected_thread_id,
+                                          bool timer_expired,
+                                          bool suppress_notification) {
     DEBUG_LOG("tray_stop_nosleep called with timer_expired=%s, suppress_notification=%s", timer_expired ? "true" : "false", suppress_notification ? "true" : "false");
     
     // Prevent re-entrant calls - use atomic exchange to check and set stopping flag
-    if (!tray) return;
+    if (!tray) return false;
     
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
-    bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
-    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-    if (was_stopping) {
-        DEBUG_LOG("tray_stop_nosleep: already stopping, returning");
-        return;
+    if (expected_thread_id != 0 && tray->nosleep_thread_id != expected_thread_id) {
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        DEBUG_LOG("tray_stop_nosleep: ignoring cleanup from an ended session");
+        return false;
+    }
+    if (expected_thread_id != 0) {
+        ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
     }
 
-    if (!tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
-                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                            tray->sleep_timer != NULL,
-                            tray->shutdown_timer != NULL)) {
+    bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
+    if (was_stopping) {
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        DEBUG_LOG("tray_stop_nosleep: already stopping, returning");
+        return expected_thread_id != 0;
+    }
+
+    bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                                       ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                       tray->sleep_timer != NULL,
+                                       tray->shutdown_timer != NULL);
+    if (expected_thread_id != 0 && !has_work) {
+        ATOMIC_STORE_BOOL(&tray->stopping, false);
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        DEBUG_LOG("tray_stop_nosleep: ended session has no cleanup work");
+        return true;
+    }
+    if (!has_work) {
         DEBUG_LOG("tray_stop_nosleep: no active session, countdown, or delayed action; resetting stopping flag and returning");
         ATOMIC_STORE_BOOL(&tray->stopping, false);
-        return;
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        return expected_thread_id != 0;
     }
     ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     // Wait for threads to finish
     if (tray->timer_thread) {
@@ -1179,11 +1237,28 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
     tray_update_icon(tray);
     
     // Reset stopping flag
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
     ATOMIC_STORE_BOOL(&tray->stopping, false);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    return true;
+}
+
+void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification) {
+    (void)tray_stop_nosleep_for_session(tray, 0, timer_expired, suppress_notification);
 }
 
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
+    DWORD timer_thread_id = GetCurrentThreadId();
+
+    // A duration thread may be scheduled after its session has been replaced.
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool is_current_session = (tray->timer_thread_id == timer_thread_id);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    if (!is_current_session) {
+        DEBUG_LOG("tray_duration_timer: ignoring timer from an ended session");
+        return 0;
+    }
     
     DEBUG_LOG("tray_duration_timer: started, duration_minutes=%d, session_finished_action=%d",
             tray->duration_minutes, tray->session_finished_action);
@@ -1217,6 +1292,28 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         ULONGLONG elapsed_100ns = uli_now.QuadPart - uli_start.QuadPart;
         
         if (elapsed_100ns >= duration_100ns) {
+            if (tray->session_finished_action != SESSION_FINISHED_NONE) {
+                // Do not honor a follow-up action until the NoSleep core is known to exist.
+                for (;;) {
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                    bool is_current_session = (tray->timer_thread_id == timer_thread_id);
+                    bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+                    bool core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
+                    bool core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
+                    bool session_starting = tray->starting_nosleep;
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+
+                    if (!is_current_session || !is_running || core_init_failed || session_starting) {
+                        DEBUG_LOG("tray_duration_timer: abandoning action while core initialization or session state changes");
+                        return 0;
+                    }
+                    if (core_init_succeeded) {
+                        break;
+                    }
+                    Sleep(10);
+                }
+            }
+
             // Duration reached
             DEBUG_LOG("tray_duration_timer: duration reached, stopping with timer_expired=true");
             ATOMIC_STORE_BOOL(&tray->duration_expired, true);
@@ -1257,17 +1354,46 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             }
             
             switch (tray->session_finished_action) {
-                case SESSION_FINISHED_SLEEP:
+                case SESSION_FINISHED_SLEEP: {
                     DEBUG_LOG("tray_duration_timer: session_finished_action=SLEEP, starting delayed sleep thread");
-                    
-                    // Reset event before starting new sleep timer
-                    ResetEvent(tray->sleep_stop_event);
-                    
-                    // Create delayed sleep thread
-                    tray->sleep_timer = CreateThread(
-                        NULL, 0, delayed_sleep_thread, tray, 0, NULL
-                    );
-                    if (!tray->sleep_timer) {
+
+                    // Serialize action startup against NoSleep creation failure cleanup.
+                    HANDLE sleep_timer = NULL;
+                    bool core_init_failed;
+                    bool core_init_succeeded;
+                    bool stale_session;
+                    bool session_starting;
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                    stale_session = (tray->timer_thread_id != timer_thread_id);
+                    core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
+                    core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
+                    session_starting = tray->starting_nosleep;
+                    if (!stale_session && !session_starting && !core_init_failed &&
+                        core_init_succeeded) {
+                        ResetEvent(tray->sleep_stop_event);
+                        tray->sleep_timer = CreateThread(
+                            NULL, 0, delayed_sleep_thread, tray, 0, NULL
+                        );
+                        sleep_timer = tray->sleep_timer;
+                    }
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                    if (stale_session) {
+                        DEBUG_LOG("tray_duration_timer: skipping sleep action from an ended session");
+                        break;
+                    }
+                    if (session_starting) {
+                        DEBUG_LOG("tray_duration_timer: skipping sleep action during session replacement");
+                        break;
+                    }
+                    if (core_init_failed) {
+                        DEBUG_LOG("tray_duration_timer: skipping sleep action after NoSleep initialization failure");
+                        break;
+                    }
+                    if (!core_init_succeeded) {
+                        DEBUG_LOG("tray_duration_timer: skipping sleep action before NoSleep initialization completed");
+                        break;
+                    }
+                    if (!sleep_timer) {
                         DEBUG_LOG("tray_duration_timer: failed to create sleep timer thread");
                         // Show error notification
                         tray_show_notification(tray, "Error", "Failed to start sleep timer", true);
@@ -1280,18 +1406,48 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         // Countdown display will be started by delayed_sleep_thread
                     }
                     break;
-                    
-                case SESSION_FINISHED_SHUTDOWN:
+                }
+
+                case SESSION_FINISHED_SHUTDOWN: {
                     DEBUG_LOG("tray_duration_timer: session_finished_action=SHUTDOWN, starting delayed shutdown thread");
-                    
-                    // Reset event before starting new shutdown timer
-                    ResetEvent(tray->shutdown_stop_event);
-                    
-                    // Create delayed shutdown thread
-                    tray->shutdown_timer = CreateThread(
-                        NULL, 0, delayed_shutdown_thread, tray, 0, NULL
-                    );
-                    if (!tray->shutdown_timer) {
+
+                    // Serialize action startup against NoSleep creation failure cleanup.
+                    HANDLE shutdown_timer = NULL;
+                    bool shutdown_core_init_failed;
+                    bool shutdown_core_init_succeeded;
+                    bool shutdown_stale_session;
+                    bool shutdown_session_starting;
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                    shutdown_stale_session = (tray->timer_thread_id != timer_thread_id);
+                    shutdown_core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
+                    shutdown_core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
+                    shutdown_session_starting = tray->starting_nosleep;
+                    if (!shutdown_stale_session && !shutdown_session_starting &&
+                        !shutdown_core_init_failed && shutdown_core_init_succeeded) {
+                        ResetEvent(tray->shutdown_stop_event);
+                        tray->shutdown_timer = CreateThread(
+                            NULL, 0, delayed_shutdown_thread, tray, 0, NULL
+                        );
+                        shutdown_timer = tray->shutdown_timer;
+                    }
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                    if (shutdown_stale_session) {
+                        DEBUG_LOG("tray_duration_timer: skipping shutdown action from an ended session");
+                        break;
+                    }
+                    if (shutdown_session_starting) {
+                        DEBUG_LOG("tray_duration_timer: skipping shutdown action during session replacement");
+                        break;
+                    }
+                    if (shutdown_core_init_failed) {
+                        DEBUG_LOG("tray_duration_timer: skipping shutdown action after NoSleep initialization failure");
+                        break;
+                    }
+                    if (!shutdown_core_init_succeeded) {
+                        DEBUG_LOG("tray_duration_timer: skipping shutdown action before NoSleep initialization completed");
+                        break;
+                    }
+                    if (!shutdown_timer) {
                         DEBUG_LOG("tray_duration_timer: failed to create shutdown timer thread");
                         // Show error notification
                         tray_show_notification(tray, "Error", "Failed to start shutdown timer", true);
@@ -1304,6 +1460,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         // Countdown display will be started by delayed_shutdown_thread
                     }
                     break;
+                }
                     
                 case SESSION_FINISHED_NONE:
                 default:
@@ -1332,8 +1489,27 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     // Create NoSleep instance
     NoSleep* ns = nosleep_create();
     if (!ns) {
-        tray_show_notification(tray, "Error", "Failed to create NoSleep instance", true);
+        bool is_current_session = tray_stop_nosleep_for_session(
+            tray, GetCurrentThreadId(), false, true
+        );
+        if (is_current_session) {
+            tray_show_notification(tray, "Error", "Failed to create NoSleep instance", true);
+        } else {
+            DEBUG_LOG("tray_nosleep_thread: ignoring core initialization failure from an ended session");
+        }
         return 1;
+    }
+
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool is_current_session = (tray->nosleep_thread_id == GetCurrentThreadId());
+    bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+    if (is_current_session && is_running) {
+        ATOMIC_STORE_BOOL(&tray->core_init_succeeded, true);
+    }
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    if (!is_current_session || !is_running) {
+        nosleep_destroy(ns);
+        return 0;
     }
     
     // Run nosleep

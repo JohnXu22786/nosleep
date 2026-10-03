@@ -86,7 +86,10 @@ typedef struct NoSleepTray {
     bool is_running;            // Whether nosleep is active - accessed atomically
     bool duration_expired;      // Whether the timer duration has expired (to show correct notification) - accessed atomically
     bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep - accessed atomically
-    SRWLOCK delayed_action_lock; // Serializes delayed action start against stop
+    bool core_init_failed;      // Suppress follow-up actions if NoSleep initialization fails - accessed atomically
+    bool core_init_succeeded;   // Allow follow-up actions only after NoSleep initialization succeeds - accessed atomically
+    bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
+    SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
     SYSTEMTIME start_time;      // When nosleep started
     HANDLE stop_event;          // Event to signal stop
