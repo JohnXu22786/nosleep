@@ -46,6 +46,9 @@ jobs:
       - name: Test countdown tooltip rounding
         run: bash test_tray_countdown_action.sh
 
+      - name: Test tray stop timeout worker retention
+        run: ./test_tray_concurrent_stop.sh
+
       - name: Install MinGW cross-compiler
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
