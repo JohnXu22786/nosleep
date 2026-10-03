@@ -23,6 +23,9 @@ jobs:
       - name: Test notification group migration
         run: ./test_notify_groups_migration.sh
 
+      - name: Test tray event cleanup on initialization failure
+        run: bash test_tray_create_event_cleanup.sh
+
       - name: Test updater unit tests
         run: |
           make test-unit

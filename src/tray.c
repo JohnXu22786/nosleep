@@ -154,6 +154,7 @@ NoSleepTray* tray_create(void) {
     
     tray->countdown_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!tray->countdown_stop_event) {
+        CloseHandle(tray->shutdown_stop_event);
         CloseHandle(tray->sleep_stop_event);
         CloseHandle(tray->stop_event);
         free(tray);
