@@ -3576,7 +3576,6 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
             }
             edit_mgr = NULL;
             edit_index = -1;
-            PostQuitMessage(0);
             break;
 
         case WM_CLOSE:
@@ -3591,6 +3590,8 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
     if (!mgr) return;
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
+    BOOL owner_was_enabled = hwnd_parent && IsWindow(hwnd_parent) && IsWindowEnabled(hwnd_parent);
+    if (owner_was_enabled) EnableWindow(hwnd_parent, FALSE);
 
     WNDCLASS wc = {0};
     wc.lpfnWndProc = notify_group_edit_proc;
@@ -3619,12 +3620,23 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
         ShowWindow(hwndDlg, SW_SHOW);
 
         MSG msg;
-        while (GetMessage(&msg, NULL, 0, 0)) {
+        int message_result = 1;
+        while (IsWindow(hwndDlg) && (message_result = GetMessage(&msg, NULL, 0, 0)) > 0) {
             if (!IsDialogMessage(hwndDlg, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
         }
+
+        if (message_result <= 0) {
+            if (IsWindow(hwndDlg)) DestroyWindow(hwndDlg);
+            if (message_result == 0) PostQuitMessage((int)msg.wParam);
+        }
+    }
+
+    if (owner_was_enabled && IsWindow(hwnd_parent)) {
+        EnableWindow(hwnd_parent, TRUE);
+        SetActiveWindow(hwnd_parent);
     }
 
     UnregisterClass("NoSleepNotifyGroupEditDialog", hInstance);
