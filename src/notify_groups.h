@@ -54,7 +54,7 @@ typedef struct {
 
 // Initialize the notification group manager
 // Reads groups from registry, migrates old settings if needed
-void notify_groups_init(NotifyGroupManager* mgr);
+void notify_groups_init(NotifyGroupManager* mgr, int old_notification_mode);
 
 // Get the currently active group
 NotifyGroup* notify_groups_get_active(NotifyGroupManager* mgr);
