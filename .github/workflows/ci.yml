@@ -31,6 +31,9 @@ jobs:
       - name: Test core duration boundary
         run: ./test_core_duration_boundary.sh
 
+      - name: Test CLI UTF-8 argument conversion failures
+        run: ./test_cli_utf8_arguments.sh
+
       - name: Install MinGW cross-compiler
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
