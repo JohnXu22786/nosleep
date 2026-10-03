@@ -6,12 +6,14 @@
 #include <windows.h>
 #include <stdbool.h>
 #include <shellapi.h>
+#include <wchar.h>
 
 #include "core.h"
 #include "tray.h"
 #include "constants.h"
 #include "cli_duration.h"
 #include "cli_interval.h"
+#include "updater_command_line.h"
 
 // Sentinel values for tri-state CLI options (-1 = not specified)
 #define CLI_UNSET -1
@@ -97,6 +99,87 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts);
 static int run_tray_mode(const CLIOptions* opts);
 static int run_configure_mode(const CLIOptions* opts);
 
+static int relaunch_from_command_line_file(const wchar_t* arguments_path) {
+    HANDLE arguments_file = CreateFileW(arguments_path, GENERIC_READ, 0, NULL,
+                                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    LARGE_INTEGER file_size;
+    if (arguments_file == INVALID_HANDLE_VALUE || !GetFileSizeEx(arguments_file, &file_size) ||
+        file_size.QuadPart <= 0 ||
+        file_size.QuadPart >
+            ((LONGLONG)UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS - 1) * (LONGLONG)sizeof(wchar_t) ||
+        file_size.QuadPart % sizeof(wchar_t) != 0) {
+        if (arguments_file != INVALID_HANDLE_VALUE) CloseHandle(arguments_file);
+        MessageBoxW(NULL, L"The saved command line could not be read. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    DWORD file_bytes = (DWORD)file_size.QuadPart;
+    wchar_t* command_line = (wchar_t*)malloc((size_t)file_bytes + sizeof(wchar_t));
+    if (!command_line) {
+        CloseHandle(arguments_file);
+        MessageBoxW(NULL, L"The saved command line could not be read. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    DWORD bytes_read = 0;
+    DWORD total_bytes_read = 0;
+    BOOL read_ok = TRUE;
+    while (total_bytes_read < file_bytes) {
+        read_ok = ReadFile(arguments_file, (BYTE*)command_line + total_bytes_read,
+                           file_bytes - total_bytes_read, &bytes_read, NULL);
+        if (!read_ok || bytes_read == 0) break;
+        total_bytes_read += bytes_read;
+    }
+    CloseHandle(arguments_file);
+
+    size_t character_count = file_bytes / sizeof(wchar_t);
+    if (!read_ok || total_bytes_read != file_bytes) {
+        free(command_line);
+        MessageBoxW(NULL, L"The saved command line could not be read. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+    for (size_t i = 0; i < character_count; ++i) {
+        if (command_line[i] == L'\0') {
+            free(command_line);
+            MessageBoxW(NULL, L"The saved command line is invalid. Please start nosleep manually.",
+                        L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            return 1;
+        }
+    }
+    command_line[character_count] = L'\0';
+
+    wchar_t executable_path[MAX_PATH];
+    DWORD executable_path_length = GetModuleFileNameW(NULL, executable_path,
+                                                       (DWORD)(sizeof(executable_path) /
+                                                               sizeof(executable_path[0])));
+    if (executable_path_length == 0 ||
+        executable_path_length >= sizeof(executable_path) / sizeof(executable_path[0])) {
+        free(command_line);
+        MessageBoxW(NULL, L"The updated executable path could not be read. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    STARTUPINFOW startup_info = {0};
+    startup_info.cb = sizeof(startup_info);
+    PROCESS_INFORMATION process_info = {0};
+    BOOL launched = CreateProcessW(executable_path, command_line, NULL, NULL, FALSE, 0,
+                                   NULL, NULL, &startup_info, &process_info);
+    free(command_line);
+    if (!launched) {
+        MessageBoxW(NULL, L"The updated application could not be started. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    return 0;
+}
+
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     // Enable DPI awareness for proper font rendering on high-DPI displays
     SetProcessDPIAware();
@@ -136,6 +219,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (!argv) {
         // Could not parse command line, default to tray mode
         return run_tray_mode(&opts);
+    }
+
+    if (argc == 3 && wcscmp(argv[1], UPDATER_INTERNAL_RELAUNCH_OPTION_W) == 0) {
+        int relaunch_result = relaunch_from_command_line_file(argv[2]);
+        LocalFree(argv);
+        return relaunch_result;
     }
     
     // Parse arguments
