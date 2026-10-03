@@ -202,7 +202,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
     for (int i = 1; i < argc; i++) {
         // Convert wide char to UTF-8 for comparison
         char arg[256];
-        WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, arg, sizeof(arg), NULL, NULL);
+        if (WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, arg, sizeof(arg), NULL, NULL) == 0) return 1;
         
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             return 2;
@@ -249,7 +249,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
         else if (strcmp(arg, "--session-finished") == 0) {
             if (i + 1 >= argc) return 1;
             char value[256];
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
             if (strcmp(value, "none") == 0) {
                 opts->session_finished = SESSION_FINISHED_NONE;
             } else if (strcmp(value, "shutdown") == 0) {
@@ -263,7 +263,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
         else if (strcmp(arg, "--notification-mode") == 0) {
             if (i + 1 >= argc) return 1;
             char value[256];
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
             if (strcmp(value, "all") == 0) {
                 opts->notification_mode = NOTIFY_ALL;
             } else if (strcmp(value, "critical") == 0) {
@@ -277,7 +277,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
         else if (strcmp(arg, "--auto-check-interval") == 0) {
             if (i + 1 >= argc) return 1;
             char value[256];
-            WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL);
+            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
             if (strcmp(value, "never") == 0) {
                 opts->auto_check_interval = 0;
             } else if (strcmp(value, "daily") == 0) {
