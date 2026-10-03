@@ -2,6 +2,7 @@
 #include "updater.h"
 #include "constants.h"
 #include "updater_batch.h"
+#include "updater_redirect.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -370,12 +371,24 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         newUrlComp.dwStructSize = sizeof(newUrlComp);
         wchar_t newHost[256] = {0};
         wchar_t newPath[2048] = {0};
+        wchar_t newExtraInfo[2048] = {0};
+        wchar_t newRequestTarget[4096] = {0};
         newUrlComp.lpszHostName = newHost;
         newUrlComp.dwHostNameLength = 256;
         newUrlComp.lpszUrlPath = newPath;
         newUrlComp.dwUrlPathLength = 2048;
-        
+        newUrlComp.lpszExtraInfo = newExtraInfo;
+        newUrlComp.dwExtraInfoLength = 2048;
+
         if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp)) {
+            *hRequest = NULL;
+            *hConnect = NULL;
+            break;
+        }
+
+        if (!updater_build_redirect_target(newPath, newExtraInfo,
+                                            newRequestTarget,
+                                            sizeof(newRequestTarget) / sizeof(newRequestTarget[0]))) {
             *hRequest = NULL;
             *hConnect = NULL;
             break;
@@ -396,7 +409,7 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
             newFlags |= WINHTTP_FLAG_SECURE;
         }
         
-        *hRequest = WinHttpOpenRequest(*hConnect, L"GET", newPath, 
+        *hRequest = WinHttpOpenRequest(*hConnect, L"GET", newRequestTarget,
                                         NULL, NULL, NULL, newFlags);
         if (!*hRequest) {
             WinHttpCloseHandle(*hConnect);
