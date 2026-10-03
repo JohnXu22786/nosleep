@@ -105,6 +105,9 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     
     ns->running = true;
     ns->start_tick64 = GetTickCount64();
+    ULONGLONG duration_ms = duration_minutes > 0
+        ? (ULONGLONG)duration_minutes * 60 * 1000
+        : 0;
     ns->refresh_count = 0;
     ns->failure_count = 0;
     
@@ -174,14 +177,26 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         
         // Sleep for the specified interval, but check stop_event periodically
         DWORD sleep_interval = interval_seconds * 1000;
+        if (duration_ms > 0) {
+            ULONGLONG elapsed_ms = GetTickCount64() - ns->start_tick64;
+            if (elapsed_ms >= duration_ms) {
+                nosleep_log_info("Duration reached (%d minutes). Stopping...", duration_minutes);
+                break;
+            }
+
+            ULONGLONG remaining_ms = duration_ms - elapsed_ms;
+            if (remaining_ms < sleep_interval) {
+                sleep_interval = (DWORD)remaining_ms;
+            }
+        }
+
         if (wait_for_stop_event(ns, external_stop_event, sleep_interval)) {
             break;
         }
         
         // Check if duration has elapsed (using GetTickCount64, no wrap issues)
-        if (duration_minutes > 0) {
+        if (duration_ms > 0) {
             ULONGLONG elapsed_ms = GetTickCount64() - ns->start_tick64;
-            ULONGLONG duration_ms = (ULONGLONG)duration_minutes * 60 * 1000;
             if (elapsed_ms >= duration_ms) {
                 nosleep_log_info("Duration reached (%d minutes). Stopping...", duration_minutes);
                 break;

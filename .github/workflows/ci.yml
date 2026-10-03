@@ -28,6 +28,9 @@ jobs:
           make test-unit
           ./test_test_unit_failure_propagation.sh
 
+      - name: Test core duration boundary
+        run: ./test_core_duration_boundary.sh
+
       - name: Install MinGW cross-compiler
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
 
