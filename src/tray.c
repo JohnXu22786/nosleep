@@ -7,6 +7,7 @@
 #include "updater.h"
 #include "tray_stop_guard.h"
 #include "tray_indefinite_icon.h"
+#include "tray_countdown_tooltip.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -121,6 +122,7 @@ NoSleepTray* tray_create(void) {
     tray->refresh_interval_seconds = 20;
     tray->session_finished_action = SESSION_FINISHED_NONE;
     tray->sleep_after_timeout = false;
+    tray->countdown_action = SESSION_FINISHED_NONE;
     tray->countdown_stopping = false;
     tray->start_on_startup = false;
     tray->notification_mode = NOTIFY_ALL;
@@ -1603,7 +1605,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     DEBUG_LOG("delayed_sleep_thread: waiting 60 seconds before sleep");
     
     // Start countdown display
-    tray_start_countdown(tray);
+    tray_start_countdown(tray, SESSION_FINISHED_SLEEP);
 
     ULONGLONG start_tick64 = GetTickCount64();
     ULONGLONG delay_ms = 60 * 1000;
@@ -1656,7 +1658,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     DEBUG_LOG("delayed_shutdown_thread: waiting 60 seconds before shutdown");
     
     // Start countdown display
-    tray_start_countdown(tray);
+    tray_start_countdown(tray, SESSION_FINISHED_SHUTDOWN);
 
     ULONGLONG start_tick64 = GetTickCount64();
     ULONGLONG delay_ms = 60 * 1000;
@@ -1703,13 +1705,14 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     return 0;
 }
 
-void tray_start_countdown(NoSleepTray* tray) {
+void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action) {
     DEBUG_LOG("tray_start_countdown: starting 60-second countdown");
     
     // Stop any existing countdown
     tray_stop_countdown(tray);
     
     // Initialize countdown state
+    tray->countdown_action = action;
     ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, true);
     ATOMIC_STORE_INT(&tray->countdown_seconds, 60);
     ATOMIC_STORE_BOOL(&tray->countdown_blink_state, true);
@@ -1899,11 +1902,9 @@ void tray_update_icon(NoSleepTray* tray) {
         
         // Update tooltip with remaining seconds
         char tip[128];
-        if (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN) {
-            sprintf(tip, "nosleep - System will shut down in %d seconds", countdown_seconds);
-        } else {
-            sprintf(tip, "nosleep - System will sleep in %d seconds", countdown_seconds);
-        }
+        tray_format_countdown_tooltip(tip, sizeof(tip),
+                                      tray->countdown_action == SESSION_FINISHED_SHUTDOWN,
+                                      countdown_seconds);
         strcpy(tray->nid.szTip, tip);
         
         tray->nid.uFlags = NIF_ICON | NIF_TIP;
