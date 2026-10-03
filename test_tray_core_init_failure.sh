@@ -130,6 +130,7 @@ typedef struct NoSleepTray {
     HANDLE sleep_timer, sleep_stop_event;
     HANDLE shutdown_timer, shutdown_stop_event;
     bool delayed_sleep_countdown_active;
+    SessionFinishedAction countdown_action;
 } NoSleepTray;
 
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam);
