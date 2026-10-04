@@ -25,15 +25,13 @@ typedef struct {
     // Run options
     int duration;              // -1 = not set (tray mode default), 0 = indefinite
     int interval;              // seconds
-    bool prevent_display;
-    bool away_mode;
+    int prevent_display; // CLI_UNSET uses the saved preference.
+    int away_mode; // CLI_UNSET uses the saved preference.
     bool verbose;
     bool tray_mode;
     bool startup;
 
-    // Track whether legacy CLI flags were explicitly specified
-    bool prevent_display_set;
-    bool away_mode_set;
+    // Track whether the legacy verbose CLI flag was explicitly specified
     bool verbose_set;
 
     // Batch mode settings (-1 = not specified)
@@ -56,8 +54,12 @@ static const char* const HELP_TEXT =
     "                            (positive integer, 0 or negative = indefinite)\n"
     "  -i, --interval SECONDS    Interval in seconds to refresh sleep prevention\n"
     "                            (default: 20)\n"
-    "  -p, --prevent-display     Also prevent display from sleeping\n"
-    "  -a, --away-mode           Enable away mode (requires compatible hardware)\n"
+    "  -p, --prevent-display     Enable display sleep prevention for this run\n"
+    "      --no-prevent-display  Disable display sleep prevention for this run\n"
+    "  -a, --away-mode           Enable away mode for this run\n"
+    "                            (requires compatible hardware)\n"
+    "      --no-away-mode        Disable away mode for this run\n"
+    "                            (each setting defaults to its saved preference)\n"
     "  -v, --verbose             Print detailed status to debug output\n"
     "  -t, --tray                Start in system tray mode\n"
     "                            (default if no arguments provided)\n"
@@ -194,13 +196,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     CLIOptions opts = {
         .duration = -1,              // -1 = not set (tray mode default), 0 = indefinite
         .interval = 20,              // seconds
-        .prevent_display = false,
-        .away_mode = false,
+        .prevent_display = CLI_UNSET,
+        .away_mode = CLI_UNSET,
         .verbose = false,
         .tray_mode = false,
         .startup = false,
-        .prevent_display_set = false,
-        .away_mode_set = false,
         .verbose_set = false,
         .session_finished = CLI_UNSET,
         .auto_start = CLI_UNSET,
@@ -315,12 +315,16 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             if (!cli_parse_refresh_interval(value, &opts->interval)) return 1;
         }
         else if (strcmp(arg, "--prevent-display") == 0 || strcmp(arg, "-p") == 0) {
-            opts->prevent_display = true;
-            opts->prevent_display_set = true;
+            opts->prevent_display = CLI_ENABLE;
+        }
+        else if (strcmp(arg, "--no-prevent-display") == 0) {
+            opts->prevent_display = CLI_DISABLE;
         }
         else if (strcmp(arg, "--away-mode") == 0 || strcmp(arg, "-a") == 0) {
-            opts->away_mode = true;
-            opts->away_mode_set = true;
+            opts->away_mode = CLI_ENABLE;
+        }
+        else if (strcmp(arg, "--no-away-mode") == 0) {
+            opts->away_mode = CLI_DISABLE;
         }
         else if (strcmp(arg, "--verbose") == 0 || strcmp(arg, "-v") == 0) {
             opts->verbose = true;
@@ -447,15 +451,16 @@ static int run_tray_mode(const CLIOptions* opts) {
         return 1;
     }
     
-    // Apply CLI overrides AFTER tray_load_settings (called inside tray_init)
-    // so that command-line flags take precedence over registry defaults.
-    // Only override legacy bool fields if the user explicitly specified them,
-    // preserving registry-loaded values when no flag is passed.
-    if (opts->prevent_display_set) {
-        tray->prevent_display = opts->prevent_display;
+    // Apply CLI overrides AFTER tray_load_settings (called inside tray_init).
+    // Keep them separate from saved preferences so later settings saves retain
+    // the user's choices for the next run.
+    if (opts->prevent_display != CLI_UNSET) {
+        tray->prevent_display_cli_override = (opts->prevent_display == CLI_ENABLE);
+        tray->prevent_display_cli_override_set = true;
     }
-    if (opts->away_mode_set) {
-        tray->away_mode = opts->away_mode;
+    if (opts->away_mode != CLI_UNSET) {
+        tray->away_mode_cli_override = (opts->away_mode == CLI_ENABLE);
+        tray->away_mode_cli_override_set = true;
     }
     if (opts->verbose_set) {
         tray->verbose = opts->verbose;

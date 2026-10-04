@@ -23,7 +23,7 @@ RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
 VERSION_STAMP = $(OBJDIR)/.version
 
-.PHONY: all clean test-unit FORCE
+.PHONY: all clean test-unit test-cli FORCE
 
 all: $(TARGET)
 
@@ -61,7 +61,7 @@ run-cli: $(TARGET)
 	./$(TARGET) --duration 30
 
 # Build and run unit tests for updater module (JSON parsing, version comparison)
-test-unit: $(OBJDIR)
+test-unit: $(OBJDIR) test-cli
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_stream.c -o tests/test_updater_stream_t.exe
 	./tests/test_updater_stream_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_redirect_target.c -o tests/test_updater_redirect_target_t.exe
@@ -72,6 +72,10 @@ test-unit: $(OBJDIR)
 	./tests/test_updater_command_line_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
 	./tests/test_updater_t.exe
+
+test-cli:
+	bash ./test_cli_run_mode_overrides.sh
+	bash ./test_cli_batch_mode.sh
 
 # Build main binary (and test it exists)
 test: $(TARGET)

@@ -27,7 +27,7 @@ if grep -q "} CLIOptions" src/main.c; then
     # Verify it has the expected fields inside the struct definition
     STRUCT_BODY=$(sed -n '/^typedef struct {/,/^} CLIOptions/p' src/main.c)
     for field in duration interval prevent_display away_mode verbose tray_mode startup \
-                 prevent_display_set away_mode_set verbose_set \
+                 verbose_set \
                  session_finished auto_start notification_mode auto_check_interval \
                  check_updates_startup add_to_path configure_mode show_version; do
         if echo "$STRUCT_BODY" | grep -q "$field"; then

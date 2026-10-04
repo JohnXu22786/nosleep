@@ -111,6 +111,10 @@ typedef struct NoSleepTray {
     int current_number;         // Currently displayed number (-1 if none)
     bool prevent_display;       // Also prevent display from sleeping
     bool away_mode;             // Enable away mode
+    bool prevent_display_cli_override;
+    bool prevent_display_cli_override_set;
+    bool away_mode_cli_override;
+    bool away_mode_cli_override_set;
     bool verbose;               // Print verbose status
     int refresh_interval_seconds; // Interval between sleep-prevention refreshes
     SessionFinishedAction session_finished_action; // Action to take when session finishes
