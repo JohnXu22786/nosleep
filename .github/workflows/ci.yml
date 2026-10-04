@@ -38,6 +38,9 @@ jobs:
       - name: Test notification tab command routing
         run: ./test_tray_notify_command_routing.sh
 
+      - name: Test General tab keyboard navigation
+        run: ./test_tray_general_tab_keyboard_navigation.sh
+
       - name: Test CLI settings failures and PATH addition
         run: bash test_cli_settings_failures.sh
 
