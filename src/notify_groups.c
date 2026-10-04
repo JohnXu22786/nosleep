@@ -150,26 +150,25 @@ bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, 
     return true;
 }
 
-void notify_groups_save(NotifyGroupManager* mgr) {
-    if (!mgr) return;
+bool notify_groups_save(NotifyGroupManager* mgr) {
+    if (!mgr) return false;
     
     // Create or open the NotificationGroups key (overwrites existing)
     HKEY hKeyRoot;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyRoot, NULL);
-    if (result != ERROR_SUCCESS) return;
-    
-    // Save active index
-    DWORD val = (DWORD)mgr->active_index;
-    RegSetValueEx(hKeyRoot, "active_index", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-    
-    RegCloseKey(hKeyRoot);
+    if (result != ERROR_SUCCESS) return false;
+
+    bool success = true;
     
     // First delete all old group subkeys up to max
     char subkey_buf[512];
     for (int i = 0; i < MAX_NOTIFY_GROUPS + 5; i++) {
         snprintf(subkey_buf, sizeof(subkey_buf), "%s\\Group_%d", NOTIFY_GROUPS_REG_KEY, i);
-        RegDeleteKey(HKEY_CURRENT_USER, subkey_buf);
+        result = RegDeleteKey(HKEY_CURRENT_USER, subkey_buf);
+        if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+            success = false;
+        }
     }
     
     // Save each group as a subkey
@@ -179,22 +178,39 @@ void notify_groups_save(NotifyGroupManager* mgr) {
         HKEY hKeyGroup;
         result = RegCreateKeyEx(HKEY_CURRENT_USER, subkey_buf,
             0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyGroup, NULL);
-        if (result != ERROR_SUCCESS) continue;
+        if (result != ERROR_SUCCESS) {
+            success = false;
+            break;
+        }
         
         // Save name
-        RegSetValueEx(hKeyGroup, "name", 0, REG_SZ, 
+        result = RegSetValueEx(hKeyGroup, "name", 0, REG_SZ,
             (LPBYTE)mgr->groups[i].name, (DWORD)(strlen(mgr->groups[i].name) + 1));
+        if (result != ERROR_SUCCESS) success = false;
         
         // Save event mask
-        val = (DWORD)mgr->groups[i].event_mask;
-        RegSetValueEx(hKeyGroup, "event_mask", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        DWORD val = (DWORD)mgr->groups[i].event_mask;
+        result = RegSetValueEx(hKeyGroup, "event_mask", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (result != ERROR_SUCCESS) success = false;
         
         // Save is_default flag
         val = mgr->groups[i].is_default ? 1 : 0;
-        RegSetValueEx(hKeyGroup, "is_default", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        result = RegSetValueEx(hKeyGroup, "is_default", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (result != ERROR_SUCCESS) success = false;
         
-        RegCloseKey(hKeyGroup);
+        if (RegCloseKey(hKeyGroup) != ERROR_SUCCESS) success = false;
     }
+
+    // Commit the active index after the groups are written so failed group
+    // writes cannot select an index that was not persisted.
+    if (success) {
+        DWORD val = (DWORD)mgr->active_index;
+        result = RegSetValueEx(hKeyRoot, "active_index", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        if (result != ERROR_SUCCESS) success = false;
+    }
+
+    if (RegCloseKey(hKeyRoot) != ERROR_SUCCESS) success = false;
+    return success;
 }
 
 void notify_groups_load(NotifyGroupManager* mgr) {

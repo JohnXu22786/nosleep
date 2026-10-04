@@ -2608,7 +2608,12 @@ bool tray_save_settings(NoSleepTray* tray) {
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-    if (result != ERROR_SUCCESS) return false;
+    if (result != ERROR_SUCCESS) {
+        // Notification groups use their own key, so attempt their save even
+        // when the general settings key is unavailable.
+        notify_groups_save(&tray->notify_groups);
+        return false;
+    }
 
     bool success = true;
 
@@ -2655,16 +2660,20 @@ bool tray_save_settings(NoSleepTray* tray) {
     RegCloseKey(hKey);
 
     // Save notification groups separately
-    notify_groups_save(&tray->notify_groups);
+    if (!notify_groups_save(&tray->notify_groups)) {
+        success = false;
+    }
     return success;
 }
 
-static void tray_save_settings_with_warning(HWND hwnd, NoSleepTray* tray) {
-    if (!tray_save_settings(tray)) {
+static bool tray_save_settings_with_warning(HWND hwnd, NoSleepTray* tray) {
+    bool success = tray_save_settings(tray);
+    if (!success) {
         MessageBox(hwnd,
             "Some settings could not be saved. The changes may be lost when NoSleep exits.",
             "nosleep - Settings save failed", MB_OK | MB_ICONWARNING);
     }
+    return success;
 }
 
 bool tray_save_settings_cli(int session_finished_action,
@@ -3204,10 +3213,9 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                         path_change_failed = !tray_set_add_to_path(settings_tray, new_add_to_path);
                     }
 
-                    // Save notification groups
-                    notify_groups_save(&settings_tray->notify_groups);
-
-                    tray_save_settings_with_warning(hwnd, settings_tray);
+                    if (!tray_save_settings_with_warning(hwnd, settings_tray)) {
+                        break;
+                    }
                     if (path_change_failed) {
                         MessageBox(hwnd,
                             "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
@@ -3253,8 +3261,15 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
                     if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count) break;
                     
-                    if (notify_groups_set_active(&settings_tray->notify_groups, group_idx)) {
-                        notify_groups_save(&settings_tray->notify_groups);
+                    NotifyGroupManager updated = settings_tray->notify_groups;
+                    if (notify_groups_set_active(&updated, group_idx)) {
+                        if (notify_groups_save(&updated)) {
+                            settings_tray->notify_groups = updated;
+                        } else {
+                            MessageBox(hwnd,
+                                "Could not save notification groups. Please check registry access and try again.",
+                                "nosleep - Notification group save failed", MB_OK | MB_ICONWARNING);
+                        }
                         refresh_notification_group_list(hNotifyTab, settings_tray);
                     }
                     break;
@@ -3283,9 +3298,17 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     int confirm = MessageBox(hwnd, msg, "Confirm Delete",
                         MB_YESNO | MB_ICONQUESTION | MB_TOPMOST);
                     if (confirm == IDYES) {
-                        notify_groups_remove(&settings_tray->notify_groups, group_idx);
-                        notify_groups_save(&settings_tray->notify_groups);
-                        refresh_notification_group_list(hNotifyTab, settings_tray);
+                        NotifyGroupManager updated = settings_tray->notify_groups;
+                        if (notify_groups_remove(&updated, group_idx)) {
+                            if (notify_groups_save(&updated)) {
+                                settings_tray->notify_groups = updated;
+                            } else {
+                                MessageBox(hwnd,
+                                    "Could not save notification groups. Please check registry access and try again.",
+                                    "nosleep - Notification group save failed", MB_OK | MB_ICONWARNING);
+                            }
+                            refresh_notification_group_list(hNotifyTab, settings_tray);
+                        }
                     }
                     break;
                 }
@@ -3622,19 +3645,26 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                     }
 
                     bool success = false;
+                    bool group_change_valid = false;
+                    NotifyGroupManager updated = *edit_mgr;
 
                     if (edit_index < 0) {
                         // Add new group
-                        int new_idx = notify_groups_add(edit_mgr, name, mask);
-                        if (new_idx >= 0) {
-                            notify_groups_save(edit_mgr);
-                            success = true;
-                        }
+                        group_change_valid = notify_groups_add(&updated, name, mask) >= 0;
                     } else {
                         // Update existing group
-                        success = notify_groups_update(edit_mgr, edit_index, name, mask);
-                        if (success) {
-                            notify_groups_save(edit_mgr);
+                        group_change_valid = notify_groups_update(&updated, edit_index, name, mask);
+                    }
+
+                    if (group_change_valid) {
+                        if (notify_groups_save(&updated)) {
+                            *edit_mgr = updated;
+                            success = true;
+                        } else {
+                            MessageBox(hwnd,
+                                "Could not save the group to the registry. Please check registry access and try again.",
+                                "nosleep - Notification group save failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+                            break;
                         }
                     }
 

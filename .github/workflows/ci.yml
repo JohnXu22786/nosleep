@@ -23,6 +23,12 @@ jobs:
       - name: Test notification group migration
         run: ./test_notify_groups_migration.sh
 
+      - name: Test notification group save failures
+        run: ./test_notify_groups_save.sh
+
+      - name: Test notification group editor save handling
+        run: ./test_tray_notify_group_editor_modal.sh
+
       - name: Test notification tab command routing
         run: ./test_tray_notify_command_routing.sh
 

@@ -137,15 +137,17 @@ static DWORD stored_add_to_path;
 static int registry_write_count;
 static int registry_close_count;
 static int notify_groups_save_count;
+static bool notify_groups_save_result;
 static int settings_warning_count;
 static int startup_create_count;
 static int add_path_count;
 static int environment_open_count;
 static int environment_create_count;
 
-static void notify_groups_save(int *groups) {
+static bool notify_groups_save(int *groups) {
     (void)groups;
     ++notify_groups_save_count;
+    return notify_groups_save_result;
 }
 
 static int MessageBox(HWND hwnd, const char *text, const char *title, DWORD flags) {
@@ -172,6 +174,7 @@ static void reset_mocks(void) {
     registry_write_count = 0;
     registry_close_count = 0;
     notify_groups_save_count = 0;
+    notify_groups_save_result = true;
     settings_warning_count = 0;
     startup_create_count = 0;
     add_path_result = true;
@@ -328,8 +331,8 @@ int main(void) {
            "a failed settings-key creation must not attempt value writes");
     expect(registry_close_count == 0,
            "a failed settings-key creation must not close an invalid handle");
-    expect(notify_groups_save_count == 0,
-           "a failed settings-key creation must preserve the existing early return");
+    expect(notify_groups_save_count == 1,
+           "notification groups must still be saved independently when the settings key fails");
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     tray_save_settings_with_warning(NULL, &settings_tray);
@@ -367,6 +370,19 @@ int main(void) {
     tray_save_settings_with_warning(NULL, &settings_tray);
     expect(settings_warning_count == 0,
            "the settings UI warning must not be shown after a successful save");
+
+    reset_mocks();
+    notify_groups_save_result = false;
+    expect(!tray_save_settings(&settings_tray),
+           "a notification-group save failure must make the overall tray save fail");
+    expect(notify_groups_save_count == 1,
+           "the overall tray save must attempt notification groups exactly once");
+    reset_mocks();
+    notify_groups_save_result = false;
+    expect(!tray_save_settings_with_warning(NULL, &settings_tray),
+           "the settings UI save helper must report a notification-group save failure");
+    expect(settings_warning_count == 1,
+           "the settings UI warning must be shown when notification groups fail to save");
 
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
