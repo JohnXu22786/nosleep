@@ -119,11 +119,14 @@ static const char *failed_value_name;
 static bool add_path_result;
 static const BYTE *path_data;
 static DWORD path_data_size;
+static char written_path[1024];
+static DWORD written_path_type;
 static DWORD stored_add_to_path;
 static int registry_write_count;
 static int registry_close_count;
 static int add_path_count;
 static int environment_open_count;
+static int environment_create_count;
 
 static void reset_mocks(void) {
     settings_create_result = ERROR_SUCCESS;
@@ -134,21 +137,25 @@ static void reset_mocks(void) {
     registry_write_result = ERROR_SUCCESS;
     registry_delete_result = ERROR_SUCCESS;
     failed_value_name = NULL;
-    add_path_result = true;
     path_data = NULL;
     path_data_size = 0;
+    written_path[0] = '\0';
+    written_path_type = 0;
     stored_add_to_path = 1;
     registry_write_count = 0;
     registry_close_count = 0;
+    add_path_result = true;
     add_path_count = 0;
     environment_open_count = 0;
+    environment_create_count = 0;
 }
 
 LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
                     const char *class_name, DWORD options, DWORD access,
                     void *security, HKEY *key, DWORD *disposition) {
-    (void)root; (void)path; (void)reserved; (void)class_name; (void)options;
+    (void)root; (void)reserved; (void)class_name; (void)options;
     (void)access; (void)security; (void)disposition;
+    if (strcmp(path, "Environment") == 0) ++environment_create_count;
     if (settings_create_result == ERROR_SUCCESS) *key = (HKEY)2;
     return settings_create_result;
 }
@@ -166,10 +173,14 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access, HKE
 
 LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
                    const BYTE *value, DWORD size) {
-    (void)reserved; (void)type;
+    (void)reserved;
     ++registry_write_count;
     if (failed_value_name && strcmp(name, failed_value_name) == 0) {
         return registry_write_result;
+    }
+    if (strcmp(name, "Path") == 0 && value && size <= sizeof(written_path)) {
+        memcpy(written_path, value, size);
+        written_path_type = type;
     }
     if (key == (HKEY)2 && strcmp(name, "add_to_path") == 0 &&
         value && size == sizeof(stored_add_to_path)) {
@@ -222,6 +233,11 @@ static char *get_exe_dir(void) {
     return copy;
 }
 
+static bool add_app_to_path(void) {
+    ++add_path_count;
+    return add_path_result;
+}
+
 static int str_icmp_n(const char *a, const char *b, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         char ca = a[i];
@@ -240,11 +256,6 @@ uintptr_t SendMessageTimeout(HWND hwnd, DWORD message, uintptr_t wparam,
     (void)hwnd; (void)message; (void)wparam; (void)lparam;
     (void)flags; (void)timeout; (void)result;
     return 1;
-}
-
-static bool add_app_to_path(void) {
-    ++add_path_count;
-    return add_path_result;
 }
 
 static int failures;
@@ -277,6 +288,28 @@ int main(void) {
     settings_create_result = ERROR_ACCESS_DENIED;
     expect(!tray_save_settings_cli(SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1),
            "failure to open the settings key must be reported");
+
+    reset_mocks();
+    environment_open_result = ERROR_FILE_NOT_FOUND;
+    expect(add_app_to_path_regression(),
+           "adding PATH must succeed when the Environment key is absent");
+    expect(environment_create_count > 0,
+           "adding PATH must create the absent Environment key");
+    expect(strcmp(written_path, "C:\\NoSleep") == 0,
+           "adding PATH must write the executable directory to the new key");
+    expect(written_path_type == REG_EXPAND_SZ,
+           "the new Path value must use REG_EXPAND_SZ");
+
+    reset_mocks();
+    static const char existing_path_for_add[] = "C:\\Windows\\System32;C:\\Tools";
+    path_query_result = ERROR_SUCCESS;
+    path_data = (const BYTE *)existing_path_for_add;
+    path_data_size = sizeof(existing_path_for_add);
+    expect(add_app_to_path_regression(),
+           "adding PATH must succeed when existing entries are present");
+    expect(strcmp(written_path,
+                  "C:\\Windows\\System32;C:\\Tools;C:\\NoSleep") == 0,
+           "adding PATH must preserve existing entries and append the executable directory");
 
     expect_write_failure("session_finished_action", SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1);
     expect_write_failure("notification_mode", -1, -1, NOTIFY_NONE, -1, -1, -1);
@@ -392,8 +425,14 @@ int main(void) {
 }
 """
 
+add_app_to_path_test_function = extract_function("add_app_to_path").replace(
+    "add_app_to_path", "add_app_to_path_regression", 1
+)
+
 source = (
     windows_stubs
+    + "\n"
+    + add_app_to_path_test_function
     + "\n"
     + extract_function("remove_app_from_path")
     + "\n"

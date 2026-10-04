@@ -2188,6 +2188,11 @@ static bool add_app_to_path(void) {
     HKEY hKey;
     LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
         "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        result = RegCreateKeyEx(HKEY_CURRENT_USER,
+            "Environment", 0, NULL, REG_OPTION_NON_VOLATILE,
+            KEY_READ | KEY_WRITE, NULL, &hKey, NULL);
+    }
     if (result != ERROR_SUCCESS) {
         free(dir);
         return false;
@@ -2204,19 +2209,9 @@ static bool add_app_to_path(void) {
     
     if (path_size == 0) {
         // PATH is empty or doesn't exist, just set it to our directory
-        RegCloseKey(hKey);
-        
-        HKEY hKeyWrite;
-        result = RegCreateKeyEx(HKEY_CURRENT_USER,
-            "Environment", 0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyWrite, NULL);
-        if (result != ERROR_SUCCESS) {
-            free(dir);
-            return false;
-        }
-        
-        result = RegSetValueEx(hKeyWrite, "Path", 0, REG_EXPAND_SZ,
+        result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
             (LPBYTE)dir, (DWORD)(strlen(dir) + 1));
-        RegCloseKey(hKeyWrite);
+        RegCloseKey(hKey);
         free(dir);
         
         if (result != ERROR_SUCCESS) return false;
