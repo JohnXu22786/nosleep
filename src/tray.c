@@ -7,6 +7,7 @@
 #include "updater.h"
 #include "tray_stop_guard.h"
 #include "tray_indefinite_icon.h"
+#include "tray_numbered_icon.h"
 #include "tray_countdown_tooltip.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -886,20 +887,18 @@ static void tray_destroy_icons(NoSleepTray* tray) {
         DestroyIcon(tray->hIconDefault);
     }
     tray->hIconDefault = NULL;
+
+    if (tray->hIconCurrentNumbered) {
+        tray_release_numbered_icon(&tray->hIconCurrentNumbered,
+                                   tray->current_number, tray->hIconActive,
+                                   DestroyIcon);
+        tray->current_number = -1;
+    }
     
     if (tray->hIconActive && tray->hIconActive != system_icon_shield) {
         DestroyIcon(tray->hIconActive);
     }
     tray->hIconActive = NULL;
-    
-    if (tray->hIconCurrentNumbered) {
-        // Only destroy if not cached (0-59)
-        if (tray->current_number < 0 || tray->current_number >= 60) {
-            DestroyIcon(tray->hIconCurrentNumbered);
-        }
-        tray->hIconCurrentNumbered = NULL;
-        tray->current_number = -1;
-    }
     
     AcquireSRWLockExclusive(&tray->countdown_icon_cache_lock);
     tray_destroy_countdown_icon_cache(tray->hIconNumbered, DestroyIcon);
@@ -1985,13 +1984,11 @@ void tray_update_icon(NoSleepTray* tray) {
             // Update icon with number
             if (display_number != tray->current_number) {
                 DEBUG_LOG("tray_update_icon: display_number=%d current_number=%d remaining_minutes=%d remaining_seconds=%llu", display_number, tray->current_number, remaining_minutes, remaining_seconds);
-                // Destroy previous numbered icon if not cached (0-59)
+                // Release the prior icon according to its ownership.
                 if (tray->hIconCurrentNumbered) {
-                    // If previous number was cached (0-59), keep it in array
-                    if (tray->current_number < 0 || tray->current_number >= 60) {
-                        DestroyIcon(tray->hIconCurrentNumbered);
-                    }
-                    tray->hIconCurrentNumbered = NULL;
+                    tray_release_numbered_icon(&tray->hIconCurrentNumbered,
+                                               tray->current_number,
+                                               tray->hIconActive, DestroyIcon);
                 }
                 
                 // Get or create numbered icon
