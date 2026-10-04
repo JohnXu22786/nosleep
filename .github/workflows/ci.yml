@@ -20,6 +20,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Test release asset tag safety
+        run: ./test_release_asset_tag_safety.sh
+
       - name: Test notification group migration
         run: ./test_notify_groups_migration.sh
 
