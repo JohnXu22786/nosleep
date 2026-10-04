@@ -16,9 +16,10 @@ root = Path(sys.argv[1])
 tray = (root / "src/tray.c").read_text()
 
 
-def extract_function(name):
+def extract_function(name, return_type="void"):
     definition = re.search(
-        r"\bstatic\s+void\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        r"\bstatic\s+" + re.escape(return_type) + r"\s+" +
+        re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
     )
@@ -78,8 +79,11 @@ assert "tray_apply_auto_check_interval(settings_tray, sel);" in settings_handler
 
 apply_interval = extract_function("tray_apply_auto_check_interval")
 setup_timer = extract_function("tray_setup_update_timer")
+begin_update_check = extract_function("tray_update_check_begin", "bool")
+end_update_check = extract_function("tray_update_check_end")
 
-harness = r'''#include <stdint.h>
+harness = r'''#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -93,6 +97,8 @@ typedef struct {
 } NoSleepTray;
 
 #define CB_ERR (-1)
+
+static bool update_check_in_progress;
 
 static int kill_count;
 static int set_count;
@@ -117,6 +123,8 @@ static void tray_setup_update_timer(NoSleepTray* tray);
 
 __APPLY_INTERVAL__
 __SETUP_TIMER__
+__BEGIN_UPDATE_CHECK__
+__END_UPDATE_CHECK__
 
 static int fail(const char* scenario) {
     fprintf(stderr, "FAIL: %s\n", scenario);
@@ -125,6 +133,18 @@ static int fail(const char* scenario) {
 
 int main(void) {
     NoSleepTray tray = { (HWND)1, 0, 0 };
+
+    if (!tray_update_check_begin()) {
+        return fail("the first update check must start");
+    }
+    if (tray_update_check_begin()) {
+        return fail("a nested update check must be suppressed");
+    }
+    tray_update_check_end();
+    if (!tray_update_check_begin()) {
+        return fail("update checks must be allowed after the active check ends");
+    }
+    tray_update_check_end();
 
     tray_apply_auto_check_interval(&tray, 1);
     if (tray.auto_check_interval != 1 || tray.update_timer_id == 0 ||
@@ -154,13 +174,15 @@ int main(void) {
         return fail("an invalid combo selection must leave the timer unchanged");
     }
 
-    puts("PASS: changing the update interval reconfigures the live timer");
+    puts("PASS: update checks are non-reentrant and interval changes reconfigure the timer");
     return 0;
 }
 '''
 
 harness = harness.replace("__APPLY_INTERVAL__", apply_interval).replace(
     "__SETUP_TIMER__", setup_timer
+).replace("__BEGIN_UPDATE_CHECK__", begin_update_check).replace(
+    "__END_UPDATE_CHECK__", end_update_check
 )
 
 with tempfile.TemporaryDirectory() as tmp:

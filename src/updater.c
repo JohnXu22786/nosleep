@@ -9,18 +9,25 @@
 #include <string.h>
 #include <shellapi.h>
 #include <winhttp.h>
+#include <commctrl.h>
 #include "updater_stream.h"
 
 // GitHub API endpoint
 #define GITHUB_API_HOST L"api.github.com"
 #define GITHUB_API_PATH L"/repos/JohnXu22786/nosleep/releases/latest"
 
+typedef struct DownloadTask DownloadTask;
+
 // Forward declarations
 static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest, 
-                               HINTERNET* hConnect, DWORD timeout_ms);
+                               HINTERNET* hConnect, DWORD timeout_ms,
+                               DownloadTask* download_task);
 static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t* path, 
                             bool* success, const char** error_msg);
-static bool download_file(const char* url, const char* output_path);
+static bool download_file(const char* url, const char* output_path,
+                          UpdaterStreamProgress report_progress, void* progress_context,
+                          HANDLE cancel_event, DWORD* total_bytes,
+                          DownloadTask* download_task);
 static bool create_update_batch_script(const char* current_exe_path, 
                                         const char* downloaded_path,
                                         const char* exe_name,
@@ -28,6 +35,38 @@ static bool create_update_batch_script(const char* current_exe_path,
                                         char* arguments_path, size_t arguments_path_size);
 static char* get_exe_name_from_path(const char* path);
 static char* get_temp_path_for(const char* prefix);
+
+#define WM_UPDATER_DOWNLOAD_PROGRESS (WM_APP + 1)
+#define ID_UPDATER_DOWNLOAD_CANCEL 1001
+
+typedef struct {
+    HWND hwnd;
+    HWND status_text;
+    HWND progress_bar;
+    HWND cancel_button;
+    HANDLE cancel_event;
+    HANDLE worker_thread;
+    bool cancellation_requested;
+    DownloadTask* task;
+} DownloadDialog;
+
+struct DownloadTask {
+    DownloadDialog* dialog;
+    const char* url;
+    const char* output_path;
+    DWORD total_bytes;
+    PVOID volatile active_request;
+    bool succeeded;
+};
+
+static LRESULT CALLBACK download_dialog_proc(HWND hwnd, UINT message,
+                                              WPARAM wparam, LPARAM lparam);
+static bool register_download_dialog_class(void);
+static DWORD WINAPI download_worker(LPVOID parameter);
+static bool report_download_progress(void* context, size_t bytes_copied);
+static bool download_was_canceled(HANDLE cancel_event);
+static bool track_download_request(DownloadTask* task, HINTERNET request);
+static void close_download_request(DownloadTask* task, HINTERNET request);
 
 static bool updater_read_winhttp(void* context, void* buffer, size_t capacity,
                                  size_t* bytes_read) {
@@ -109,6 +148,178 @@ bool updater_show_prompt_dialog(HWND hwnd_parent, UpdateInfo* info) {
     return (result == IDYES);
 }
 
+static bool register_download_dialog_class(void) {
+    static const char* class_name = "NoSleepUpdaterDownloadDialog";
+    WNDCLASSA window_class = {0};
+    window_class.lpfnWndProc = download_dialog_proc;
+    window_class.hInstance = GetModuleHandleA(NULL);
+    window_class.hCursor = LoadCursor(NULL, IDC_ARROW);
+    window_class.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    window_class.lpszClassName = class_name;
+    return RegisterClassA(&window_class) != 0 ||
+           GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+}
+
+static void request_download_cancel(DownloadDialog* dialog) {
+    if (!dialog || dialog->cancellation_requested) return;
+    dialog->cancellation_requested = true;
+    if (dialog->cancel_event) SetEvent(dialog->cancel_event);
+    if (dialog->task) {
+        HINTERNET active_request = (HINTERNET)InterlockedExchangePointer(
+            &dialog->task->active_request, NULL);
+        if (active_request) WinHttpCloseHandle(active_request);
+    }
+    if (dialog->worker_thread) {
+        typedef BOOL (WINAPI *CancelSynchronousIoFunction)(HANDLE);
+        union {
+            FARPROC address;
+            CancelSynchronousIoFunction function;
+        } cancel_synchronous_io;
+        HMODULE kernel32 = GetModuleHandleA("kernel32.dll");
+        cancel_synchronous_io.address = kernel32
+            ? GetProcAddress(kernel32, "CancelSynchronousIo") : NULL;
+        if (cancel_synchronous_io.function) {
+            cancel_synchronous_io.function(dialog->worker_thread);
+        }
+    }
+    if (dialog->status_text) {
+        SetWindowTextA(dialog->status_text, "Cancelling download...");
+    }
+    if (dialog->cancel_button) {
+        EnableWindow(dialog->cancel_button, FALSE);
+        SetWindowTextA(dialog->cancel_button, "Cancelling...");
+    }
+}
+
+static LRESULT CALLBACK download_dialog_proc(HWND hwnd, UINT message,
+                                              WPARAM wparam, LPARAM lparam) {
+    DownloadDialog* dialog = (DownloadDialog*)GetWindowLongPtrA(hwnd, GWLP_USERDATA);
+
+    if (message == WM_NCCREATE) {
+        CREATESTRUCTA* creation = (CREATESTRUCTA*)lparam;
+        dialog = (DownloadDialog*)creation->lpCreateParams;
+        SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)dialog);
+        return TRUE;
+    }
+
+    switch (message) {
+        case WM_CREATE:
+            dialog->hwnd = hwnd;
+            dialog->status_text = CreateWindowExA(0, "STATIC",
+                "Connecting to update server...", WS_CHILD | WS_VISIBLE,
+                18, 18, 380, 24, hwnd, NULL, GetModuleHandleA(NULL), NULL);
+            dialog->progress_bar = CreateWindowExA(0, PROGRESS_CLASSA, NULL,
+                WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
+                18, 50, 380, 20, hwnd, NULL, GetModuleHandleA(NULL), NULL);
+            dialog->cancel_button = CreateWindowExA(0, "BUTTON", "Cancel",
+                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                310, 88, 88, 28, hwnd,
+                (HMENU)(INT_PTR)ID_UPDATER_DOWNLOAD_CANCEL,
+                GetModuleHandleA(NULL), NULL);
+            if (!dialog->status_text || !dialog->progress_bar || !dialog->cancel_button) {
+                return -1;
+            }
+            SendMessageA(dialog->progress_bar, PBM_SETMARQUEE, TRUE, 30);
+            return 0;
+
+        case WM_COMMAND:
+            if (LOWORD(wparam) == ID_UPDATER_DOWNLOAD_CANCEL &&
+                HIWORD(wparam) == BN_CLICKED) {
+                request_download_cancel(dialog);
+                return 0;
+            }
+            break;
+
+        case WM_CLOSE:
+            request_download_cancel(dialog);
+            return 0;
+
+        case WM_UPDATER_DOWNLOAD_PROGRESS: {
+            if (dialog->cancellation_requested) return 0;
+            DWORD bytes_downloaded = (DWORD)wparam;
+            DWORD total_bytes = (DWORD)lparam;
+            char message_text[160];
+            if (total_bytes > 0) {
+                DWORD downloaded_kb = bytes_downloaded / 1024 + (bytes_downloaded % 1024 != 0);
+                DWORD total_kb = total_bytes / 1024 + (total_bytes % 1024 != 0);
+                DWORD percent = (DWORD)(((ULONGLONG)bytes_downloaded * 100) / total_bytes);
+                if (percent > 100) percent = 100;
+                SendMessageA(dialog->progress_bar, PBM_SETMARQUEE, FALSE, 0);
+                LONG_PTR style = GetWindowLongPtrA(dialog->progress_bar, GWL_STYLE);
+                if (style & PBS_MARQUEE) {
+                    SetWindowLongPtrA(dialog->progress_bar, GWL_STYLE,
+                                      style & ~((LONG_PTR)PBS_MARQUEE));
+                    SetWindowPos(dialog->progress_bar, NULL, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+                }
+                SendMessageA(dialog->progress_bar, PBM_SETRANGE32, 0, 100);
+                SendMessageA(dialog->progress_bar, PBM_SETPOS, percent, 0);
+                snprintf(message_text, sizeof(message_text),
+                         "Downloading update... %lu%% (%lu of %lu KB)",
+                         (unsigned long)percent,
+                         (unsigned long)downloaded_kb,
+                         (unsigned long)total_kb);
+            } else {
+                DWORD downloaded_kb = bytes_downloaded / 1024 + (bytes_downloaded % 1024 != 0);
+                snprintf(message_text, sizeof(message_text),
+                         "Downloading update... %lu KB received",
+                         (unsigned long)downloaded_kb);
+            }
+            SetWindowTextA(dialog->status_text, message_text);
+            return 0;
+        }
+
+        case WM_NCDESTROY:
+            SetWindowLongPtrA(hwnd, GWLP_USERDATA, 0);
+            break;
+    }
+
+    return DefWindowProcA(hwnd, message, wparam, lparam);
+}
+
+static bool download_was_canceled(HANDLE cancel_event) {
+    return cancel_event && WaitForSingleObject(cancel_event, 0) == WAIT_OBJECT_0;
+}
+
+static bool track_download_request(DownloadTask* task, HINTERNET request) {
+    if (!task) return true;
+    InterlockedExchangePointer(&task->active_request, request);
+    if (task->dialog && download_was_canceled(task->dialog->cancel_event)) {
+        close_download_request(task, request);
+        return false;
+    }
+    return true;
+}
+
+static void close_download_request(DownloadTask* task, HINTERNET request) {
+    if (!request) return;
+    if (task && (HINTERNET)InterlockedCompareExchangePointer(
+            &task->active_request, NULL, request) != request) {
+        return;
+    }
+    WinHttpCloseHandle(request);
+}
+
+static bool report_download_progress(void* context, size_t bytes_copied) {
+    DownloadTask* task = (DownloadTask*)context;
+    if (!task || !task->dialog || download_was_canceled(task->dialog->cancel_event)) {
+        return false;
+    }
+
+    DWORD reported_bytes = bytes_copied > MAXDWORD ? MAXDWORD : (DWORD)bytes_copied;
+    return PostMessageA(task->dialog->hwnd, WM_UPDATER_DOWNLOAD_PROGRESS,
+                        (WPARAM)reported_bytes, (LPARAM)task->total_bytes) != FALSE &&
+           !download_was_canceled(task->dialog->cancel_event);
+}
+
+static DWORD WINAPI download_worker(LPVOID parameter) {
+    DownloadTask* task = (DownloadTask*)parameter;
+    task->succeeded = download_file(task->url, task->output_path,
+                                    report_download_progress, task,
+                                    task->dialog->cancel_event, &task->total_bytes, task);
+    return 0;
+}
+
 // Download a new version and perform the update
 bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path, HWND hwnd_parent) {
     if (!info || !current_exe_path) return false;
@@ -117,49 +328,115 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     char* temp_path = get_temp_path_for("nosleep_update");
     if (!temp_path) return false;
     
-    // Show downloading message
-    char download_msg[256];
-    snprintf(download_msg, sizeof(download_msg), 
-        "Downloading nosleep %s...\nPlease wait.", info->latest_version);
-    
-    // Create a simple status dialog
-    HWND hStatus = CreateWindowEx(0, "STATIC", download_msg,
-        WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 350, 100,
-        hwnd_parent, NULL, GetModuleHandle(NULL), NULL);
-    
-    HFONT hFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-    if (hFont) {
-        SendMessage(hStatus, WM_SETFONT, (WPARAM)hFont, TRUE);
+    DownloadDialog dialog = {0};
+    DownloadTask task = {&dialog, info->download_url, temp_path, 0, NULL, false};
+    dialog.task = &task;
+    bool download_ok = false;
+    bool worker_started = false;
+    bool message_loop_quit = false;
+    int quit_code = 0;
+    INITCOMMONCONTROLSEX common_controls = {0};
+    common_controls.dwSize = sizeof(common_controls);
+    common_controls.dwICC = ICC_PROGRESS_CLASS;
+
+    dialog.cancel_event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (dialog.cancel_event && InitCommonControlsEx(&common_controls) &&
+        register_download_dialog_class()) {
+        dialog.hwnd = CreateWindowExA(WS_EX_DLGMODALFRAME | WS_EX_TOPMOST,
+            "NoSleepUpdaterDownloadDialog", "Downloading Update",
+            WS_POPUP | WS_CAPTION | WS_SYSMENU,
+            CW_USEDEFAULT, CW_USEDEFAULT, 430, 160,
+            hwnd_parent, NULL, GetModuleHandleA(NULL), &dialog);
     }
-    
-    if (hStatus) {
-        // Center on screen
+
+    if (dialog.hwnd) {
         RECT rc;
-        GetWindowRect(hStatus, &rc);
+        GetWindowRect(dialog.hwnd, &rc);
         int sw = GetSystemMetrics(SM_CXSCREEN);
         int sh = GetSystemMetrics(SM_CYSCREEN);
-        SetWindowPos(hStatus, NULL, 
+        SetWindowPos(dialog.hwnd, HWND_TOPMOST,
             (sw - (rc.right - rc.left)) / 2,
             (sh - (rc.bottom - rc.top)) / 2,
-            0, 0, SWP_NOSIZE | SWP_NOZORDER);
-        ShowWindow(hStatus, SW_SHOW);
-        UpdateWindow(hStatus);
+            0, 0, SWP_NOSIZE);
+        if (hwnd_parent && IsWindow(hwnd_parent)) EnableWindow(hwnd_parent, FALSE);
+        ShowWindow(dialog.hwnd, SW_SHOW);
+        UpdateWindow(dialog.hwnd);
+        SetForegroundWindow(dialog.hwnd);
+
+        dialog.worker_thread = CreateThread(NULL, 0, download_worker, &task, 0, NULL);
+        if (dialog.worker_thread) {
+            worker_started = true;
+            MSG message;
+            for (;;) {
+                DWORD wait_result = MsgWaitForMultipleObjects(1, &dialog.worker_thread,
+                    FALSE, INFINITE, QS_ALLINPUT);
+                if (wait_result == WAIT_OBJECT_0) {
+                    // Handle a cancel/close already queued when the worker signaled.
+                    HWND download_windows[] = {
+                        dialog.hwnd, dialog.status_text,
+                        dialog.progress_bar, dialog.cancel_button
+                    };
+                    for (size_t i = 0; i < sizeof(download_windows) / sizeof(download_windows[0]); i++) {
+                        while (PeekMessageA(&message, download_windows[i], 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&message);
+                            DispatchMessageA(&message);
+                        }
+                    }
+                    while (PeekMessageA(&message, NULL, WM_QUIT, WM_QUIT, PM_REMOVE)) {
+                        message_loop_quit = true;
+                        quit_code = (int)message.wParam;
+                        request_download_cancel(&dialog);
+                    }
+                    break;
+                }
+                if (wait_result == WAIT_OBJECT_0 + 1) {
+                    while (PeekMessageA(&message, NULL, 0, 0, PM_REMOVE)) {
+                        if (message.message == WM_QUIT) {
+                            message_loop_quit = true;
+                            quit_code = (int)message.wParam;
+                            request_download_cancel(&dialog);
+                            continue;
+                        }
+                        TranslateMessage(&message);
+                        DispatchMessageA(&message);
+                    }
+                } else {
+                    request_download_cancel(&dialog);
+                    break;
+                }
+            }
+            WaitForSingleObject(dialog.worker_thread, INFINITE);
+            download_ok = task.succeeded && !dialog.cancellation_requested;
+            CloseHandle(dialog.worker_thread);
+            dialog.worker_thread = NULL;
+        }
+
+        DestroyWindow(dialog.hwnd);
+        dialog.hwnd = NULL;
+        if (hwnd_parent && IsWindow(hwnd_parent)) {
+            EnableWindow(hwnd_parent, TRUE);
+            SetForegroundWindow(hwnd_parent);
+        }
     }
-    
-    // Download the file
-    bool download_ok = download_file(info->download_url, temp_path);
-    
-    if (hStatus) {
-        DestroyWindow(hStatus);
+
+    if (dialog.cancel_event) {
+        CloseHandle(dialog.cancel_event);
+        dialog.cancel_event = NULL;
     }
-    if (hFont) {
-        DeleteObject(hFont);
+    if (message_loop_quit) PostQuitMessage(quit_code);
+
+    if (!worker_started) {
+        // Keep updates available if the progress UI or its worker cannot be created.
+        download_ok = download_file(info->download_url, temp_path,
+                                    NULL, NULL, NULL, NULL, NULL);
     }
     
     if (!download_ok) {
+        if (dialog.cancellation_requested) {
+            DeleteFileA(temp_path);
+            free(temp_path);
+            return false;
+        }
         char err_msg[512];
         snprintf(err_msg, sizeof(err_msg), 
             "Failed to download update from:\n%s\n\nPlease check your internet connection and try again.",
@@ -264,7 +541,8 @@ static char* get_temp_path_for(const char* prefix) {
 // Updates hRequest and hConnect through pointers; sets them to NULL on error
 // Returns the final HTTP status code (0 if error occurred during redirect)
 static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest, 
-                               HINTERNET* hConnect, DWORD timeout_ms) {
+                               HINTERNET* hConnect, DWORD timeout_ms,
+                               DownloadTask* download_task) {
     DWORD status_code = 0;
     DWORD status_size = sizeof(status_code);
     
@@ -286,13 +564,15 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
             NULL, redirect_url, &url_size, NULL);
         
         if (redirect_url[0] == L'\0') {
+            close_download_request(download_task, *hRequest);
             *hRequest = NULL;
+            WinHttpCloseHandle(*hConnect);
             *hConnect = NULL;
             break;
         }
         
         // Close old handles
-        WinHttpCloseHandle(*hRequest);
+        close_download_request(download_task, *hRequest);
         *hRequest = NULL;
         WinHttpCloseHandle(*hConnect);
         *hConnect = NULL;
@@ -347,6 +627,12 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
             *hConnect = NULL;
             break;
         }
+        if (!track_download_request(download_task, *hRequest)) {
+            *hRequest = NULL;
+            WinHttpCloseHandle(*hConnect);
+            *hConnect = NULL;
+            break;
+        }
         
         // Set timeouts
         WinHttpSetOption(*hRequest, WINHTTP_OPTION_CONNECT_TIMEOUT, 
@@ -356,12 +642,16 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         
         // Send and receive
         if (!WinHttpSendRequest(*hRequest, NULL, 0, NULL, 0, 0, 0)) {
+            close_download_request(download_task, *hRequest);
             *hRequest = NULL;
+            WinHttpCloseHandle(*hConnect);
             *hConnect = NULL;
             break;
         }
         if (!WinHttpReceiveResponse(*hRequest, NULL)) {
+            close_download_request(download_task, *hRequest);
             *hRequest = NULL;
+            WinHttpCloseHandle(*hConnect);
             *hConnect = NULL;
             break;
         }
@@ -432,7 +722,7 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
     }
     
     // Follow redirects (GitHub API may redirect)
-    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout);
+    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout, NULL);
     
     if (status_code == 0 || status_code != 200) {
         if (hRequest) WinHttpCloseHandle(hRequest);
@@ -502,8 +792,12 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
 }
 
 // Download a file from URL to local path
-static bool download_file(const char* url, const char* output_path) {
-    if (!url || !output_path) return false;
+static bool download_file(const char* url, const char* output_path,
+                          UpdaterStreamProgress report_progress, void* progress_context,
+                          HANDLE cancel_event, DWORD* total_bytes,
+                          DownloadTask* download_task) {
+    if (total_bytes) *total_bytes = 0;
+    if (!url || !output_path || download_was_canceled(cancel_event)) return false;
     
     // Parse the URL
     // Expected format: https://github.com/.../nosleep-vX.X.X.exe
@@ -549,6 +843,11 @@ static bool download_file(const char* url, const char* output_path) {
         WinHttpCloseHandle(hSession);
         return false;
     }
+    if (!track_download_request(download_task, hRequest)) {
+        WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return false;
+    }
     
     // Set timeout
     DWORD timeout = 30000; // 30 seconds for download
@@ -557,24 +856,47 @@ static bool download_file(const char* url, const char* output_path) {
     
     // Send request
     if (!WinHttpSendRequest(hRequest, NULL, 0, NULL, 0, 0, 0)) {
-        WinHttpCloseHandle(hRequest);
+        close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
     }
     
     if (!WinHttpReceiveResponse(hRequest, NULL)) {
-        WinHttpCloseHandle(hRequest);
+        close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
     }
     
     // GitHub releases may redirect; follow redirects manually
-    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout);
+    DWORD status_code = follow_redirects(hSession, &hRequest, &hConnect, timeout,
+                                         download_task);
     
     if (status_code == 0 || status_code != 200) {
-        if (hRequest) WinHttpCloseHandle(hRequest);
+        if (hRequest) close_download_request(download_task, hRequest);
+        if (hConnect) WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return false;
+    }
+
+    if (download_was_canceled(cancel_event)) {
+        close_download_request(download_task, hRequest);
+        if (hConnect) WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        return false;
+    }
+
+    DWORD content_length = 0;
+    DWORD content_length_size = sizeof(content_length);
+    if (WinHttpQueryHeaders(hRequest,
+            WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            NULL, &content_length, &content_length_size, NULL) && total_bytes) {
+        *total_bytes = content_length;
+    }
+
+    if (download_was_canceled(cancel_event)) {
+        close_download_request(download_task, hRequest);
         if (hConnect) WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
@@ -584,7 +906,7 @@ static bool download_file(const char* url, const char* output_path) {
     HANDLE hFile = CreateFile(output_path, GENERIC_WRITE, 0, NULL,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
-        WinHttpCloseHandle(hRequest);
+        close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
         return false;
@@ -595,23 +917,27 @@ static bool download_file(const char* url, const char* output_path) {
     char* buffer = (char*)malloc(buffer_size);
     if (!buffer) {
         CloseHandle(hFile);
-        WinHttpCloseHandle(hRequest);
+        close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
+        DeleteFileA(output_path);
         return false;
     }
     
     bool copy_ok = updater_copy_stream(updater_read_winhttp, hRequest,
                                        updater_write_file, hFile,
-                                       buffer, buffer_size);
+                                       buffer, buffer_size,
+                                       report_progress, progress_context);
     
     free(buffer);
     CloseHandle(hFile);
-    WinHttpCloseHandle(hRequest);
+    close_download_request(download_task, hRequest);
     if (hConnect) WinHttpCloseHandle(hConnect);
     WinHttpCloseHandle(hSession);
-    
-    return copy_ok;
+
+    bool canceled = download_was_canceled(cancel_event);
+    if (!copy_ok || canceled) DeleteFileA(output_path);
+    return copy_ok && !canceled;
 }
 
 // Create a batch script that:
