@@ -103,6 +103,8 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
                 HANDLE external_stop_event) {
     
     if (!ns) return 1;
+
+    int exit_code = 0;
     
     ns->running = true;
     ns->start_tick64 = GetTickCount64();
@@ -171,7 +173,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
             // If too many consecutive failures, exit
             if (ns->failure_count >= MAX_FAILURES) {
                 nosleep_log_error("%d consecutive failures. Exiting...", MAX_FAILURES);
-                ns->running = false;
+                exit_code = 1;
                 break;
             }
         }
@@ -206,7 +208,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     }
     
     nosleep_stop(ns);
-    return 0;
+    return exit_code;
 }
 
 void nosleep_stop(NoSleep* ns) {

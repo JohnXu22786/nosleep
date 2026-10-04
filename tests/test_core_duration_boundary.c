@@ -11,6 +11,9 @@ static ULONGLONG fake_time_ms;
 static DWORD requested_waits[MAX_WAIT_COUNT];
 static int requested_wait_count;
 static BOOL signal_external_on_wait;
+static int execution_state_call_count;
+static int allow_sleep_call_count;
+static BOOL fail_refresh_execution_state;
 
 HANDLE CreateEvent(void *attributes, BOOL manual_reset, BOOL initial_state,
                    const char *name) {
@@ -70,6 +73,15 @@ ULONGLONG GetTickCount64(void) {
 }
 
 DWORD SetThreadExecutionState(DWORD flags) {
+    if (flags == ES_CONTINUOUS) {
+        ++allow_sleep_call_count;
+        return flags;
+    }
+
+    ++execution_state_call_count;
+    if (fail_refresh_execution_state && execution_state_call_count > 1) {
+        return 0;
+    }
     return flags;
 }
 
@@ -99,6 +111,9 @@ static void reset_fake_clock(void) {
     fake_time_ms = 0;
     requested_wait_count = 0;
     signal_external_on_wait = FALSE;
+    execution_state_call_count = 0;
+    allow_sleep_call_count = 0;
+    fail_refresh_execution_state = FALSE;
 }
 
 static void test_short_duration_caps_long_refresh_wait(void) {
@@ -141,9 +156,29 @@ static void test_indefinite_long_wait_remains_interruptible(void) {
     CloseHandle(external_stop_event);
 }
 
+static void test_refresh_failures_restore_sleep_and_return_failure(void) {
+    reset_fake_clock();
+    fail_refresh_execution_state = TRUE;
+
+    NoSleep *ns = nosleep_create();
+    assert(ns != NULL);
+
+    int result = nosleep_run(ns, 0, 1, FALSE, FALSE, FALSE, NULL);
+
+    assert(result != 0);
+    assert(ns->refresh_count == MAX_FAILURES);
+    assert(ns->failure_count == MAX_FAILURES);
+    assert(allow_sleep_call_count == 1);
+    assert(ns->stop_event->signaled);
+    assert(!ns->running);
+
+    nosleep_destroy(ns);
+}
+
 int main(void) {
     test_short_duration_caps_long_refresh_wait();
     test_indefinite_long_wait_remains_interruptible();
-    puts("PASS: duration expiry caps long waits and keeps external stops interruptible");
+    test_refresh_failures_restore_sleep_and_return_failure();
+    puts("PASS: duration boundaries, external stops, and refresh failure cleanup are handled");
     return 0;
 }
