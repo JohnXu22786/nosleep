@@ -79,6 +79,7 @@ static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static bool add_app_to_path(void);
 static bool remove_app_from_path(void);
+static bool apply_path_preference(bool add_to_path);
 static int str_icmp_n(const char* a, const char* b, size_t n);
 static char* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -322,9 +323,10 @@ bool tray_init(NoSleepTray* tray) {
     // Load settings from registry
     tray_load_settings(tray);
 
-    // If add_to_path is enabled, ensure it's applied on startup
-    if (tray->add_to_path) {
-        add_app_to_path();
+    // Apply the saved PATH preference on every startup. A failed update is
+    // retried next time because the preference records the desired state.
+    if (!apply_path_preference(tray->add_to_path)) {
+        DEBUG_PRINT("tray_init: failed to apply PATH preference; it will be retried on next launch\n");
     }
 
     // Initialize notification groups and migrate old settings
@@ -2474,6 +2476,10 @@ static bool remove_app_from_path(void) {
     return true;
 }
 
+static bool apply_path_preference(bool add_to_path) {
+    return add_to_path ? add_app_to_path() : remove_app_from_path();
+}
+
 // Check if nosleep directory is currently in the user PATH
 static bool is_startup_enabled(void) {
     HKEY hKey;
@@ -2706,8 +2712,7 @@ bool tray_save_settings_cli(int session_finished_action,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
             success = false;
         }
-        bool path_success = add_to_path != 0 ? add_app_to_path() : remove_app_from_path();
-        if (!path_success) {
+        if (!apply_path_preference(add_to_path != 0)) {
             success = false;
         }
     }
@@ -2778,14 +2783,12 @@ void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
     set_startup_registry(enable);
 }
 
-void tray_set_add_to_path(NoSleepTray* tray, bool enable) {
-    if (!tray) return;
+bool tray_set_add_to_path(NoSleepTray* tray, bool enable) {
+    if (!tray) return false;
+    // Keep the desired preference even if the PATH update fails so startup
+    // can retry applying it.
     tray->add_to_path = enable;
-    if (enable) {
-        add_app_to_path();
-    } else {
-        remove_app_from_path();
-    }
+    return apply_path_preference(enable);
 }
 
 void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
@@ -3135,6 +3138,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 case IDC_SETTINGS_OK:
                 {
                     if (!settings_tray) break;
+                    bool path_change_failed = false;
                     
                     // Read general tab settings (controls are children of hGeneralTab)
                     settings_tray->prevent_display = (SendDlgItemMessage(hGeneralTab, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -3151,18 +3155,18 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     }
                     bool new_add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (new_add_to_path != settings_tray->add_to_path) {
-                        settings_tray->add_to_path = new_add_to_path;
-                        if (new_add_to_path) {
-                            add_app_to_path();
-                        } else {
-                            remove_app_from_path();
-                        }
+                        path_change_failed = !tray_set_add_to_path(settings_tray, new_add_to_path);
                     }
 
                     // Save notification groups
                     notify_groups_save(&settings_tray->notify_groups);
 
                     tray_save_settings(settings_tray);
+                    if (path_change_failed) {
+                        MessageBox(hwnd,
+                            "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
+                            "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
+                    }
                     DestroyWindow(hwnd);
                     break;
                 }
