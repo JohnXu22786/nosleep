@@ -206,13 +206,65 @@ static void test_unicode_value_is_preserved(void) {
                  L"Invalid value \"睡眠\" for option \"--session-finished\"; expected one of: none, shutdown, sleep.\n");
 }
 
+static CLIOptions parse_options(int argc, wchar_t *argv[]) {
+    CLIOptions options = default_options();
+    CLIParseError error = {0};
+    assert(parse_arguments(argc, argv, &options, &error) == 0);
+    assert(error.kind == CLI_PARSE_ERROR_NONE);
+    return options;
+}
+
+static void test_batch_options(void) {
+    wchar_t *enabled_argv[] = {
+        L"nosleep", L"--session-finished", L"shutdown",
+        L"--notification-mode", L"critical",
+        L"--auto-check-interval", L"daily",
+        L"--auto-start", L"--check-updates-startup",
+        L"--configure", L"--version"
+    };
+    CLIOptions options = parse_options(
+        (int)(sizeof(enabled_argv) / sizeof(enabled_argv[0])), enabled_argv);
+    assert(options.session_finished == SESSION_FINISHED_SHUTDOWN);
+    assert(options.notification_mode == NOTIFY_CRITICAL_ONLY);
+    assert(options.auto_check_interval == 1);
+    assert(options.auto_start == CLI_ENABLE);
+    assert(options.check_updates_startup == CLI_ENABLE);
+    assert(options.configure_mode);
+    assert(options.show_version);
+
+    wchar_t *disabled_argv[] = {
+        L"nosleep", L"--session-finished", L"sleep",
+        L"--notification-mode", L"none",
+        L"--auto-check-interval", L"weekly",
+        L"--no-auto-start", L"--no-check-updates-startup", L"--configure"
+    };
+    options = parse_options(
+        (int)(sizeof(disabled_argv) / sizeof(disabled_argv[0])), disabled_argv);
+    assert(options.session_finished == SESSION_FINISHED_SLEEP);
+    assert(options.notification_mode == NOTIFY_NONE);
+    assert(options.auto_check_interval == 2);
+    assert(options.auto_start == CLI_DISABLE);
+    assert(options.check_updates_startup == CLI_DISABLE);
+    assert(options.configure_mode);
+}
+
+static void test_help_result(void) {
+    wchar_t *argv[] = {L"nosleep", L"--help"};
+    CLIOptions options = default_options();
+    CLIParseError error = {0};
+    assert(parse_arguments(2, argv, &options, &error) == 2);
+    assert(error.kind == CLI_PARSE_ERROR_NONE);
+}
+
 int main(void) {
     test_missing_values();
     test_unknown_option();
     test_invalid_numeric_value();
     test_invalid_enum_value();
     test_unicode_value_is_preserved();
-    puts("PASS: CLI parse errors identify invalid input and expected values");
+    test_batch_options();
+    test_help_result();
+    puts("PASS: production CLI parser handles errors and batch options");
     return 0;
 }
 """

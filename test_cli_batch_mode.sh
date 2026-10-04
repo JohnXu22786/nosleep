@@ -170,77 +170,15 @@ else
 fi
 
 # ============================================================
-# Test 7: Build test - verify source compiles and parses flags
+# Test 7: Exercise the production parser for batch/configure flags
 # ============================================================
 echo ""
-echo "=== Test: Source code compiles with new flags ==="
+echo "=== Test: Production parser applies batch CLI options ==="
 
-cat > "$TMPDIR/test_args.c" << 'ENDTEST'
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
-
-static int parse_batch_args_test(int argc, char* argv[]) {
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--session-finished") == 0) { i++; }
-        else if (strcmp(argv[i], "--notification-mode") == 0) { i++; }
-        else if (strcmp(argv[i], "--auto-check-interval") == 0) { i++; }
-        else if (strcmp(argv[i], "--auto-start") == 0) { }
-        else if (strcmp(argv[i], "--no-auto-start") == 0) { }
-        else if (strcmp(argv[i], "--check-updates-startup") == 0) { }
-        else if (strcmp(argv[i], "--no-check-updates-startup") == 0) { }
-        else if (strcmp(argv[i], "--configure") == 0) { }
-        else if (strcmp(argv[i], "--version") == 0) { }
-        else if (strcmp(argv[i], "--help") == 0) return 0;
-        else { printf("Unknown: %s\n", argv[i]); return 1; }
-    }
-    return 0;
-}
-
-int main() {
-    int result = 0;
-    char* t1[] = {"p", "--session-finished", "shutdown"};
-    char* t2[] = {"p", "--notification-mode", "critical"};
-    char* t3[] = {"p", "--auto-check-interval", "daily"};
-    char* t4[] = {"p", "--auto-start"};
-    char* t5[] = {"p", "--no-auto-start"};
-    char* t6[] = {"p", "--check-updates-startup"};
-    char* t7[] = {"p", "--no-check-updates-startup"};
-    char* t8[] = {"p", "--configure"};
-    char* t9[] = {"p", "--version"};
-    char* t10[] = {"p", "--help"};
-    char* t11[] = {"p", "--session-finished", "sleep", "--notification-mode", "none", "--configure"};
-
-    result |= parse_batch_args_test(3, t1);
-    result |= parse_batch_args_test(3, t2);
-    result |= parse_batch_args_test(3, t3);
-    result |= parse_batch_args_test(2, t4);
-    result |= parse_batch_args_test(2, t5);
-    result |= parse_batch_args_test(2, t6);
-    result |= parse_batch_args_test(2, t7);
-    result |= parse_batch_args_test(2, t8);
-    result |= parse_batch_args_test(2, t9);
-    result |= parse_batch_args_test(2, t10);
-    result |= parse_batch_args_test(6, t11);
-
-    if (result == 0) {
-        printf("ALL PASS\n");
-    }
-    return result;
-}
-ENDTEST
-
-if gcc -o "$TMPDIR/test_args" "$TMPDIR/test_args.c" 2>/dev/null; then
-    TEST_OUT=$("$TMPDIR/test_args" 2>&1 || true)
-    if echo "$TEST_OUT" | grep -q "ALL PASS"; then
-        pass "All new CLI flags parse correctly in test compilation"
-    else
-        fail "CLI parsing test returned unexpected output: $TEST_OUT"
-    fi
+if bash "$(dirname "${BASH_SOURCE[0]}")/test_cli_parse_errors.sh"; then
+    pass "Production parser handles batch CLI flags and values"
 else
-    fail "CLI parsing test compilation failed (this may be expected if MinGW not available)"
-    echo "  (Note: This test needs MinGW gcc - may pass on CI environment)"
+    fail "Production parser regression test failed"
 fi
 
 # ============================================================
