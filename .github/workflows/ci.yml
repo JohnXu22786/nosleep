@@ -61,6 +61,9 @@ jobs:
       - name: Test CLI UTF-8 argument conversion failures
         run: ./test_cli_utf8_arguments.sh
 
+      - name: Test actionable CLI parse errors
+        run: bash test_cli_parse_errors.sh
+
       - name: Test tray cancellation notice action
         run: bash test_tray_cancellation_notice_action.sh
 

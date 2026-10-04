@@ -17,14 +17,13 @@ branch_match = re.search(
 assert branch_match, "could not find the --duration parsing branch"
 branch = branch_match.group(0)
 assert re.search(
-    r"if\s*\(\s*WideCharToMultiByte\(CP_UTF8,\s*0,\s*argv\[\+\+i\],\s*-1,\s*value,\s*"
-    r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\)\s*return 1\s*;",
+    r"if\s*\(\s*WideCharToMultiByte\(CP_UTF8,\s*0,\s*value_wide,\s*-1,\s*value,\s*"
+    r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\|\|\s*"
+    r"!cli_parse_duration\(value,\s*&opts->duration\)\)\s*\{\s*"
+    r"return fail_cli_parse\(error,\s*CLI_PARSE_ERROR_INVALID_VALUE,\s*option,\s*"
+    r"value_wide,\s*L\"an integer number of minutes\"\);\s*\}",
     branch,
-), "the --duration branch must reject values that do not fit its UTF-8 buffer"
-assert re.search(
-    r"if\s*\(!cli_parse_duration\(value,\s*&opts->duration\)\)\s*return 1\s*;",
-    branch,
-), "the --duration branch must reject values that cli_parse_duration cannot parse"
+), "the --duration branch must reject malformed values and preserve them for diagnostics"
 assert "atoi(value)" not in branch, "--duration must not silently accept atoi's numeric-prefix behavior"
 PY
 

@@ -17,7 +17,11 @@ duration_branch = re.search(
 assert duration_branch, "could not find the --duration parsing branch"
 branch = duration_branch.group(0)
 assert re.search(
-    r"if\s*\(!cli_parse_duration\(value,\s*&opts->duration\)\)\s*return 1\s*;\s*"
+    r"if\s*\(\s*WideCharToMultiByte\(CP_UTF8,\s*0,\s*value_wide,\s*-1,\s*value,\s*"
+    r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\|\|\s*"
+    r"!cli_parse_duration\(value,\s*&opts->duration\)\)\s*\{\s*"
+    r"return fail_cli_parse\(error,\s*CLI_PARSE_ERROR_INVALID_VALUE,\s*option,\s*"
+    r"value_wide,\s*L\"an integer number of minutes\"\);\s*\}\s*"
     r"if\s*\(opts->duration\s*<\s*0\)\s*\{?\s*"
     r"opts->duration\s*=\s*0\s*;",
     branch,

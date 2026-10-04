@@ -17,12 +17,22 @@ root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 source = (root / "src/main.c").read_text()
 match = re.search(
-    r"static int parse_arguments\(int argc, wchar_t\* argv\[\], CLIOptions\* opts\) \{.*?^\}",
+    r"static int parse_arguments\(int argc, wchar_t\* argv\[\], CLIOptions\* opts,\s*"
+    r"CLIParseError\* error\) \{.*?^\}",
     source,
     re.S | re.M,
 )
 assert match, "could not find parse_arguments definition"
 parser = match.group(0)
+helper_match = re.search(r"static int fail_cli_parse\(.*?^\}", source, re.S | re.M)
+assert helper_match, "could not find fail_cli_parse definition"
+error_type_match = re.search(
+    r"typedef enum\s*\{.*?\}\s*CLIParseErrorKind\s*;\s*"
+    r"typedef struct\s*\{\s*CLIParseErrorKind\s+kind;.*?\}\s*CLIParseError\s*;",
+    source,
+    re.S,
+)
+assert error_type_match, "could not find CLI parse error types"
 
 prefix = r"""
 #include <assert.h>
@@ -63,6 +73,10 @@ typedef struct {
     bool configure_mode;
     bool show_version;
 } CLIOptions;
+
+"""
+
+prefix += error_type_match.group(0) + r"""
 
 static const wchar_t *failed_input;
 static const char *failed_output;
@@ -124,10 +138,14 @@ static void expect_oversized_option_rejected(void) {
     make_oversized(oversized);
     wchar_t *argv[] = {L"nosleep", oversized};
     CLIOptions options = default_options();
+    CLIParseError error = {0};
     failed_input = oversized;
     failed_output = "--help";
 
-    assert(parse_arguments(2, argv, &options) == 1);
+    assert(parse_arguments(2, argv, &options, &error) == 1);
+    assert(error.kind == CLI_PARSE_ERROR_UNKNOWN_OPTION);
+    assert(error.option == oversized);
+    assert(error.value == NULL);
     assert(!options.show_version);
 }
 
@@ -137,10 +155,20 @@ static void expect_oversized_enum_rejected(const wchar_t *option,
     make_oversized(oversized);
     wchar_t *argv[] = {L"nosleep", (wchar_t *)option, oversized};
     CLIOptions options = default_options();
+    CLIParseError error = {0};
     failed_input = oversized;
     failed_output = fallback;
 
-    assert(parse_arguments(3, argv, &options) == 1);
+    assert(parse_arguments(3, argv, &options, &error) == 1);
+    assert(error.kind == CLI_PARSE_ERROR_INVALID_ENUM);
+    assert(error.option == argv[1]);
+    assert(error.value == oversized);
+    assert(wcscmp(error.expected,
+                  wcscmp(option, L"--notification-mode") == 0
+                      ? L"all, critical, none"
+                      : wcscmp(option, L"--auto-check-interval") == 0
+                            ? L"never, daily, weekly"
+                            : L"none, shutdown, sleep") == 0);
 }
 
 int main(void) {
@@ -154,9 +182,11 @@ int main(void) {
         L"nosleep", L"--session-finished", L"shutdown",
         L"--notification-mode", L"critical", L"--auto-check-interval", L"daily"
     };
+    CLIParseError error = {0};
     failed_input = NULL;
     failed_output = NULL;
-    assert(parse_arguments(7, valid_argv, &options) == 0);
+    assert(parse_arguments(7, valid_argv, &options, &error) == 0);
+    assert(error.kind == CLI_PARSE_ERROR_NONE);
     assert(options.session_finished == SESSION_FINISHED_SHUTDOWN);
     assert(options.notification_mode == NOTIFY_CRITICAL_ONLY);
     assert(options.auto_check_interval == 1);
@@ -166,7 +196,7 @@ int main(void) {
 }
 """
 
-output.write_text(prefix + parser + suffix)
+output.write_text(prefix + helper_match.group(0) + "\n" + parser + suffix)
 PY
 
 gcc -std=c99 -Wall -Wextra -Werror -Isrc "$TMPDIR/test_cli_utf8_arguments.c" \

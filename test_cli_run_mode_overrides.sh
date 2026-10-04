@@ -23,11 +23,21 @@ options_match = re.search(
 assert options_match, "could not find CLIOptions definition"
 
 parser_match = re.search(
-    r"static int parse_arguments\(int argc, wchar_t\* argv\[\], CLIOptions\* opts\) \{.*?^\}",
+    r"static int parse_arguments\(int argc, wchar_t\* argv\[\], CLIOptions\* opts,\s*"
+    r"CLIParseError\* error\) \{.*?^\}",
     source,
     re.S | re.M,
 )
 assert parser_match, "could not find parse_arguments definition"
+error_types_match = re.search(
+    r"typedef enum\s*\{.*?\}\s*CLIParseErrorKind\s*;\s*"
+    r"typedef struct\s*\{\s*CLIParseErrorKind\s+kind;.*?\}\s*CLIParseError\s*;",
+    source,
+    re.S,
+)
+assert error_types_match, "could not find CLI parse error types"
+failure_match = re.search(r"static int fail_cli_parse\(.*?^\}", source, re.S | re.M)
+assert failure_match, "could not find fail_cli_parse definition"
 
 overrides_match = re.search(
     r"// Apply CLI overrides AFTER tray_load_settings.*?^\s*tray->refresh_interval_seconds = opts->interval;",
@@ -160,7 +170,9 @@ static void save_mode_preferences(const NoSleepTray *tray) {
 suffix = r"""
 static CLIOptions parse(int argc, wchar_t *argv[]) {
     CLIOptions options = default_options();
-    assert(parse_arguments(argc, argv, &options) == 0);
+    CLIParseError error = {0};
+    assert(parse_arguments(argc, argv, &options, &error) == 0);
+    assert(error.kind == CLI_PARSE_ERROR_NONE);
     return options;
 }
 
@@ -272,6 +284,9 @@ int main(void) {
 output.write_text(
     prefix
     + options_match.group(0)
+    + error_types_match.group(0)
+    + "\n"
+    + failure_match.group(0)
     + "\n"
     + parser_match.group(0)
     + "\n"
