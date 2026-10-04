@@ -3483,6 +3483,12 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
     HWND hList = GetDlgItem(hwnd_parent, IDC_NOTIFY_GROUP_LIST);
     if (!hList || !tray) return;
 
+    int previous_count = (int)SendMessage(hList, LB_GETCOUNT, 0, 0);
+    int previous_row = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+    int previous_group = previous_row == LB_ERR
+        ? LB_ERR
+        : (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)previous_row, 0);
+
     SendMessage(hList, LB_RESETCONTENT, 0, 0);
 
     for (int i = 0; i < tray->notify_groups.count; i++) {
@@ -3495,9 +3501,17 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
         SendMessage(hList, LB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
     }
 
-    // Select first item by default
+    // Keep the prior group selected when it survived the refresh. If the list
+    // changed structurally or had no selection, show the active group instead.
     if (tray->notify_groups.count > 0) {
-        SendMessage(hList, LB_SETCURSEL, 0, 0);
+        int selection = tray->notify_groups.active_index;
+        if (previous_count <= tray->notify_groups.count &&
+            previous_group >= 0 && previous_group < tray->notify_groups.count) {
+            selection = previous_group;
+        }
+        if (selection >= 0 && selection < tray->notify_groups.count) {
+            SendMessage(hList, LB_SETCURSEL, (WPARAM)selection, 0);
+        }
     }
 }
 
