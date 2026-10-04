@@ -102,6 +102,7 @@ static bool update_check_in_progress;
 
 static int kill_count;
 static int set_count;
+static int fail_next_set;
 static UINT last_interval_ms;
 
 static int KillTimer(HWND hwnd, UINT_PTR timer_id) {
@@ -116,6 +117,10 @@ static UINT_PTR SetTimer(HWND hwnd, UINT_PTR timer_id, UINT interval_ms, void* c
     (void)callback;
     ++set_count;
     last_interval_ms = interval_ms;
+    if (fail_next_set) {
+        fail_next_set = 0;
+        return 0;
+    }
     return timer_id ? timer_id : 2000;
 }
 
@@ -146,31 +151,38 @@ int main(void) {
     }
     tray_update_check_end();
 
+    fail_next_set = 1;
+    tray_apply_auto_check_interval(&tray, 1);
+    if (tray.auto_check_interval != 1 || tray.update_timer_id != 0 ||
+        set_count != 1 || kill_count != 0 || last_interval_ms != 86400000U) {
+        return fail("a failed timer creation must preserve the selected interval for retry");
+    }
+
     tray_apply_auto_check_interval(&tray, 1);
     if (tray.auto_check_interval != 1 || tray.update_timer_id == 0 ||
-        set_count != 1 || kill_count != 0 || last_interval_ms != 86400000U) {
-        return fail("Never to Daily must create a daily timer");
+        set_count != 2 || kill_count != 0 || last_interval_ms != 86400000U) {
+        return fail("reselecting Daily must retry and create a daily timer");
     }
 
     tray_apply_auto_check_interval(&tray, 2);
-    if (tray.auto_check_interval != 2 || set_count != 2 || kill_count != 1 ||
+    if (tray.auto_check_interval != 2 || set_count != 3 || kill_count != 1 ||
         last_interval_ms != 604800000U) {
         return fail("Daily to Weekly must replace the daily timer with a weekly timer");
     }
 
     tray_apply_auto_check_interval(&tray, 0);
     if (tray.auto_check_interval != 0 || tray.update_timer_id != 0 ||
-        set_count != 2 || kill_count != 2) {
+        set_count != 3 || kill_count != 2) {
         return fail("Weekly to Never must cancel the live timer");
     }
 
     tray_apply_auto_check_interval(&tray, 0);
-    if (set_count != 2 || kill_count != 2) {
+    if (set_count != 3 || kill_count != 2) {
         return fail("saving an unchanged interval must not reset its timer");
     }
 
     tray_apply_auto_check_interval(&tray, CB_ERR);
-    if (set_count != 2 || kill_count != 2) {
+    if (set_count != 3 || kill_count != 2) {
         return fail("an invalid combo selection must leave the timer unchanged");
     }
 
