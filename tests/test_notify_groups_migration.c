@@ -191,10 +191,31 @@ static int test_legacy_setting_migrates_when_groups_are_missing(void) {
     return 0;
 }
 
+static int test_saved_active_group_survives_corrupt_prior_slot(void) {
+    reset_registry();
+    stored_groups_available = true;
+    stored_group_count = 3;
+    stored_active_index = 2;
+    stored_groups[0] = (StoredGroup){"All notifications", 0xFFFFFFFFu, 1};
+    stored_groups[1] = (StoredGroup){"", 0, 0};
+    stored_groups[2] = (StoredGroup){"Custom Work", 0x55u, 0};
+
+    NotifyGroupManager manager;
+    notify_groups_init(&manager, 0);
+
+    if (manager.count != 2 || manager.active_index != 1 ||
+        strcmp(manager.groups[manager.active_index].name, "Custom Work") != 0) {
+        fprintf(stderr, "FAIL: saved active group was not remapped past a corrupt registry slot\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_saved_custom_group_is_not_replaced();
     failures += test_legacy_setting_migrates_when_groups_are_missing();
+    failures += test_saved_active_group_survives_corrupt_prior_slot();
     if (failures != 0) return 1;
     puts("PASS: notification-group migration preserves saved groups and migrates legacy settings");
     return 0;
