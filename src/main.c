@@ -650,9 +650,6 @@ static int run_tray_mode(const CLIOptions* opts) {
     if (opts->session_finished >= 0) {
         tray->session_finished_action = (SessionFinishedAction)opts->session_finished;
     }
-    if (opts->auto_start >= 0) {
-        tray_set_startup_enabled(tray, opts->auto_start != 0);
-    }
     if (opts->notification_mode >= 0) {
         tray->notification_mode = opts->notification_mode;
         // Keep the legacy CLI option by selecting its corresponding built-in group.
@@ -664,14 +661,6 @@ static int run_tray_mode(const CLIOptions* opts) {
     if (opts->check_updates_startup >= 0) {
         tray->check_updates_on_startup = (opts->check_updates_startup != 0);
     }
-    if (opts->add_to_path >= 0) {
-        if (!tray_set_add_to_path(tray, opts->add_to_path != 0)) {
-            MessageBox(tray->hwnd,
-                "Could not update the PATH. Retry by changing this setting in the tray settings.",
-                "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
-        }
-    }
-    
     // If duration is specified, auto-start (0 = indefinite, >0 = minutes)
     if (opts->duration >= 0) {
         tray_start_nosleep(tray, opts->duration);

@@ -45,6 +45,18 @@ overrides_match = re.search(
     re.S | re.M,
 )
 assert overrides_match, "could not find the run-mode CLI override block"
+run_mode_match = re.search(
+    r"static int run_tray_mode\(const CLIOptions\* opts\) \{.*?^\}",
+    source,
+    re.S | re.M,
+)
+assert run_mode_match, "could not find run_tray_mode"
+configure_mode_match = re.search(
+    r"static int run_configure_mode\(const CLIOptions\* opts\) \{.*?^\}",
+    source,
+    re.S | re.M,
+)
+assert configure_mode_match, "could not find run_configure_mode"
 
 mode_match = re.search(
     r"static bool tray_mode_for_run\(bool preference, bool override_set, bool override_value\) \{.*?^\}",
@@ -81,9 +93,16 @@ prefix = r"""
 typedef unsigned long DWORD;
 typedef long LONG;
 typedef void *HKEY;
+typedef void *HWND;
 typedef unsigned char *LPBYTE;
+typedef struct { int unused; } NotifyGroupManager;
+typedef int SessionFinishedAction;
 #define REG_DWORD 4
 #define ERROR_SUCCESS 0
+#define MB_OK 1
+#define MB_ICONERROR 2
+#define MB_ICONWARNING 4
+#define ATTACH_PARENT_PROCESS ((DWORD)-1)
 
 static DWORD saved_prevent_display;
 static DWORD saved_away_mode;
@@ -138,7 +157,66 @@ typedef struct {
     bool verbose;
     int refresh_interval_seconds;
     int session_finished_action;
+    int notification_mode;
+    NotifyGroupManager notify_groups;
+    int auto_check_interval;
+    bool check_updates_on_startup;
+    bool start_on_startup;
+    bool add_to_path;
+    HWND hwnd;
 } NoSleepTray;
+
+static int startup_set_calls;
+static int path_set_calls;
+static int tray_run_calls;
+static int settings_save_calls;
+static int saved_session_finished;
+static int saved_auto_start;
+static int saved_notification_mode;
+static int saved_auto_check_interval;
+static int saved_check_updates_startup;
+static int saved_add_to_path;
+static NoSleepTray test_tray;
+
+static NoSleepTray *tray_create(void) { return &test_tray; }
+static bool tray_init(NoSleepTray *tray) { (void)tray; return true; }
+static void tray_destroy(NoSleepTray *tray) { (void)tray; }
+static void tray_run(NoSleepTray *tray) { (void)tray; ++tray_run_calls; }
+static void tray_start_nosleep(NoSleepTray *tray, int duration) {
+    (void)tray; (void)duration;
+}
+void tray_set_startup_enabled(NoSleepTray *tray, bool enable) {
+    ++startup_set_calls;
+    tray->start_on_startup = enable;
+}
+bool tray_set_add_to_path(NoSleepTray *tray, bool enable) {
+    ++path_set_calls;
+    tray->add_to_path = enable;
+    return true;
+}
+static bool notify_groups_set_active(NotifyGroupManager *manager, int index) {
+    (void)manager; (void)index; return true;
+}
+static int tray_save_settings_cli(int session_finished, int auto_start,
+                                  int notification_mode, int auto_check_interval,
+                                  int check_updates_startup, int add_to_path) {
+    ++settings_save_calls;
+    saved_session_finished = session_finished;
+    saved_auto_start = auto_start;
+    saved_notification_mode = notification_mode;
+    saved_auto_check_interval = auto_check_interval;
+    saved_check_updates_startup = check_updates_startup;
+    saved_add_to_path = add_to_path;
+    return 1;
+}
+static bool AttachConsole(DWORD process_id) {
+    (void)process_id; return false;
+}
+static void OutputDebugString(const char *message) { (void)message; }
+static int MessageBox(HWND hwnd, const char *text, const char *title,
+                      unsigned int flags) {
+    (void)hwnd; (void)text; (void)title; (void)flags; return 0;
+}
 
 static CLIOptions default_options(void) {
     CLIOptions options = {0};
@@ -271,11 +349,35 @@ static void test_last_explicit_flag_wins(void) {
     assert(saved_away_mode == 0);
 }
 
+static void test_persistent_flags_require_configure_mode(void) {
+    wchar_t *run_argv[] = {L"nosleep", L"--auto-start", L"--add-to-path"};
+    CLIOptions run_options = parse(3, run_argv);
+
+    assert(!run_options.configure_mode);
+    assert(run_tray_mode(&run_options) == 0);
+    assert(tray_run_calls == 1);
+    assert(startup_set_calls == 0);
+    assert(path_set_calls == 0);
+    assert(settings_save_calls == 0);
+
+    wchar_t *configure_argv[] = {
+        L"nosleep", L"--auto-start", L"--add-to-path", L"--configure"
+    };
+    CLIOptions configure_options = parse(4, configure_argv);
+
+    assert(configure_options.configure_mode);
+    assert(run_configure_mode(&configure_options) == 0);
+    assert(settings_save_calls == 1);
+    assert(saved_auto_start == CLI_ENABLE);
+    assert(saved_add_to_path == CLI_ENABLE);
+}
+
 int main(void) {
     test_absent_flags_preserve_saved_values();
     test_negative_flags_disable_saved_values_for_this_run();
     test_existing_positive_flags_still_enable_modes();
     test_last_explicit_flag_wins();
+    test_persistent_flags_require_configure_mode();
     puts("PASS: CLI mode overrides preserve saved values by default and apply per run");
     return 0;
 }
@@ -294,6 +396,10 @@ output.write_text(
     + middle
     + overrides_match.group(0)
     + "\n}\n"
+    + run_mode_match.group(0)
+    + "\n"
+    + configure_mode_match.group(0)
+    + "\n"
     + save_function
     + suffix
 )
