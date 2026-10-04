@@ -93,7 +93,45 @@ fi
 echo ""
 echo "=== Test 5: Compilation test ==="
 
-if command -v make &>/dev/null; then
+toolchain_issue=""
+configured_cc=""
+configured_rc=""
+compiler_command=()
+resource_compiler=""
+
+if ! command -v make &>/dev/null; then
+    toolchain_issue="make is not installed"
+else
+    make_database="$(cd "$SCRIPT_DIR" && make -pn 2>/dev/null || true)"
+    configured_cc="$(printf '%s\n' "$make_database" | awk '$1 == "CC" && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }')"
+    configured_rc="$(printf '%s\n' "$make_database" | awk '$1 == "RC" && $2 == "=" { sub(/^[^=]*= /, ""); print; exit }')"
+
+    if [[ -n "$configured_cc" ]]; then
+        read -r -a compiler_command <<< "$configured_cc"
+    fi
+
+    if ((${#compiler_command[@]} == 0)); then
+        toolchain_issue="the configured C compiler is missing"
+    elif ! (cd "$SCRIPT_DIR" && command -v "${compiler_command[0]}" &>/dev/null); then
+        toolchain_issue="configured C compiler '${compiler_command[0]}' is unavailable"
+    elif [[ -z "$configured_rc" ]]; then
+        toolchain_issue="the resource compiler is not configured"
+    else
+        read -r -a resource_compiler_command <<< "$configured_rc"
+        resource_compiler="${resource_compiler_command[0]}"
+        if ! (cd "$SCRIPT_DIR" && command -v "$resource_compiler" &>/dev/null); then
+            toolchain_issue="configured resource compiler '$resource_compiler' is unavailable"
+        else
+            compiler_target="$(cd "$SCRIPT_DIR" && "${compiler_command[@]}" -dumpmachine 2>/dev/null || true)"
+            case "$compiler_target" in
+                *mingw*|*windows*|*win32*|*win64*) ;;
+                *) toolchain_issue="configured C compiler does not target Windows" ;;
+            esac
+        fi
+    fi
+fi
+
+if [[ -z "$toolchain_issue" ]]; then
     cd "$SCRIPT_DIR"
     if make clean 2>/dev/null; then true; fi
     if make 2>&1; then
@@ -102,8 +140,8 @@ if command -v make &>/dev/null; then
         fail "Project compilation failed with make"
     fi
 else
-    echo "SKIP: 'make' not found in PATH (MinGW not installed)"
-    pass "SKIP: Compilation test (make not available)"
+    echo "SKIP: Windows toolchain unavailable: $toolchain_issue"
+    pass "SKIP: Compilation test (Windows toolchain unavailable)"
 fi
 
 echo ""
