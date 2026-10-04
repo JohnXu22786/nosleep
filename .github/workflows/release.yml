@@ -25,7 +25,7 @@ jobs:
           make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres VERSION=$VERSION
 
       - name: Rename executable
-        run: mv bin/nosleep.exe nosleep-${{ github.ref_name }}.exe
+        run: mv bin/nosleep.exe "nosleep-${GITHUB_REF_NAME}.exe"
 
       - name: Upload Release Asset
         uses: softprops/action-gh-release@v2
