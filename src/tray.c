@@ -2201,7 +2201,12 @@ static char* get_exe_dir(void) {
     // Find last backslash and terminate there to get directory
     char* last_backslash = strrchr(path, '\\');
     if (last_backslash) {
-        *last_backslash = '\0';
+        // Keep the separator when the executable is directly under a drive root.
+        if (last_backslash == path + 2 && path[1] == ':') {
+            last_backslash[1] = '\0';
+        } else {
+            *last_backslash = '\0';
+        }
     }
     return path; // Caller must free()
 }
