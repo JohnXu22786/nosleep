@@ -5,10 +5,13 @@
 enum {
     PE_DOS_HEADER_SIZE = 64,
     PE_SIGNATURE_AND_FILE_HEADER_SIZE = 24,
+    PE_OPTIONAL_HEADER_PREFIX_SIZE = 60,
     PE_OPTIONAL_HEADER32_MIN_SIZE = 96,
     PE_OPTIONAL_HEADER64_MIN_SIZE = 112,
     PE_SECTION_HEADER_SIZE = 40,
     PE_MAX_SECTION_COUNT = 96,
+    PE_FILE_MACHINE_I386 = 0x014C,
+    PE_FILE_MACHINE_AMD64 = 0x8664,
     PE_FILE_EXECUTABLE_IMAGE = 0x0002,
     PE_FILE_DLL = 0x2000,
     PE_SECTION_CODE = 0x00000020,
@@ -45,11 +48,12 @@ bool updater_pe_is_executable(uint64_t file_size, UpdaterPeReadAt read_at,
         return false;
     }
 
+    unsigned int machine_type = pe_read_u16(pe_header + 4);
     unsigned int section_count = pe_read_u16(pe_header + 6);
     unsigned int optional_header_size = pe_read_u16(pe_header + 20);
     unsigned int characteristics = pe_read_u16(pe_header + 22);
     if (section_count == 0 || section_count > PE_MAX_SECTION_COUNT ||
-        optional_header_size < 20 ||
+        optional_header_size < PE_OPTIONAL_HEADER_PREFIX_SIZE ||
         !(characteristics & PE_FILE_EXECUTABLE_IMAGE) ||
         (characteristics & PE_FILE_DLL)) {
         return false;
@@ -62,7 +66,7 @@ bool updater_pe_is_executable(uint64_t file_size, UpdaterPeReadAt read_at,
         return false;
     }
 
-    unsigned char optional_header_prefix[20];
+    unsigned char optional_header_prefix[PE_OPTIONAL_HEADER_PREFIX_SIZE];
     if (!read_at(context, optional_header_offset, optional_header_prefix,
                  sizeof(optional_header_prefix))) {
         return false;
@@ -71,8 +75,10 @@ bool updater_pe_is_executable(uint64_t file_size, UpdaterPeReadAt read_at,
     unsigned int optional_magic = pe_read_u16(optional_header_prefix);
     unsigned int minimum_optional_header_size;
     if (optional_magic == 0x010B) {
+        if (machine_type != PE_FILE_MACHINE_I386) return false;
         minimum_optional_header_size = PE_OPTIONAL_HEADER32_MIN_SIZE;
     } else if (optional_magic == 0x020B) {
+        if (machine_type != PE_FILE_MACHINE_AMD64) return false;
         minimum_optional_header_size = PE_OPTIONAL_HEADER64_MIN_SIZE;
     } else {
         return false;
@@ -80,7 +86,10 @@ bool updater_pe_is_executable(uint64_t file_size, UpdaterPeReadAt read_at,
     if (optional_header_size < minimum_optional_header_size) return false;
 
     uint32_t entry_point = pe_read_u32(optional_header_prefix + 16);
-    if (entry_point == 0) return false;
+    uint32_t size_of_image = pe_read_u32(optional_header_prefix + 56);
+    if (entry_point == 0 || size_of_image == 0 || entry_point >= size_of_image) {
+        return false;
+    }
 
     uint64_t section_table_offset = optional_header_offset + optional_header_size;
     uint64_t section_table_size = (uint64_t)section_count * PE_SECTION_HEADER_SIZE;
@@ -96,10 +105,16 @@ bool updater_pe_is_executable(uint64_t file_size, UpdaterPeReadAt read_at,
             section_table_offset + (uint64_t)i * PE_SECTION_HEADER_SIZE;
         if (!read_at(context, section_offset, section, sizeof(section))) return false;
 
+        uint32_t virtual_size = pe_read_u32(section + 8);
         uint32_t virtual_address = pe_read_u32(section + 12);
         uint32_t raw_size = pe_read_u32(section + 16);
         uint32_t raw_offset = pe_read_u32(section + 20);
         uint32_t section_characteristics = pe_read_u32(section + 36);
+        uint32_t image_section_size = virtual_size > raw_size ? virtual_size : raw_size;
+        if ((uint64_t)virtual_address > size_of_image ||
+            (uint64_t)image_section_size > size_of_image - virtual_address) {
+            return false;
+        }
         if (raw_size > 0 &&
             ((uint64_t)raw_offset > file_size ||
              (uint64_t)raw_size > file_size - raw_offset)) {

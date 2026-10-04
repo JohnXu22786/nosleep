@@ -110,6 +110,36 @@ static int test_rejects_truncated_or_malformed_headers(void) {
         fprintf(stderr, "a DLL was accepted as an executable update\n");
         return 1;
     }
+
+    make_pe_fixture(&file, 0x010B);
+    unsigned char* optional_header = file.bytes + PE_HEADER_OFFSET + 24;
+    write_u32(optional_header + 56, 0);
+    if (updater_pe_is_executable(sizeof(file.bytes), fake_read_at, &file)) {
+        fprintf(stderr, "an image with zero SizeOfImage was accepted\n");
+        return 1;
+    }
+
+    make_pe_fixture(&file, 0x010B);
+    unsigned char* section = file.bytes + PE_HEADER_OFFSET + 24 + 0xE0;
+    write_u32(section + 12, 0x1F00);
+    if (updater_pe_is_executable(sizeof(file.bytes), fake_read_at, &file)) {
+        fprintf(stderr, "a section extending beyond SizeOfImage was accepted\n");
+        return 1;
+    }
+
+    make_pe_fixture(&file, 0x010B);
+    write_u16(file.bytes + PE_HEADER_OFFSET + 4, 0);
+    if (updater_pe_is_executable(sizeof(file.bytes), fake_read_at, &file)) {
+        fprintf(stderr, "an executable with an unknown machine type was accepted\n");
+        return 1;
+    }
+
+    make_pe_fixture(&file, 0x010B);
+    write_u16(file.bytes + PE_HEADER_OFFSET + 4, 0x8664);
+    if (updater_pe_is_executable(sizeof(file.bytes), fake_read_at, &file)) {
+        fprintf(stderr, "a PE32 optional header with an x64 machine type was accepted\n");
+        return 1;
+    }
     return 0;
 }
 
