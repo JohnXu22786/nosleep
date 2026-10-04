@@ -36,5 +36,6 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
                      BYTE *value, DWORD *size);
 LONG RegDeleteKey(HKEY root, const char *path);
 LONG RegCloseKey(HKEY key);
+LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name);
 
 #endif
