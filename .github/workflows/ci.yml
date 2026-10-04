@@ -29,6 +29,9 @@ jobs:
       - name: Test countdown icon lifetime
         run: bash test_tray_countdown_icon.sh
 
+      - name: Test numbered icon ownership
+        run: bash test_tray_numbered_icon.sh
+
       - name: Test updater unit tests
         run: |
           make test-unit
