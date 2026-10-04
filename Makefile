@@ -17,7 +17,7 @@ SRCDIR = src
 OBJDIR = obj
 BINDIR = bin
 
-SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c
+SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/updater_pe.c $(SRCDIR)/cJSON.c
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
@@ -68,6 +68,8 @@ test-unit: $(OBJDIR) test-cli
 	./tests/test_updater_temp_path_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_stream.c -o tests/test_updater_stream_t.exe
 	./tests/test_updater_stream_t.exe
+	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_pe.c $(SRCDIR)/updater_pe.c -o tests/test_updater_pe_t.exe
+	./tests/test_updater_pe_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_redirect_target.c -o tests/test_updater_redirect_target_t.exe
 	./tests/test_updater_redirect_target_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_batch_escape.c -o tests/test_updater_batch_escape_t.exe
