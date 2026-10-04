@@ -48,13 +48,11 @@ prefix = r"""
 typedef struct {
     int duration;
     int interval;
-    bool prevent_display;
-    bool away_mode;
+    int prevent_display;
+    int away_mode;
     bool verbose;
     bool tray_mode;
     bool startup;
-    bool prevent_display_set;
-    bool away_mode_set;
     bool verbose_set;
     int session_finished;
     int auto_start;
@@ -102,6 +100,8 @@ static CLIOptions default_options(void) {
     CLIOptions options = {0};
     options.duration = -1;
     options.interval = 20;
+    options.prevent_display = CLI_UNSET;
+    options.away_mode = CLI_UNSET;
     options.session_finished = CLI_UNSET;
     options.auto_start = CLI_UNSET;
     options.notification_mode = CLI_UNSET;

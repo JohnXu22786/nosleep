@@ -85,8 +85,10 @@ Run `nosleep.exe` with the following arguments:
 |------|-------|-------------|
 | `--duration MINUTES` | `-d` | Minutes to prevent sleep (positive integer; 0 or negative = indefinite) |
 | `--interval SECONDS` | `-i` | Seconds between refreshes (default: 20) |
-| `--prevent-display` | `-p` | Also keep the display awake |
-| `--away-mode` | `-a` | Enable away mode (hardware‑dependent) |
+| `--prevent-display` | `-p` | Enable display sleep prevention for this run |
+| `--no-prevent-display` | | Disable display sleep prevention for this run |
+| `--away-mode` | `-a` | Enable away mode for this run (hardware‑dependent) |
+| `--no-away-mode` | | Disable away mode for this run |
 | `--verbose` | `-v` | Print detailed status on each refresh |
 | `--tray` | `-t` | Launch the system‑tray GUI |
 | `--startup` | `-s` | Start sleep prevention immediately (for Windows startup) |
@@ -102,6 +104,8 @@ Run `nosleep.exe` with the following arguments:
 | `--help` | `-h` | Show this help message |
 
 **Default behavior**: If no arguments are given, the program starts in tray mode, preserving backward compatibility.
+For each setting, omitting both mode flags leaves its saved preference in effect. Explicit mode flags
+override preferences for this run only.
 
 #### Examples
 
@@ -114,6 +118,9 @@ nosleep.exe -d 60 -i 10 -v
 
 # Enable away mode and run indefinitely
 nosleep.exe --away-mode
+
+# Run without the saved display and away mode preferences
+nosleep.exe --no-prevent-display --no-away-mode
 
 # Start the tray GUI (same as running without arguments)
 nosleep.exe --tray

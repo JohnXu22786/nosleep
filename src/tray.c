@@ -1510,6 +1510,10 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
     return 0;
 }
 
+static bool tray_mode_for_run(bool preference, bool override_set, bool override_value) {
+    return override_set ? override_value : preference;
+}
+
 static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
     
@@ -1539,14 +1543,25 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         nosleep_destroy(ns);
         return 0;
     }
+
+    bool prevent_display = tray_mode_for_run(
+        tray->prevent_display,
+        tray->prevent_display_cli_override_set,
+        tray->prevent_display_cli_override
+    );
+    bool away_mode = tray_mode_for_run(
+        tray->away_mode,
+        tray->away_mode_cli_override_set,
+        tray->away_mode_cli_override
+    );
     
     // Run nosleep
     int result = nosleep_run(
         ns,
         0, // duration_minutes (0 = indefinite, controlled by timer thread)
         tray->refresh_interval_seconds, // interval_seconds
-        tray->prevent_display, // prevent_display
-        tray->away_mode, // away_mode
+        prevent_display, // prevent_display
+        away_mode, // away_mode
         tray->verbose, // verbose
         tray->stop_event // external stop event
     );
