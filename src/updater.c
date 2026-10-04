@@ -6,6 +6,7 @@
 #include "updater_redirect.h"
 #include "updater_response_buffer.h"
 #include "updater_temp_path.h"
+#include "updater_pe.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,9 @@ static bool create_update_batch_script(const char* current_exe_path,
                                         char* arguments_path, size_t arguments_path_size);
 static char* get_exe_name_from_path(const char* path);
 static char* get_temp_path_for(const char* prefix);
+static bool updater_pe_read_file_at(void* context, uint64_t offset,
+                                    void* buffer, size_t length);
+static bool updater_validate_downloaded_executable(const char* path);
 
 #define WM_UPDATER_DOWNLOAD_PROGRESS (WM_APP + 1)
 #define ID_UPDATER_DOWNLOAD_CANCEL 1001
@@ -105,6 +109,34 @@ static bool updater_write_path(const char* path, const void* contents, size_t le
         return false;
     }
     return true;
+}
+
+static bool updater_pe_read_file_at(void* context, uint64_t offset,
+                                    void* buffer, size_t length) {
+    if (!context || !buffer || length > MAXDWORD) return false;
+
+    LARGE_INTEGER file_offset;
+    file_offset.QuadPart = (LONGLONG)offset;
+    if (!SetFilePointerEx((HANDLE)context, file_offset, NULL, FILE_BEGIN)) return false;
+
+    DWORD bytes_read = 0;
+    return ReadFile((HANDLE)context, buffer, (DWORD)length, &bytes_read, NULL) &&
+           bytes_read == (DWORD)length;
+}
+
+static bool updater_validate_downloaded_executable(const char* path) {
+    if (!path) return false;
+
+    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (file == INVALID_HANDLE_VALUE) return false;
+
+    LARGE_INTEGER file_size;
+    bool valid = GetFileSizeEx(file, &file_size) && file_size.QuadPart > 0 &&
+                 updater_pe_is_executable((uint64_t)file_size.QuadPart,
+                                          updater_pe_read_file_at, file);
+    CloseHandle(file);
+    return valid;
 }
 
 // Check for updates against GitHub releases
@@ -448,11 +480,9 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
         return false;
     }
     
-    // Verify the downloaded file exists and has size > 0
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (!GetFileAttributesEx(temp_path, GetFileExInfoStandard, &fad) || 
-        fad.nFileSizeLow == 0) {
-        MessageBox(hwnd_parent, "Downloaded file appears to be invalid (0 bytes).\nPlease try again.",
+    // Reject proxy and login pages before preparing the executable replacement.
+    if (!updater_validate_downloaded_executable(temp_path)) {
+        MessageBox(hwnd_parent, "Downloaded file is not a valid Windows executable.\nPlease try again.",
             "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         DeleteFile(temp_path);
         free(temp_path);
