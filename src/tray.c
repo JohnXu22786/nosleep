@@ -3129,7 +3129,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
             // Create tab control
             hTab = CreateWindowEx(0, WC_TABCONTROL, NULL,
-                WS_CHILD | WS_VISIBLE | TCS_FIXEDWIDTH,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_FIXEDWIDTH,
                 10, 10, 460, 350,
                 hwnd, (HMENU)IDC_SETTINGS_TAB, hInst, NULL);
 
@@ -3154,7 +3154,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             create_general_tab(hGeneralTab, settings_tray);
             
             // Notifications tab (initially hidden)
-            hNotifyTab = CreateWindowEx(0, "STATIC", NULL,
+            hNotifyTab = CreateWindowEx(WS_EX_CONTROLPARENT, "STATIC", NULL,
                 WS_CHILD,  // Not visible initially
                 15, 35, 450, 320,
                 hwnd, NULL, hInst, NULL);
@@ -3441,7 +3441,7 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
 
     // Create group listbox
     CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_HASSTRINGS,
         15, 10, 280, 200,
         hwnd_parent, (HMENU)IDC_NOTIFY_GROUP_LIST, hInst, NULL);
 
