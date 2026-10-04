@@ -226,6 +226,56 @@ static void make_manager(NotifyGroupManager *manager) {
     manager->groups[1].event_mask = 0x155u;
 }
 
+static int test_group_names_reject_whitespace_only(void) {
+    NotifyGroupManager manager;
+    make_manager(&manager);
+
+    int original_count = manager.count;
+    if (notify_groups_add(&manager, " \t\r\n", 0x1u) != -1 ||
+        manager.count != original_count) {
+        fprintf(stderr, "FAIL: whitespace-only group name was added\n");
+        return 1;
+    }
+
+    char truncated_blank_name[MAX_GROUP_NAME + 1];
+    memset(truncated_blank_name, ' ', MAX_GROUP_NAME - 1);
+    truncated_blank_name[MAX_GROUP_NAME - 1] = 'x';
+    truncated_blank_name[MAX_GROUP_NAME] = '\0';
+    if (notify_groups_add(&manager, truncated_blank_name, 0x1u) != -1 ||
+        manager.count != original_count) {
+        fprintf(stderr, "FAIL: name truncated to whitespace was added\n");
+        return 1;
+    }
+
+    char original_name[MAX_GROUP_NAME];
+    strcpy(original_name, manager.groups[1].name);
+    unsigned int original_mask = manager.groups[1].event_mask;
+    if (notify_groups_update(&manager, 1, "\t \n", 0x2u) ||
+        notify_groups_update(&manager, 1, truncated_blank_name, 0x2u) ||
+        strcmp(manager.groups[1].name, original_name) != 0 ||
+        manager.groups[1].event_mask != original_mask) {
+        fprintf(stderr, "FAIL: blank group name updated an existing group\n");
+        return 1;
+    }
+
+    const char *valid_name = "  Work events  ";
+    int added_index = notify_groups_add(&manager, valid_name, 0x4u);
+    if (added_index != original_count ||
+        strcmp(manager.groups[added_index].name, valid_name) != 0) {
+        fprintf(stderr, "FAIL: valid nonblank group name was not preserved\n");
+        return 1;
+    }
+
+    if (!notify_groups_update(&manager, 1, valid_name, 0x8u) ||
+        strcmp(manager.groups[1].name, valid_name) != 0 ||
+        manager.groups[1].event_mask != 0x8u) {
+        fprintf(stderr, "FAIL: valid nonblank group name could not update a group\n");
+        return 1;
+    }
+
+    return 0;
+}
+
 static int test_root_key_creation_failure(void) {
     reset_registry();
     fail_root_create = true;
@@ -309,6 +359,7 @@ static int test_successful_save_round_trips_groups(void) {
 
 int main(void) {
     int failures = 0;
+    failures += test_group_names_reject_whitespace_only();
     failures += test_root_key_creation_failure();
     failures += test_group_key_creation_failure();
     failures += test_value_write_failure("active_index", -1);

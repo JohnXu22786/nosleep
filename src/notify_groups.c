@@ -1,5 +1,6 @@
 // Notification groups implementation for nosleep
 #include "notify_groups.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,13 +100,23 @@ bool notify_groups_should_show(NotifyGroupManager* mgr, NotifyEventId event_id) 
     return (active->event_mask & (1 << event_id)) != 0;
 }
 
+bool notify_groups_name_is_blank(const char* name) {
+    if (!name) return true;
+
+    for (size_t i = 0; i < MAX_GROUP_NAME - 1 && name[i] != '\0'; i++) {
+        if (!isspace((unsigned char)name[i])) return false;
+    }
+
+    return true;
+}
+
 int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int event_mask) {
     if (!mgr || !name || mgr->count >= MAX_NOTIFY_GROUPS) {
         return -1;
     }
     
-    // Reject empty names
-    if (name[0] == '\0') {
+    // Reject names that contain no non-whitespace characters
+    if (notify_groups_name_is_blank(name)) {
         return -1;
     }
     
@@ -141,7 +152,7 @@ bool notify_groups_remove(NotifyGroupManager* mgr, int index) {
 
 bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, unsigned int event_mask) {
     if (!mgr || !name || index < 0 || index >= mgr->count) return false;
-    if (name[0] == '\0') return false;
+    if (notify_groups_name_is_blank(name)) return false;
     
     strncpy(mgr->groups[index].name, name, MAX_GROUP_NAME - 1);
     mgr->groups[index].name[MAX_GROUP_NAME - 1] = '\0';
