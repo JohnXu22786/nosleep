@@ -26,6 +26,9 @@ jobs:
       - name: Test tray event cleanup on initialization failure
         run: bash test_tray_create_event_cleanup.sh
 
+      - name: Test countdown icon lifetime
+        run: bash test_tray_countdown_icon.sh
+
       - name: Test updater unit tests
         run: |
           make test-unit
