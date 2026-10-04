@@ -15,7 +15,7 @@ mkdir -p "$PROJECT_DIR/src" "$FAKE_BIN"
 cp "$ROOT_DIR/Makefile" "$PROJECT_DIR/Makefile"
 cp "$ROOT_DIR/src/resources.rc" "$PROJECT_DIR/src/resources.rc"
 
-for source in core tray main notify_groups updater cJSON; do
+for source in core tray main notify_groups updater updater_logic cJSON; do
     : > "$PROJECT_DIR/src/$source.c"
 done
 
@@ -69,15 +69,15 @@ run_make 1.2.3
 
 gcc_calls="$(grep -c '^gcc ' "$BUILD_LOG" || true)"
 windres_calls="$(grep -c '^windres ' "$BUILD_LOG" || true)"
-if [[ "$gcc_calls" != "7" || "$windres_calls" != "1" ]]; then
-    echo "FAIL: expected initial build to run 6 compiles, 1 link, and 1 resource compile; got $gcc_calls gcc and $windres_calls windres calls"
+if [[ "$gcc_calls" != "8" || "$windres_calls" != "1" ]]; then
+    echo "FAIL: expected initial build to run 7 compiles, 1 link, and 1 resource compile; got $gcc_calls gcc and $windres_calls windres calls"
     exit 1
 fi
 
 run_make 1.2.3
 gcc_calls="$(grep -c '^gcc ' "$BUILD_LOG" || true)"
 windres_calls="$(grep -c '^windres ' "$BUILD_LOG" || true)"
-if [[ "$gcc_calls" != "7" || "$windres_calls" != "1" ]]; then
+if [[ "$gcc_calls" != "8" || "$windres_calls" != "1" ]]; then
     echo "FAIL: repeating the same VERSION should not rebuild outputs; got $gcc_calls gcc and $windres_calls windres calls total"
     exit 1
 fi
@@ -86,14 +86,14 @@ run_make 2.3.4
 
 gcc_calls="$(grep -c '^gcc ' "$BUILD_LOG" || true)"
 windres_calls="$(grep -c '^windres ' "$BUILD_LOG" || true)"
-if [[ "$gcc_calls" != "14" || "$windres_calls" != "2" ]]; then
-    echo "FAIL: changing VERSION should rebuild 6 objects, the executable, and the resource; got $gcc_calls gcc and $windres_calls windres calls total"
+if [[ "$gcc_calls" != "16" || "$windres_calls" != "2" ]]; then
+    echo "FAIL: changing VERSION should rebuild 7 objects, the executable, and the resource; got $gcc_calls gcc and $windres_calls windres calls total"
     exit 1
 fi
 
 new_version_compile_calls="$(grep -F -c -- '-DVERSION_STR="2.3.4"' "$BUILD_LOG" || true)"
-if [[ "$new_version_compile_calls" != "6" ]]; then
-    echo "FAIL: expected 6 object compiles with VERSION_STR=2.3.4; got $new_version_compile_calls"
+if [[ "$new_version_compile_calls" != "7" ]]; then
+    echo "FAIL: expected 7 object compiles with VERSION_STR=2.3.4; got $new_version_compile_calls"
     exit 1
 fi
 

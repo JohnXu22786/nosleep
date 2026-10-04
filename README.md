@@ -50,7 +50,7 @@ VERSION_COMMA=$(printf '%s\n' "$VERSION" | sed 's/\./,/g'),0
 sed "s/@VERSION_COMMA@/$VERSION_COMMA/g; s/@VERSION_STRING@/$VERSION/g" src/resources.rc > obj/resources_built.rc
 windres --include-dir src -i obj/resources_built.rc -o obj/resources.o
 gcc -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"${VERSION}\" \
-    src/core.c src/tray.c src/main.c src/notify_groups.c src/updater.c src/cJSON.c \
+    src/core.c src/tray.c src/main.c src/notify_groups.c src/updater.c src/updater_logic.c src/cJSON.c \
     obj/resources.o -o bin/nosleep.exe \
     -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
 ```
