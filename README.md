@@ -15,10 +15,13 @@ A lightweight Windows utility written in C that prevents system sleep using the 
 ## System Requirements
 
 * **Operating System**: Windows (uses Windows API functions).
-* **Compiler**: MinGW gcc compiler suite (including `windres` resource compiler).
-* **Build Tools**: Basic command-line tools (`make` or `mingw32-make` on Windows).
+* **To build from source**: MinGW gcc compiler suite (including `windres`) and basic command-line tools (`make` or `mingw32-make` on Windows). These tools are not needed to run the prebuilt release executable.
 
 ## Installation & Compilation
+
+### Download a Release
+
+Download the versioned `nosleep-v*.exe` file from the [latest GitHub release](https://github.com/JohnXu22786/nosleep/releases/latest) and save it on your Windows PC. Double-click the executable to start in system tray mode, or run it from Command Prompt to use command-line options. The prebuilt executable runs without downloading the source code or installing MinGW.
 
 ### Using the Provided Makefile
 
