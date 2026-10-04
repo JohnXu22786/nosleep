@@ -3057,6 +3057,19 @@ static struct {
     HWND hwnd_parent;
 } g_notify_edit_ctx = {NULL, -1, NULL};
 
+static LRESULT CALLBACK notify_tab_subclass_proc(HWND hwnd, UINT msg, WPARAM wParam,
+                                                  LPARAM lParam, UINT_PTR subclass_id,
+                                                  DWORD_PTR ref_data) {
+    (void)subclass_id;
+    (void)ref_data;
+
+    if (msg == WM_COMMAND) {
+        return SendMessage(GetParent(hwnd), msg, wParam, lParam);
+    }
+
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* settings_tray = NULL;
     static HWND hTab = NULL;
@@ -3110,6 +3123,11 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 WS_CHILD,  // Not visible initially
                 15, 35, 450, 320,
                 hwnd, NULL, hInst, NULL);
+            // Notification controls send WM_COMMAND to their immediate parent,
+            // so forward those messages to the dialog's command handlers.
+            if (!SetWindowSubclass(hNotifyTab, notify_tab_subclass_proc, 1, 0)) {
+                return -1;
+            }
             create_notifications_tab(hNotifyTab, settings_tray);
 
             // Show the first tab by default
