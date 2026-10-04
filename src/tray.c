@@ -3154,7 +3154,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
             // Create tab page windows (initially hidden, shown when tab selected)
             // General tab
-            hGeneralTab = CreateWindowEx(0, "STATIC", NULL,
+            hGeneralTab = CreateWindowEx(WS_EX_CONTROLPARENT, "STATIC", NULL,
                 WS_CHILD | WS_VISIBLE,
                 15, 35, 450, 320,
                 hwnd, NULL, hInst, NULL);
