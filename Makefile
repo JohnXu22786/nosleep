@@ -21,20 +21,27 @@ SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_gr
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
+VERSION_STAMP = $(OBJDIR)/.version
 
-.PHONY: all clean test-unit
+.PHONY: all clean test-unit FORCE
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS) $(RESOURCE_OBJ) | $(BINDIR)
 	$(CC) $(OBJECTS) $(RESOURCE_OBJ) -o $@ $(LDFLAGS)
 
-$(OBJDIR)/%.o: $(SRCDIR)/%.c | $(OBJDIR)
+$(OBJDIR)/%.o: $(SRCDIR)/%.c $(VERSION_STAMP) | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(RESOURCE_OBJ): $(SRCDIR)/resources.rc | $(OBJDIR)
+$(RESOURCE_OBJ): $(SRCDIR)/resources.rc $(VERSION_STAMP) | $(OBJDIR)
 	sed 's/@VERSION_COMMA@/$(VERSION_COMMA)/g; s/@VERSION_STRING@/$(VERSION)/g' $(SRCDIR)/resources.rc > $(OBJDIR)/resources_built.rc
 	$(RC) --include-dir $(SRCDIR) -i $(OBJDIR)/resources_built.rc -o $@
+
+$(VERSION_STAMP): FORCE | $(OBJDIR)
+	@printf '%s\n' '$(VERSION)' > $@.tmp
+	@if ! cmp -s $@.tmp $@; then mv $@.tmp $@; else rm $@.tmp; fi
+
+FORCE:
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)

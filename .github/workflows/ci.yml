@@ -49,6 +49,9 @@ jobs:
           make test-unit
           ./test_test_unit_failure_propagation.sh
 
+      - name: Test rebuild on version changes
+        run: ./test_make_version_rebuild.sh
+
       - name: Test core duration boundary
         run: ./test_core_duration_boundary.sh
 
