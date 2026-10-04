@@ -83,8 +83,16 @@ typedef void *HWND;
 typedef intptr_t LPARAM;
 
 typedef struct {
+    bool prevent_display;
+    bool away_mode;
+    bool verbose;
+    bool check_updates_on_startup;
+    int auto_check_interval;
+    int notification_mode;
     bool add_to_path;
     bool start_on_startup;
+    int session_finished_action;
+    int notify_groups;
 } NoSleepTray;
 
 #define ERROR_SUCCESS 0
@@ -108,6 +116,8 @@ typedef struct {
 #define NOTIFY_ALL 0
 #define NOTIFY_CRITICAL_ONLY 1
 #define NOTIFY_NONE 2
+#define MB_OK 0
+#define MB_ICONWARNING 1
 
 static LONG settings_create_result;
 static LONG startup_create_result;
@@ -126,10 +136,23 @@ static DWORD written_path_type;
 static DWORD stored_add_to_path;
 static int registry_write_count;
 static int registry_close_count;
+static int notify_groups_save_count;
+static int settings_warning_count;
 static int startup_create_count;
 static int add_path_count;
 static int environment_open_count;
 static int environment_create_count;
+
+static void notify_groups_save(int *groups) {
+    (void)groups;
+    ++notify_groups_save_count;
+}
+
+static int MessageBox(HWND hwnd, const char *text, const char *title, DWORD flags) {
+    (void)hwnd; (void)text; (void)title; (void)flags;
+    ++settings_warning_count;
+    return 0;
+}
 
 static void reset_mocks(void) {
     settings_create_result = ERROR_SUCCESS;
@@ -148,6 +171,8 @@ static void reset_mocks(void) {
     stored_add_to_path = 1;
     registry_write_count = 0;
     registry_close_count = 0;
+    notify_groups_save_count = 0;
+    settings_warning_count = 0;
     startup_create_count = 0;
     add_path_result = true;
     add_path_count = 0;
@@ -294,6 +319,55 @@ static void expect_write_failure(const char *name, int session_finished_action,
 }
 
 int main(void) {
+    reset_mocks();
+    settings_create_result = ERROR_ACCESS_DENIED;
+    NoSleepTray settings_tray = {0};
+    expect(!tray_save_settings(&settings_tray),
+           "failure to create the settings key must be reported by the tray save");
+    expect(registry_write_count == 0,
+           "a failed settings-key creation must not attempt value writes");
+    expect(registry_close_count == 0,
+           "a failed settings-key creation must not close an invalid handle");
+    expect(notify_groups_save_count == 0,
+           "a failed settings-key creation must preserve the existing early return");
+    reset_mocks();
+    settings_create_result = ERROR_ACCESS_DENIED;
+    tray_save_settings_with_warning(NULL, &settings_tray);
+    expect(settings_warning_count == 1,
+           "the settings UI warning must be shown when the settings key cannot be created");
+
+    reset_mocks();
+    failed_value_name = "auto_check_interval";
+    registry_write_result = ERROR_ACCESS_DENIED;
+    expect(!tray_save_settings(&settings_tray),
+           "a failed individual tray settings write must be reported");
+    expect(registry_write_count == 8,
+           "a failed tray setting must not prevent attempts to save the remaining values");
+    expect(registry_close_count == 1,
+           "the settings registry handle must close after a failed tray setting write");
+    expect(notify_groups_save_count == 1,
+           "notification groups must retain their existing save behavior after value failure");
+    reset_mocks();
+    failed_value_name = "auto_check_interval";
+    registry_write_result = ERROR_ACCESS_DENIED;
+    tray_save_settings_with_warning(NULL, &settings_tray);
+    expect(settings_warning_count == 1,
+           "the settings UI warning must be shown when a settings value write fails");
+
+    reset_mocks();
+    expect(tray_save_settings(&settings_tray),
+           "successful tray settings persistence must report success");
+    expect(registry_write_count == 8,
+           "successful tray settings persistence must write all eight values");
+    expect(registry_close_count == 1,
+           "successful tray settings persistence must close its registry handle");
+    expect(notify_groups_save_count == 1,
+           "successful tray settings persistence must continue saving notification groups");
+    reset_mocks();
+    tray_save_settings_with_warning(NULL, &settings_tray);
+    expect(settings_warning_count == 0,
+           "the settings UI warning must not be shown after a successful save");
+
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     expect(!tray_save_settings_cli(SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1),
@@ -449,7 +523,7 @@ int main(void) {
            "successful registry, startup, and PATH writes must still report success");
 
     if (failures) return 1;
-    puts("PASS: CLI settings persistence failures are reported");
+    puts("PASS: tray and CLI settings persistence failures are reported");
     return 0;
 }
 """
@@ -472,6 +546,10 @@ source = (
     + extract_function("tray_set_startup_enabled")
     + "\n"
     + extract_function("tray_set_add_to_path")
+    + "\n"
+    + extract_function("tray_save_settings")
+    + "\n"
+    + extract_function("tray_save_settings_with_warning")
     + "\n"
     + extract_function("tray_save_settings_cli")
     + "\n"

@@ -2603,41 +2603,68 @@ void tray_load_settings(NoSleepTray* tray) {
     RegCloseKey(hKey);
 }
 
-void tray_save_settings(NoSleepTray* tray) {
-    if (!tray) return;
+bool tray_save_settings(NoSleepTray* tray) {
+    if (!tray) return false;
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-    if (result != ERROR_SUCCESS) return;
+    if (result != ERROR_SUCCESS) return false;
+
+    bool success = true;
 
     DWORD val = tray->prevent_display ? 1 : 0;
-    RegSetValueEx(hKey, "prevent_display", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "prevent_display", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = tray->away_mode ? 1 : 0;
-    RegSetValueEx(hKey, "away_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "away_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = tray->verbose ? 1 : 0;
-    RegSetValueEx(hKey, "verbose_logging", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "verbose_logging", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = tray->check_updates_on_startup ? 1 : 0;
-    RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = (DWORD)tray->auto_check_interval;
-    RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = (DWORD)tray->notification_mode;
-    RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = tray->add_to_path ? 1 : 0;
-    RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     val = (DWORD)tray->session_finished_action;
-    RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+    if (RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        success = false;
+    }
 
     RegCloseKey(hKey);
 
     // Save notification groups separately
     notify_groups_save(&tray->notify_groups);
+    return success;
+}
+
+static void tray_save_settings_with_warning(HWND hwnd, NoSleepTray* tray) {
+    if (!tray_save_settings(tray)) {
+        MessageBox(hwnd,
+            "Some settings could not be saved. The changes may be lost when NoSleep exits.",
+            "nosleep - Settings save failed", MB_OK | MB_ICONWARNING);
+    }
 }
 
 bool tray_save_settings_cli(int session_finished_action,
@@ -3162,7 +3189,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     // Save notification groups
                     notify_groups_save(&settings_tray->notify_groups);
 
-                    tray_save_settings(settings_tray);
+                    tray_save_settings_with_warning(hwnd, settings_tray);
                     if (path_change_failed) {
                         MessageBox(hwnd,
                             "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
@@ -4041,19 +4068,19 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray->session_finished_action = SESSION_FINISHED_NONE;
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
-                    tray_save_settings(tray);
+                    tray_save_settings_with_warning(hwnd, tray);
                     break;
                 case IDM_SESSION_FINISHED_SHUTDOWN:
                     tray->session_finished_action = SESSION_FINISHED_SHUTDOWN;
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
-                    tray_save_settings(tray);
+                    tray_save_settings_with_warning(hwnd, tray);
                     break;
                 case IDM_SESSION_FINISHED_SLEEP:
                     tray->session_finished_action = SESSION_FINISHED_SLEEP;
                     tray->sleep_after_timeout = true;
                     tray_update_session_finished_menu(tray);
-                    tray_save_settings(tray);
+                    tray_save_settings_with_warning(hwnd, tray);
                     break;
             }
             break;
