@@ -23,6 +23,9 @@ jobs:
       - name: Test notification group migration
         run: ./test_notify_groups_migration.sh
 
+      - name: Test CLI settings failures and PATH addition
+        run: bash test_cli_settings_failures.sh
+
       - name: Test tray event cleanup on initialization failure
         run: bash test_tray_create_event_cleanup.sh
 
