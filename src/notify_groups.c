@@ -1,9 +1,14 @@
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0600
+#endif
+
 // Notification groups implementation for nosleep
 #include "notify_groups.h"
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 // Human-readable names for each notification event
 const char* NOTIFY_EVENT_NAMES[NOTIFY_EVENT_COUNT] = {
@@ -32,6 +37,30 @@ static const unsigned int DEFAULT_MASK_CRITICAL =
 
 // None: no events
 static const unsigned int DEFAULT_MASK_NONE = 0;
+
+#define NOTIFY_GROUPS_PARENT_REG_KEY "Software\\nosleep\\settings"
+#define NOTIFY_GROUPS_STAGING_REG_KEY NOTIFY_GROUPS_REG_KEY "_Staging"
+#define NOTIFY_GROUPS_BACKUP_REG_KEY NOTIFY_GROUPS_REG_KEY "_Backup"
+
+static bool notify_groups_delete_registry_tree(const char* root_key) {
+    char subkey[512];
+    for (int i = 0; i < MAX_NOTIFY_GROUPS + 5; i++) {
+        snprintf(subkey, sizeof(subkey), "%s\\Group_%d", root_key, i);
+        LONG result = RegDeleteKey(HKEY_CURRENT_USER, subkey);
+        if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
+            return false;
+        }
+    }
+
+    LONG result = RegDeleteKey(HKEY_CURRENT_USER, root_key);
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+static bool notify_groups_rename_registry_key(HKEY parent,
+                                               const wchar_t* old_name,
+                                               const wchar_t* new_name) {
+    return RegRenameKey(parent, old_name, new_name) == ERROR_SUCCESS;
+}
 
 // Initialize default groups
 static void init_default_groups(NotifyGroupManager* mgr) {
@@ -164,28 +193,64 @@ bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, 
 bool notify_groups_save(NotifyGroupManager* mgr) {
     if (!mgr) return false;
     
-    // Create or open the NotificationGroups key (overwrites existing)
-    HKEY hKeyRoot;
-    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
-        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyRoot, NULL);
+    HKEY hParent;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_PARENT_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hParent, NULL);
     if (result != ERROR_SUCCESS) return false;
 
-    bool success = true;
-    
-    // First delete all old group subkeys up to max
-    char subkey_buf[512];
-    for (int i = 0; i < MAX_NOTIFY_GROUPS + 5; i++) {
-        snprintf(subkey_buf, sizeof(subkey_buf), "%s\\Group_%d", NOTIFY_GROUPS_REG_KEY, i);
-        result = RegDeleteKey(HKEY_CURRENT_USER, subkey_buf);
-        if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
-            success = false;
+    // Recover the previous tree if a process ended after moving it aside but
+    // before installing the fully written staging tree.
+    HKEY hExisting;
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
+        0, KEY_READ, &hExisting);
+    bool had_existing = result == ERROR_SUCCESS;
+    if (had_existing) {
+        RegCloseKey(hExisting);
+    } else if (result == ERROR_FILE_NOT_FOUND) {
+        result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_BACKUP_REG_KEY,
+            0, KEY_READ, &hExisting);
+        if (result == ERROR_SUCCESS) {
+            RegCloseKey(hExisting);
+            if (!notify_groups_rename_registry_key(hParent,
+                    L"NotificationGroups_Backup", L"NotificationGroups")) {
+                RegCloseKey(hParent);
+                return false;
+            }
+            had_existing = true;
+        } else if (result != ERROR_FILE_NOT_FOUND) {
+            RegCloseKey(hParent);
+            return false;
         }
+    } else {
+        RegCloseKey(hParent);
+        return false;
     }
-    
-    // Save each group as a subkey
-    for (int i = 0; i < mgr->count; i++) {
-        snprintf(subkey_buf, sizeof(subkey_buf), "%s\\Group_%d", NOTIFY_GROUPS_REG_KEY, i);
-        
+
+    // A backup is stale only when the primary tree exists. If it is the only
+    // remaining copy, the recovery above must succeed before it can be removed.
+    if (had_existing && !notify_groups_delete_registry_tree(NOTIFY_GROUPS_BACKUP_REG_KEY)) {
+        RegCloseKey(hParent);
+        return false;
+    }
+    if (!notify_groups_delete_registry_tree(NOTIFY_GROUPS_STAGING_REG_KEY)) {
+        RegCloseKey(hParent);
+        return false;
+    }
+
+    HKEY hKeyRoot;
+    result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_STAGING_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyRoot, NULL);
+    if (result != ERROR_SUCCESS) {
+        RegCloseKey(hParent);
+        return false;
+    }
+
+    bool success = true;
+    char subkey_buf[512];
+    for (int i = 0; success && i < mgr->count; i++) {
+        snprintf(subkey_buf, sizeof(subkey_buf), "%s\\Group_%d",
+            NOTIFY_GROUPS_STAGING_REG_KEY, i);
+
         HKEY hKeyGroup;
         result = RegCreateKeyEx(HKEY_CURRENT_USER, subkey_buf,
             0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKeyGroup, NULL);
@@ -193,43 +258,71 @@ bool notify_groups_save(NotifyGroupManager* mgr) {
             success = false;
             break;
         }
-        
-        // Save name
+
         result = RegSetValueEx(hKeyGroup, "name", 0, REG_SZ,
             (LPBYTE)mgr->groups[i].name, (DWORD)(strlen(mgr->groups[i].name) + 1));
+        if (result == ERROR_SUCCESS) {
+            DWORD val = (DWORD)mgr->groups[i].event_mask;
+            result = RegSetValueEx(hKeyGroup, "event_mask", 0, REG_DWORD,
+                (LPBYTE)&val, sizeof(val));
+        }
+        if (result == ERROR_SUCCESS) {
+            DWORD val = mgr->groups[i].is_default ? 1 : 0;
+            result = RegSetValueEx(hKeyGroup, "is_default", 0, REG_DWORD,
+                (LPBYTE)&val, sizeof(val));
+        }
         if (result != ERROR_SUCCESS) success = false;
-        
-        // Save event mask
-        DWORD val = (DWORD)mgr->groups[i].event_mask;
-        result = RegSetValueEx(hKeyGroup, "event_mask", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-        if (result != ERROR_SUCCESS) success = false;
-        
-        // Save is_default flag
-        val = mgr->groups[i].is_default ? 1 : 0;
-        result = RegSetValueEx(hKeyGroup, "is_default", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
-        if (result != ERROR_SUCCESS) success = false;
-        
         if (RegCloseKey(hKeyGroup) != ERROR_SUCCESS) success = false;
     }
 
-    // Commit the active index after the groups are written so failed group
-    // writes cannot select an index that was not persisted.
     if (success) {
         DWORD val = (DWORD)mgr->active_index;
-        result = RegSetValueEx(hKeyRoot, "active_index", 0, REG_DWORD, (LPBYTE)&val, sizeof(val));
+        result = RegSetValueEx(hKeyRoot, "active_index", 0, REG_DWORD,
+            (LPBYTE)&val, sizeof(val));
         if (result != ERROR_SUCCESS) success = false;
     }
-
     if (RegCloseKey(hKeyRoot) != ERROR_SUCCESS) success = false;
-    return success;
+    if (!success) {
+        RegCloseKey(hParent);
+        return false;
+    }
+
+    if (had_existing && !notify_groups_rename_registry_key(hParent,
+            L"NotificationGroups", L"NotificationGroups_Backup")) {
+        RegCloseKey(hParent);
+        return false;
+    }
+    if (!notify_groups_rename_registry_key(hParent,
+            L"NotificationGroups_Staging", L"NotificationGroups")) {
+        if (had_existing) {
+            // If recovery also fails, load() can still use the retained backup.
+            notify_groups_rename_registry_key(hParent,
+                L"NotificationGroups_Backup", L"NotificationGroups");
+        }
+        RegCloseKey(hParent);
+        return false;
+    }
+
+    // The replacement is committed. Failure to remove the old backup does not
+    // make the new saved state uncertain, and a later save can clean it up.
+    if (had_existing) {
+        notify_groups_delete_registry_tree(NOTIFY_GROUPS_BACKUP_REG_KEY);
+    }
+    RegCloseKey(hParent);
+    return true;
 }
 
 void notify_groups_load(NotifyGroupManager* mgr) {
     if (!mgr) return;
     
+    const char* registry_root = NOTIFY_GROUPS_REG_KEY;
     HKEY hKeyRoot;
-    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, registry_root,
         0, KEY_READ, &hKeyRoot);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        registry_root = NOTIFY_GROUPS_BACKUP_REG_KEY;
+        result = RegOpenKeyEx(HKEY_CURRENT_USER, registry_root, 0, KEY_READ, &hKeyRoot);
+    }
     if (result != ERROR_SUCCESS) return;
     
     // Read active index
@@ -246,7 +339,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
     mgr->count = 0;
     for (int i = 0; i < MAX_NOTIFY_GROUPS; i++) {
         char subkey[256];
-        snprintf(subkey, sizeof(subkey), "%s\\Group_%d", NOTIFY_GROUPS_REG_KEY, i);
+        snprintf(subkey, sizeof(subkey), "%s\\Group_%d", registry_root, i);
         
         HKEY hKeyGroup;
         result = RegOpenKeyEx(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &hKeyGroup);

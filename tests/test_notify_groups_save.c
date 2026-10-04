@@ -3,13 +3,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <wchar.h>
 
 #include "notify_groups.h"
 
 enum {
-    REGISTRY_ROOT_HANDLE = 1,
-    REGISTRY_GROUP_HANDLE_BASE = 100
+    REGISTRY_PARENT_HANDLE = 1,
+    REGISTRY_ROOT_HANDLE = 2,
+    REGISTRY_STAGING_HANDLE = 3,
+    REGISTRY_BACKUP_HANDLE = 4,
+    REGISTRY_GROUP_HANDLE_BASE = 100,
+    REGISTRY_GROUP_HANDLE_STRIDE = 100,
+    REGISTRY_TREE_PRIMARY = 0,
+    REGISTRY_TREE_STAGING = 1,
+    REGISTRY_TREE_BACKUP = 2,
+    REGISTRY_TREE_COUNT = 3
 };
+
+#define NOTIFY_GROUPS_PARENT_REG_KEY "Software\\nosleep\\settings"
+#define NOTIFY_GROUPS_STAGING_REG_KEY NOTIFY_GROUPS_REG_KEY "_Staging"
+#define NOTIFY_GROUPS_BACKUP_REG_KEY NOTIFY_GROUPS_REG_KEY "_Backup"
 
 #ifndef ERROR_ACCESS_DENIED
 #define ERROR_ACCESS_DENIED 5
@@ -29,21 +42,27 @@ typedef struct {
     DWORD is_default;
 } StoredGroup;
 
-static bool stored_root_exists;
-static bool has_active_index;
-static DWORD stored_active_index;
-static StoredGroup stored_groups[MAX_NOTIFY_GROUPS + 5];
+typedef struct {
+    bool exists;
+    bool has_active_index_value;
+    DWORD active_index;
+    StoredGroup groups[MAX_NOTIFY_GROUPS + 5];
+} StoredRegistryTree;
+
+static StoredRegistryTree stored_trees[REGISTRY_TREE_COUNT];
 static bool fail_root_create;
 static int fail_group_create_index;
 static int fail_group_delete_index;
 static int fail_write_group_index;
 static char fail_write_name[32];
 
+#define stored_root_exists (stored_trees[REGISTRY_TREE_PRIMARY].exists)
+#define has_active_index (stored_trees[REGISTRY_TREE_PRIMARY].has_active_index_value)
+#define stored_active_index (stored_trees[REGISTRY_TREE_PRIMARY].active_index)
+#define stored_groups (stored_trees[REGISTRY_TREE_PRIMARY].groups)
+
 static void reset_registry(void) {
-    stored_root_exists = false;
-    has_active_index = false;
-    stored_active_index = 0;
-    memset(stored_groups, 0, sizeof(stored_groups));
+    memset(stored_trees, 0, sizeof(stored_trees));
     fail_root_create = false;
     fail_group_create_index = -1;
     fail_group_delete_index = -1;
@@ -51,30 +70,91 @@ static void reset_registry(void) {
     fail_write_name[0] = '\0';
 }
 
-static bool get_group_index(const char *path, int *index) {
-    char prefix[256];
-    snprintf(prefix, sizeof(prefix), "%s\\Group_", NOTIFY_GROUPS_REG_KEY);
-    size_t prefix_length = strlen(prefix);
-    if (strncmp(path, prefix, prefix_length) != 0) return false;
+static const char *registry_tree_path(int tree) {
+    switch (tree) {
+        case REGISTRY_TREE_PRIMARY: return NOTIFY_GROUPS_REG_KEY;
+        case REGISTRY_TREE_STAGING: return NOTIFY_GROUPS_STAGING_REG_KEY;
+        case REGISTRY_TREE_BACKUP: return NOTIFY_GROUPS_BACKUP_REG_KEY;
+        default: return NULL;
+    }
+}
 
-    char *end = NULL;
-    long parsed = strtol(path + prefix_length, &end, 10);
-    if (end == path + prefix_length || *end != '\0' || parsed < 0 ||
-        parsed >= (long)(sizeof(stored_groups) / sizeof(stored_groups[0]))) {
+static int registry_tree_handle(int tree) {
+    switch (tree) {
+        case REGISTRY_TREE_PRIMARY: return REGISTRY_ROOT_HANDLE;
+        case REGISTRY_TREE_STAGING: return REGISTRY_STAGING_HANDLE;
+        case REGISTRY_TREE_BACKUP: return REGISTRY_BACKUP_HANDLE;
+        default: return -1;
+    }
+}
+
+static int registry_tree_from_handle(HKEY key) {
+    intptr_t handle = (intptr_t)key;
+    for (int tree = 0; tree < REGISTRY_TREE_COUNT; tree++) {
+        if (handle == registry_tree_handle(tree)) return tree;
+    }
+    return -1;
+}
+
+static bool get_root_tree(const char *path, int *tree) {
+    for (int candidate = 0; candidate < REGISTRY_TREE_COUNT; candidate++) {
+        if (strcmp(path, registry_tree_path(candidate)) == 0) {
+            *tree = candidate;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool get_group_location(const char *path, int *tree, int *index) {
+    for (int candidate = 0; candidate < REGISTRY_TREE_COUNT; candidate++) {
+        char prefix[256];
+        snprintf(prefix, sizeof(prefix), "%s\\Group_", registry_tree_path(candidate));
+        size_t prefix_length = strlen(prefix);
+        if (strncmp(path, prefix, prefix_length) != 0) continue;
+
+        char *end = NULL;
+        long parsed = strtol(path + prefix_length, &end, 10);
+        if (end == path + prefix_length || *end != '\0' || parsed < 0 ||
+            parsed >= MAX_NOTIFY_GROUPS + 5) {
+            return false;
+        }
+        *tree = candidate;
+        *index = (int)parsed;
+        return true;
+    }
+    return false;
+}
+
+static int group_handle(int tree, int index) {
+    return REGISTRY_GROUP_HANDLE_BASE + tree * REGISTRY_GROUP_HANDLE_STRIDE + index;
+}
+
+static bool group_location_from_handle(HKEY key, int *tree, int *index) {
+    intptr_t offset = (intptr_t)key - REGISTRY_GROUP_HANDLE_BASE;
+    if (offset < 0) return false;
+    int candidate_tree = (int)(offset / REGISTRY_GROUP_HANDLE_STRIDE);
+    int candidate_index = (int)(offset % REGISTRY_GROUP_HANDLE_STRIDE);
+    if (candidate_tree >= REGISTRY_TREE_COUNT || candidate_index >= MAX_NOTIFY_GROUPS + 5) {
         return false;
     }
-
-    *index = (int)parsed;
+    *tree = candidate_tree;
+    *index = candidate_index;
     return true;
 }
 
-static int group_index_from_handle(HKEY key) {
-    intptr_t handle = (intptr_t)key;
-    int index = (int)(handle - REGISTRY_GROUP_HANDLE_BASE);
-    if (index < 0 || index >= (int)(sizeof(stored_groups) / sizeof(stored_groups[0]))) {
-        return -1;
+static int registry_tree_from_name(const wchar_t *name) {
+    if (wcscmp(name, L"NotificationGroups") == 0) return REGISTRY_TREE_PRIMARY;
+    if (wcscmp(name, L"NotificationGroups_Staging") == 0) return REGISTRY_TREE_STAGING;
+    if (wcscmp(name, L"NotificationGroups_Backup") == 0) return REGISTRY_TREE_BACKUP;
+    return -1;
+}
+
+static bool registry_tree_has_groups(int tree) {
+    for (int i = 0; i < MAX_NOTIFY_GROUPS + 5; i++) {
+        if (stored_trees[tree].groups[i].exists) return true;
     }
-    return index;
+    return false;
 }
 
 LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
@@ -88,18 +168,24 @@ LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
     (void)security;
     (void)disposition;
 
-    if (strcmp(path, NOTIFY_GROUPS_REG_KEY) == 0) {
-        if (fail_root_create) return ERROR_ACCESS_DENIED;
-        stored_root_exists = true;
-        *key = (HKEY)(intptr_t)REGISTRY_ROOT_HANDLE;
+    if (strcmp(path, NOTIFY_GROUPS_PARENT_REG_KEY) == 0) {
+        *key = (HKEY)(intptr_t)REGISTRY_PARENT_HANDLE;
+        return ERROR_SUCCESS;
+    }
+
+    int tree;
+    if (get_root_tree(path, &tree)) {
+        if (tree == REGISTRY_TREE_STAGING && fail_root_create) return ERROR_ACCESS_DENIED;
+        stored_trees[tree].exists = true;
+        *key = (HKEY)(intptr_t)registry_tree_handle(tree);
         return ERROR_SUCCESS;
     }
 
     int index;
-    if (!get_group_index(path, &index)) return ERROR_FILE_NOT_FOUND;
+    if (!get_group_location(path, &tree, &index)) return ERROR_FILE_NOT_FOUND;
     if (index == fail_group_create_index) return ERROR_ACCESS_DENIED;
-    stored_groups[index].exists = true;
-    *key = (HKEY)(intptr_t)(REGISTRY_GROUP_HANDLE_BASE + index);
+    stored_trees[tree].groups[index].exists = true;
+    *key = (HKEY)(intptr_t)group_handle(tree, index);
     return ERROR_SUCCESS;
 }
 
@@ -109,41 +195,45 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access,
     (void)reserved;
     (void)access;
 
-    if (strcmp(path, NOTIFY_GROUPS_REG_KEY) == 0) {
-        if (!stored_root_exists) return ERROR_FILE_NOT_FOUND;
-        *key = (HKEY)(intptr_t)REGISTRY_ROOT_HANDLE;
+    int tree;
+    if (get_root_tree(path, &tree)) {
+        if (!stored_trees[tree].exists) return ERROR_FILE_NOT_FOUND;
+        *key = (HKEY)(intptr_t)registry_tree_handle(tree);
         return ERROR_SUCCESS;
     }
 
     int index;
-    if (!get_group_index(path, &index) || !stored_groups[index].exists) {
+    if (!get_group_location(path, &tree, &index) ||
+        !stored_trees[tree].groups[index].exists) {
         return ERROR_FILE_NOT_FOUND;
     }
-    *key = (HKEY)(intptr_t)(REGISTRY_GROUP_HANDLE_BASE + index);
+    *key = (HKEY)(intptr_t)group_handle(tree, index);
     return ERROR_SUCCESS;
 }
 
 LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
                    const BYTE *value, DWORD size) {
     (void)reserved;
-
-    int group_index = (intptr_t)key == REGISTRY_ROOT_HANDLE
-        ? -1 : group_index_from_handle(key);
+    int tree = registry_tree_from_handle(key);
+    int group_index = -1;
+    if (tree < 0 && !group_location_from_handle(key, &tree, &group_index)) {
+        return ERROR_FILE_NOT_FOUND;
+    }
     if (group_index == fail_write_group_index && strcmp(name, fail_write_name) == 0) {
         return ERROR_ACCESS_DENIED;
     }
 
     if (group_index == -1 && strcmp(name, "active_index") == 0 &&
         type == REG_DWORD && size == sizeof(DWORD)) {
-        memcpy(&stored_active_index, value, sizeof(DWORD));
-        has_active_index = true;
+        memcpy(&stored_trees[tree].active_index, value, sizeof(DWORD));
+        stored_trees[tree].has_active_index_value = true;
         return ERROR_SUCCESS;
     }
-    if (group_index < 0 || !stored_groups[group_index].exists) {
+    if (group_index < 0 || !stored_trees[tree].groups[group_index].exists) {
         return ERROR_FILE_NOT_FOUND;
     }
 
-    StoredGroup *group = &stored_groups[group_index];
+    StoredGroup *group = &stored_trees[tree].groups[group_index];
     if (strcmp(name, "name") == 0 && type == REG_SZ && size <= sizeof(group->name)) {
         memcpy(group->name, value, size);
         group->has_name = true;
@@ -175,16 +265,21 @@ static LONG copy_registry_value(const void *source, DWORD source_size,
 LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
                      BYTE *value, DWORD *size) {
     (void)reserved;
-
-    if ((intptr_t)key == REGISTRY_ROOT_HANDLE && strcmp(name, "active_index") == 0) {
-        if (!has_active_index) return ERROR_FILE_NOT_FOUND;
-        return copy_registry_value(&stored_active_index, sizeof(stored_active_index),
-                                   REG_DWORD, type, value, size);
+    int tree = registry_tree_from_handle(key);
+    int group_index = -1;
+    if (tree >= 0 && strcmp(name, "active_index") == 0) {
+        if (!stored_trees[tree].has_active_index_value) return ERROR_FILE_NOT_FOUND;
+        return copy_registry_value(&stored_trees[tree].active_index,
+            sizeof(stored_trees[tree].active_index), REG_DWORD, type, value, size);
+    }
+    if (tree < 0 && !group_location_from_handle(key, &tree, &group_index)) {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    if (group_index < 0 || !stored_trees[tree].groups[group_index].exists) {
+        return ERROR_FILE_NOT_FOUND;
     }
 
-    int index = group_index_from_handle(key);
-    if (index < 0 || !stored_groups[index].exists) return ERROR_FILE_NOT_FOUND;
-    StoredGroup *group = &stored_groups[index];
+    StoredGroup *group = &stored_trees[tree].groups[group_index];
     if (strcmp(name, "name") == 0 && group->has_name) {
         return copy_registry_value(group->name, (DWORD)strlen(group->name) + 1,
                                    REG_SZ, type, value, size);
@@ -202,16 +297,40 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
 
 LONG RegDeleteKey(HKEY root, const char *path) {
     (void)root;
+    int tree;
     int index;
-    if (!get_group_index(path, &index)) return ERROR_FILE_NOT_FOUND;
-    if (index == fail_group_delete_index) return ERROR_ACCESS_DENIED;
-    if (!stored_groups[index].exists) return ERROR_FILE_NOT_FOUND;
-    memset(&stored_groups[index], 0, sizeof(stored_groups[index]));
+    if (get_group_location(path, &tree, &index)) {
+        if (!stored_trees[tree].groups[index].exists) return ERROR_FILE_NOT_FOUND;
+        if (tree == REGISTRY_TREE_STAGING && index == fail_group_delete_index) {
+            return ERROR_ACCESS_DENIED;
+        }
+        memset(&stored_trees[tree].groups[index], 0,
+               sizeof(stored_trees[tree].groups[index]));
+        return ERROR_SUCCESS;
+    }
+    if (!get_root_tree(path, &tree) || !stored_trees[tree].exists) {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    if (registry_tree_has_groups(tree)) return ERROR_ACCESS_DENIED;
+    memset(&stored_trees[tree], 0, sizeof(stored_trees[tree]));
     return ERROR_SUCCESS;
 }
 
 LONG RegCloseKey(HKEY key) {
     (void)key;
+    return ERROR_SUCCESS;
+}
+
+LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name) {
+    if ((intptr_t)key != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
+    int old_tree = registry_tree_from_name(subkey_name);
+    int new_tree = registry_tree_from_name(new_name);
+    if (old_tree < 0 || new_tree < 0 || !stored_trees[old_tree].exists) {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    if (stored_trees[new_tree].exists) return ERROR_ACCESS_DENIED;
+    stored_trees[new_tree] = stored_trees[old_tree];
+    memset(&stored_trees[old_tree], 0, sizeof(stored_trees[old_tree]));
     return ERROR_SUCCESS;
 }
 
@@ -224,6 +343,18 @@ static void make_manager(NotifyGroupManager *manager) {
     manager->groups[0].is_default = true;
     strcpy(manager->groups[1].name, "Work events");
     manager->groups[1].event_mask = 0x155u;
+}
+
+static void seed_stored_group(int index, const char *name, DWORD event_mask,
+                              DWORD is_default) {
+    StoredGroup *group = &stored_groups[index];
+    group->exists = true;
+    group->has_name = true;
+    strcpy(group->name, name);
+    group->has_event_mask = true;
+    group->event_mask = event_mask;
+    group->has_is_default = true;
+    group->is_default = is_default;
 }
 
 static int test_group_names_reject_whitespace_only(void) {
@@ -316,19 +447,76 @@ static int test_value_write_failure(const char *name, int group_index) {
     return 0;
 }
 
-static int test_old_group_delete_failure(void) {
+static int test_staging_cleanup_failure(void) {
     reset_registry();
     stored_root_exists = true;
-    stored_groups[0].exists = true;
+    has_active_index = true;
+    stored_active_index = 1;
+    seed_stored_group(0, "Persisted all", 0xFFFFFFFFu, 1);
+    stored_trees[REGISTRY_TREE_STAGING].exists = true;
+    stored_trees[REGISTRY_TREE_STAGING].groups[0].exists = true;
     fail_group_delete_index = 0;
     NotifyGroupManager manager;
     make_manager(&manager);
 
     if (notify_groups_save(&manager)) {
-        fprintf(stderr, "FAIL: old group deletion failure was reported as a successful save\n");
+        fprintf(stderr, "FAIL: staging cleanup failure was reported as a successful save\n");
+        return 1;
+    }
+
+    NotifyGroupManager loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    notify_groups_load(&loaded);
+    if (loaded.count != 1 || strcmp(loaded.groups[0].name, "Persisted all") != 0) {
+        fprintf(stderr, "FAIL: staging cleanup failure changed the active registry tree\n");
         return 1;
     }
     return 0;
+}
+
+static int test_failed_save_preserves_previously_persisted_groups(void) {
+    int failures = 0;
+    for (int fail_create = 0; fail_create < 2; fail_create++) {
+        reset_registry();
+        stored_root_exists = true;
+        has_active_index = true;
+        stored_active_index = 1;
+        seed_stored_group(0, "Persisted all", 0xFFFFFFFFu, 1);
+        seed_stored_group(1, "Persisted work", 0x155u, 0);
+
+        NotifyGroupManager updated;
+        make_manager(&updated);
+        strcpy(updated.groups[0].name, "Replacement all");
+        strcpy(updated.groups[1].name, "Replacement work");
+        updated.groups[1].event_mask = 0x2u;
+
+        if (fail_create) {
+            fail_group_create_index = 1;
+        } else {
+            fail_write_group_index = 1;
+            strcpy(fail_write_name, "name");
+        }
+        if (notify_groups_save(&updated)) {
+            fprintf(stderr, "FAIL: injected mid-save %s failure was reported as success\n",
+                fail_create ? "key creation" : "value write");
+            failures++;
+            continue;
+        }
+
+        NotifyGroupManager loaded;
+        memset(&loaded, 0, sizeof(loaded));
+        notify_groups_load(&loaded);
+        if (loaded.count != 2 || loaded.active_index != 1 ||
+            strcmp(loaded.groups[0].name, "Persisted all") != 0 ||
+            loaded.groups[0].event_mask != 0xFFFFFFFFu ||
+            strcmp(loaded.groups[1].name, "Persisted work") != 0 ||
+            loaded.groups[1].event_mask != 0x155u) {
+            fprintf(stderr, "FAIL: failed %s changed previously persisted notification groups\n",
+                fail_create ? "key creation" : "value write");
+            failures++;
+        }
+    }
+    return failures;
 }
 
 static int test_successful_save_round_trips_groups(void) {
@@ -366,7 +554,8 @@ int main(void) {
     failures += test_value_write_failure("name", 0);
     failures += test_value_write_failure("event_mask", 0);
     failures += test_value_write_failure("is_default", 0);
-    failures += test_old_group_delete_failure();
+    failures += test_staging_cleanup_failure();
+    failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
 
     if (failures != 0) return 1;

@@ -108,6 +108,7 @@ assert "tray_show_notification_event" not in tray and "tray_show_notification_ev
 windows_stub = r"""
 #ifndef TEST_NOTIFICATION_WINDOWS_H
 #define TEST_NOTIFICATION_WINDOWS_H
+#include <stddef.h>
 typedef unsigned int DWORD;
 typedef long LONG;
 typedef unsigned char BYTE;
@@ -141,6 +142,7 @@ LONG RegSetValueEx(HKEY, const char *, DWORD, DWORD, const BYTE *, DWORD);
 LONG RegQueryValueEx(HKEY, const char *, DWORD *, DWORD *, BYTE *, DWORD *);
 LONG RegDeleteKey(HKEY, const char *);
 LONG RegCloseKey(HKEY);
+LONG RegRenameKey(HKEY, const wchar_t *, const wchar_t *);
 #endif
 """
 
@@ -198,6 +200,10 @@ LONG RegDeleteKey(HKEY root, const char *path) {
 }
 LONG RegCloseKey(HKEY key) {
     (void)key;
+    return ERROR_SUCCESS;
+}
+LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name) {
+    (void)key; (void)subkey_name; (void)new_name;
     return ERROR_SUCCESS;
 }
 BOOL Shell_NotifyIcon(DWORD operation, NOTIFYICONDATA *data) {

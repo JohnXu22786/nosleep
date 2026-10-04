@@ -1,14 +1,21 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include <wchar.h>
 
 #include "notify_groups.h"
 
 enum {
     REGISTRY_ROOT_HANDLE = 1,
-    REGISTRY_GROUP_HANDLE_BASE = 2,
+    REGISTRY_STAGING_HANDLE = 2,
+    REGISTRY_PARENT_HANDLE = 3,
+    REGISTRY_GROUP_HANDLE_BASE = 10,
     REGISTRY_GROUP_LIMIT = 4
 };
+
+#define NOTIFY_GROUPS_PARENT_REG_KEY "Software\\nosleep\\settings"
+#define NOTIFY_GROUPS_STAGING_REG_KEY NOTIFY_GROUPS_REG_KEY "_Staging"
+#define NOTIFY_GROUPS_BACKUP_REG_KEY NOTIFY_GROUPS_REG_KEY "_Backup"
 
 typedef struct {
     const char *name;
@@ -17,16 +24,20 @@ typedef struct {
 } StoredGroup;
 
 static bool stored_groups_available;
+static bool staging_groups_available;
 static int stored_group_count;
 static DWORD stored_active_index;
+static DWORD staged_active_index;
 static StoredGroup stored_groups[REGISTRY_GROUP_LIMIT];
 static int saved_active_index;
 static int active_index_writes;
 
 static void reset_registry(void) {
     stored_groups_available = false;
+    staging_groups_available = false;
     stored_group_count = 0;
     stored_active_index = 0;
+    staged_active_index = 0;
     memset(stored_groups, 0, sizeof(stored_groups));
     saved_active_index = -1;
     active_index_writes = 0;
@@ -53,14 +64,18 @@ LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
     (void)security;
     (void)disposition;
 
-    if (strcmp(path, NOTIFY_GROUPS_REG_KEY) == 0) {
-        stored_groups_available = true;
-        *key = (HKEY)(uintptr_t)REGISTRY_ROOT_HANDLE;
+    if (strcmp(path, NOTIFY_GROUPS_PARENT_REG_KEY) == 0) {
+        *key = (HKEY)(uintptr_t)REGISTRY_PARENT_HANDLE;
+        return ERROR_SUCCESS;
+    }
+    if (strcmp(path, NOTIFY_GROUPS_STAGING_REG_KEY) == 0) {
+        staging_groups_available = true;
+        *key = (HKEY)(uintptr_t)REGISTRY_STAGING_HANDLE;
         return ERROR_SUCCESS;
     }
 
     int group_index;
-    if (sscanf(path, NOTIFY_GROUPS_REG_KEY "\\Group_%d", &group_index) == 1) {
+    if (sscanf(path, NOTIFY_GROUPS_STAGING_REG_KEY "\\Group_%d", &group_index) == 1) {
         *key = (HKEY)(uintptr_t)(REGISTRY_GROUP_HANDLE_BASE + group_index);
         return ERROR_SUCCESS;
     }
@@ -78,6 +93,7 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access,
         *key = (HKEY)(uintptr_t)REGISTRY_ROOT_HANDLE;
         return ERROR_SUCCESS;
     }
+    if (strcmp(path, NOTIFY_GROUPS_BACKUP_REG_KEY) == 0) return ERROR_FILE_NOT_FOUND;
 
     int group_index;
     if (sscanf(path, NOTIFY_GROUPS_REG_KEY "\\Group_%d", &group_index) == 1 &&
@@ -93,9 +109,10 @@ LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
     (void)reserved;
     (void)type;
 
-    if ((uintptr_t)key == REGISTRY_ROOT_HANDLE &&
+    if ((uintptr_t)key == REGISTRY_STAGING_HANDLE &&
         strcmp(name, "active_index") == 0 && size == sizeof(DWORD)) {
-        memcpy(&saved_active_index, value, sizeof(DWORD));
+        memcpy(&staged_active_index, value, sizeof(DWORD));
+        saved_active_index = (int)staged_active_index;
         ++active_index_writes;
     }
     return ERROR_SUCCESS;
@@ -146,6 +163,18 @@ LONG RegDeleteKey(HKEY root, const char *path) {
 
 LONG RegCloseKey(HKEY key) {
     (void)key;
+    return ERROR_SUCCESS;
+}
+
+LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name) {
+    if ((uintptr_t)key != REGISTRY_PARENT_HANDLE ||
+        wcscmp(subkey_name, L"NotificationGroups_Staging") != 0 ||
+        wcscmp(new_name, L"NotificationGroups") != 0 || !staging_groups_available) {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    stored_groups_available = true;
+    stored_active_index = staged_active_index;
+    staging_groups_available = false;
     return ERROR_SUCCESS;
 }
 
