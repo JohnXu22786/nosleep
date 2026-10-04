@@ -236,7 +236,9 @@ void notify_groups_load(NotifyGroupManager* mgr) {
     DWORD val = 0;
     DWORD size = sizeof(DWORD);
     RegQueryValueEx(hKeyRoot, "active_index", NULL, NULL, (LPBYTE)&val, &size);
-    mgr->active_index = (int)val;
+    DWORD persisted_active_index = val;
+    mgr->active_index = 0;
+    bool active_index_mapped = false;
     
     RegCloseKey(hKeyRoot);
     
@@ -258,6 +260,10 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         if (result != ERROR_SUCCESS || name_type != REG_SZ || name[0] == '\0') {
             RegCloseKey(hKeyGroup);
             continue; // Corrupt entry, skip and continue enumeration
+        }
+        if ((DWORD)i == persisted_active_index) {
+            mgr->active_index = mgr->count;
+            active_index_mapped = true;
         }
         strncpy(mgr->groups[mgr->count].name, name, MAX_GROUP_NAME - 1);
         mgr->groups[mgr->count].name[MAX_GROUP_NAME - 1] = '\0';
@@ -283,8 +289,8 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         mgr->count++;
     }
     
-    // Validate active_index
-    if (mgr->active_index < 0 || mgr->active_index >= mgr->count) {
+    // A corrupt slot may have shifted the active group to a compacted index.
+    if (!active_index_mapped || mgr->active_index < 0 || mgr->active_index >= mgr->count) {
         mgr->active_index = 0;
     }
 }
