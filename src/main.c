@@ -420,7 +420,7 @@ static int run_configure_mode(const CLIOptions* opts) {
         printf("nosleep: Settings saved to registry.\n");
         return 0;
     } else {
-        fprintf(stderr, "nosleep: Failed to save settings to registry.\n");
+        fprintf(stderr, "nosleep: Failed to save or apply requested settings.\n");
         return 1;
     }
 }
@@ -480,7 +480,11 @@ static int run_tray_mode(const CLIOptions* opts) {
         tray->check_updates_on_startup = (opts->check_updates_startup != 0);
     }
     if (opts->add_to_path >= 0) {
-        tray_set_add_to_path(tray, opts->add_to_path != 0);
+        if (!tray_set_add_to_path(tray, opts->add_to_path != 0)) {
+            MessageBox(tray->hwnd,
+                "Could not update the PATH. Retry by changing this setting in the tray settings.",
+                "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
+        }
     }
     
     // If duration is specified, auto-start (0 = indefinite, >0 = minutes)

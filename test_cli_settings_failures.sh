@@ -82,6 +82,10 @@ typedef void *HKEY;
 typedef void *HWND;
 typedef intptr_t LPARAM;
 
+typedef struct {
+    bool add_to_path;
+} NoSleepTray;
+
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_ACCESS_DENIED 5
@@ -115,6 +119,7 @@ static const char *failed_value_name;
 static bool add_path_result;
 static const BYTE *path_data;
 static DWORD path_data_size;
+static DWORD stored_add_to_path;
 static int registry_write_count;
 static int registry_close_count;
 static int add_path_count;
@@ -132,6 +137,7 @@ static void reset_mocks(void) {
     add_path_result = true;
     path_data = NULL;
     path_data_size = 0;
+    stored_add_to_path = 1;
     registry_write_count = 0;
     registry_close_count = 0;
     add_path_count = 0;
@@ -160,10 +166,14 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access, HKE
 
 LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
                    const BYTE *value, DWORD size) {
-    (void)key; (void)reserved; (void)type; (void)value; (void)size;
+    (void)reserved; (void)type;
     ++registry_write_count;
     if (failed_value_name && strcmp(name, failed_value_name) == 0) {
         return registry_write_result;
+    }
+    if (key == (HKEY)2 && strcmp(name, "add_to_path") == 0 &&
+        value && size == sizeof(stored_add_to_path)) {
+        memcpy(&stored_add_to_path, value, sizeof(stored_add_to_path));
     }
     return ERROR_SUCCESS;
 }
@@ -311,6 +321,30 @@ int main(void) {
     expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
            "failure to remove the application from PATH must be reported");
     expect(environment_open_count == 1, "the requested PATH remove helper must run");
+    expect(stored_add_to_path == 0,
+           "the failed removal must retain the user's disabled preference for retry");
+
+    NoSleepTray saved_disabled_preference = { .add_to_path = stored_add_to_path != 0 };
+    expect(!apply_path_preference(saved_disabled_preference.add_to_path),
+           "startup must retry removal when the persisted preference is disabled");
+    expect(environment_open_count == 2,
+           "a failed CLI removal must not suppress the startup removal retry");
+    environment_open_result = ERROR_SUCCESS;
+    expect(apply_path_preference(saved_disabled_preference.add_to_path),
+           "a later startup must retry the disabled PATH preference again");
+    expect(environment_open_count == 3,
+           "each startup must attempt removal while the saved preference is disabled");
+
+    reset_mocks();
+    NoSleepTray tray = { .add_to_path = true };
+    environment_open_result = ERROR_ACCESS_DENIED;
+    expect(!tray_set_add_to_path(&tray, false),
+           "the tray setter must report a failed PATH removal");
+    expect(!tray.add_to_path,
+           "the in-memory preference must retain the requested disabled state for retry");
+    environment_open_result = ERROR_SUCCESS;
+    expect(apply_path_preference(tray.add_to_path),
+           "the in-memory disabled preference must retry PATH removal after failure");
 
     reset_mocks();
     static const char existing_path[] = "C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
@@ -363,7 +397,11 @@ source = (
     + "\n"
     + extract_function("remove_app_from_path")
     + "\n"
+    + extract_function("apply_path_preference")
+    + "\n"
     + extract_function("set_startup_registry")
+    + "\n"
+    + extract_function("tray_set_add_to_path")
     + "\n"
     + extract_function("tray_save_settings_cli")
     + "\n"
