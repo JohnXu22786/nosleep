@@ -2518,6 +2518,11 @@ static bool set_startup_registry(bool enable) {
     LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
         "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         0, KEY_WRITE, &hKey);
+    if (enable && result == ERROR_FILE_NOT_FOUND) {
+        result = RegCreateKeyEx(HKEY_CURRENT_USER,
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+            0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    }
     if (result != ERROR_SUCCESS) {
         return !enable && result == ERROR_FILE_NOT_FOUND;
     }
@@ -2774,8 +2779,9 @@ static bool should_check_for_updates(void) {
 
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable) {
     if (!tray) return;
-    tray->start_on_startup = enable;
-    set_startup_registry(enable);
+    if (set_startup_registry(enable)) {
+        tray->start_on_startup = enable;
+    }
 }
 
 bool tray_set_add_to_path(NoSleepTray* tray, bool enable) {

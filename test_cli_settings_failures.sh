@@ -84,6 +84,7 @@ typedef intptr_t LPARAM;
 
 typedef struct {
     bool add_to_path;
+    bool start_on_startup;
 } NoSleepTray;
 
 #define ERROR_SUCCESS 0
@@ -109,6 +110,7 @@ typedef struct {
 #define NOTIFY_NONE 2
 
 static LONG settings_create_result;
+static LONG startup_create_result;
 static LONG startup_open_result;
 static LONG environment_open_result;
 static LONG path_query_result;
@@ -124,12 +126,14 @@ static DWORD written_path_type;
 static DWORD stored_add_to_path;
 static int registry_write_count;
 static int registry_close_count;
+static int startup_create_count;
 static int add_path_count;
 static int environment_open_count;
 static int environment_create_count;
 
 static void reset_mocks(void) {
     settings_create_result = ERROR_SUCCESS;
+    startup_create_result = ERROR_SUCCESS;
     startup_open_result = ERROR_SUCCESS;
     environment_open_result = ERROR_SUCCESS;
     path_query_result = ERROR_FILE_NOT_FOUND;
@@ -144,6 +148,7 @@ static void reset_mocks(void) {
     stored_add_to_path = 1;
     registry_write_count = 0;
     registry_close_count = 0;
+    startup_create_count = 0;
     add_path_result = true;
     add_path_count = 0;
     environment_open_count = 0;
@@ -155,6 +160,11 @@ LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
                     void *security, HKEY *key, DWORD *disposition) {
     (void)root; (void)reserved; (void)class_name; (void)options;
     (void)access; (void)security; (void)disposition;
+    if (strcmp(path, "Software\\Microsoft\\Windows\\CurrentVersion\\Run") == 0) {
+        ++startup_create_count;
+        if (startup_create_result == ERROR_SUCCESS) *key = (HKEY)5;
+        return startup_create_result;
+    }
     if (strcmp(path, "Environment") == 0) ++environment_create_count;
     if (settings_create_result == ERROR_SUCCESS) *key = (HKEY)2;
     return settings_create_result;
@@ -344,6 +354,25 @@ int main(void) {
            "removing startup when its value is absent must succeed");
 
     reset_mocks();
+    startup_open_result = ERROR_FILE_NOT_FOUND;
+    NoSleepTray startup_tray = { .start_on_startup = false };
+    tray_set_startup_enabled(&startup_tray, true);
+    expect(startup_create_count == 1,
+           "enabling startup must create the missing Run registry key");
+    expect(registry_write_count == 1,
+           "enabling startup after creating the Run key must write its registry value");
+    expect(startup_tray.start_on_startup,
+           "successful startup registration must update the in-memory state");
+
+    reset_mocks();
+    failed_value_name = "nosleep";
+    registry_write_result = ERROR_ACCESS_DENIED;
+    startup_tray.start_on_startup = false;
+    tray_set_startup_enabled(&startup_tray, true);
+    expect(!startup_tray.start_on_startup,
+           "a failed startup registry write must not leave startup enabled in memory");
+
+    reset_mocks();
     add_path_result = false;
     expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 1),
            "failure to add the application to PATH must be reported");
@@ -439,6 +468,8 @@ source = (
     + extract_function("apply_path_preference")
     + "\n"
     + extract_function("set_startup_registry")
+    + "\n"
+    + extract_function("tray_set_startup_enabled")
     + "\n"
     + extract_function("tray_set_add_to_path")
     + "\n"
