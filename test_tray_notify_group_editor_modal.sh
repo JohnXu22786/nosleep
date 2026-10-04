@@ -85,6 +85,29 @@ def extract_case(function, case, next_case):
 edit_dialog = extract_function("show_notify_group_edit_dialog")
 edit_proc = extract_function("notify_group_edit_proc")
 destroy_case = extract_case(edit_proc, "WM_DESTROY", "WM_CLOSE")
+edit_save_case = extract_case(
+    edit_proc, "IDC_NOTIFY_GROUP_EDIT_OK", "IDC_NOTIFY_GROUP_EDIT_CANCEL"
+)
+settings_proc = extract_function("settings_dialog_proc")
+set_active_case = extract_case(
+    settings_proc, "IDC_NOTIFY_SET_ACTIVE", "IDC_NOTIFY_DEL_GROUP"
+)
+
+assert "NotifyGroupManager updated = *edit_mgr;" in edit_save_case, (
+    "group edits must be saved from a candidate manager so failed saves can be retried"
+)
+assert re.search(
+    r"if\s*\(notify_groups_save\(&updated\)\)\s*\{\s*"
+    r"\*edit_mgr\s*=\s*updated;\s*success\s*=\s*true;",
+    edit_save_case,
+    re.S,
+), "the editor must commit and report success only after the group save succeeds"
+assert "notify_groups_save(&updated)" in set_active_case and (
+    "settings_tray->notify_groups = updated;" in set_active_case
+), "Set Active must commit the candidate manager only after a successful save"
+assert settings_proc.count("if (notify_groups_save(&updated))") == 2 and (
+    settings_proc.count("settings_tray->notify_groups = updated;") == 2
+), "Set Active and Delete must both gate their in-memory changes on save success"
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>

@@ -74,8 +74,8 @@ bool notify_groups_remove(NotifyGroupManager* mgr, int index);
 // Update a group's name and event mask
 bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, unsigned int event_mask);
 
-// Save all groups to registry
-void notify_groups_save(NotifyGroupManager* mgr);
+// Save all groups to registry; returns false if any registry operation fails
+bool notify_groups_save(NotifyGroupManager* mgr);
 
 // Load groups from registry
 void notify_groups_load(NotifyGroupManager* mgr);
