@@ -30,7 +30,7 @@ static void tray_create(void) {
 }
 EOF
 
-for tool in awk bash cut dirname grep head sed; do
+for tool in awk bash cut dirname grep head mktemp sed; do
     ln -s "$(command -v "$tool")" "$FAKE_BIN/$tool"
 done
 
@@ -86,6 +86,35 @@ fi
 
 if [[ -s "$MAKE_LOG" ]]; then
     echo "FAIL: make clean/build ran without the configured Windows toolchain"
+    cat "$MAKE_LOG"
+    exit 1
+fi
+
+cat > "$FAKE_BIN/windres" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$FAKE_BIN/windres"
+
+: > "$MAKE_LOG"
+if ! output="$(cd "$TMP_DIR" && PATH="$FAKE_BIN" \
+    FAKE_MAKE_DATABASE=$'CC = gcc\nRC = windres' \
+    FAKE_MAKE_LOG="$MAKE_LOG" \
+    FAKE_MAKE_PROJECT_DIR="$FIXTURE_DIR" \
+    /bin/bash "$FIXTURE_DIR/test_lazy_icon_loading.sh")"; then
+    echo "FAIL: native compiler should cleanly skip when both tools are present"
+    echo "$output"
+    exit 1
+fi
+
+if [[ "$output" != *"SKIP: Compilation test"* || "$output" != *"does not target Windows"* ]]; then
+    echo "FAIL: non-Windows compiler target should produce an explicit compile-check skip"
+    echo "$output"
+    exit 1
+fi
+
+if [[ -s "$MAKE_LOG" ]]; then
+    echo "FAIL: make clean/build ran with a native compiler and resource compiler"
     cat "$MAKE_LOG"
     exit 1
 fi
