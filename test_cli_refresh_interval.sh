@@ -15,10 +15,13 @@ branch_match = re.search(
 )
 assert branch_match, "could not find the --interval parsing branch"
 assert re.search(
-    r"if\s*\(\s*WideCharToMultiByte\(CP_UTF8,\s*0,\s*argv\[\+\+i\],\s*-1,\s*value,\s*"
-    r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\)\s*return 1\s*;",
+    r"if\s*\(\s*WideCharToMultiByte\(CP_UTF8,\s*0,\s*value_wide,\s*-1,\s*value,\s*"
+    r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\|\|\s*"
+    r"!cli_parse_refresh_interval\(value,\s*&opts->interval\)\)\s*\{\s*"
+    r"return fail_cli_parse\(error,\s*CLI_PARSE_ERROR_INVALID_VALUE,\s*option,\s*"
+    r"value_wide,\s*L\"a positive integer number of seconds\"\);\s*\}",
     branch_match.group(0),
-), "the --interval branch must reject conversion failure before parsing"
+), "the --interval branch must reject malformed values and retain them for diagnostics"
 assert re.search(
     r"cli_parse_refresh_interval\(value,\s*&opts->interval\)", branch_match.group(0)
 ), "the --interval branch must safely parse and bound millisecond waits"

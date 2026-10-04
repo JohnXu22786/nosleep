@@ -45,6 +45,21 @@ typedef struct {
     bool show_version;
 } CLIOptions;
 
+typedef enum {
+    CLI_PARSE_ERROR_NONE = 0,
+    CLI_PARSE_ERROR_UNKNOWN_OPTION,
+    CLI_PARSE_ERROR_MISSING_VALUE,
+    CLI_PARSE_ERROR_INVALID_VALUE,
+    CLI_PARSE_ERROR_INVALID_ENUM
+} CLIParseErrorKind;
+
+typedef struct {
+    CLIParseErrorKind kind;
+    const wchar_t* option;
+    const wchar_t* value;
+    const wchar_t* expected;
+} CLIParseError;
+
 // Help text shown by --help (static global to avoid stack allocation on each invocation)
 static const char* const HELP_TEXT =
     "nosleep - Prevent Windows from sleeping using SetThreadExecutionState API\n\n"
@@ -97,9 +112,116 @@ static const char* const HELP_TEXT =
 
 // Function prototypes
 
-static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts);
+static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
+                           CLIParseError* error);
 static int run_tray_mode(const CLIOptions* opts);
 static int run_configure_mode(const CLIOptions* opts);
+
+static int fail_cli_parse(CLIParseError* error, CLIParseErrorKind kind,
+                          const wchar_t* option, const wchar_t* value,
+                          const wchar_t* expected) {
+    if (error) {
+        error->kind = kind;
+        error->option = option;
+        error->value = value;
+        error->expected = expected;
+    }
+    return 1;
+}
+
+static wchar_t* format_cli_parse_error(const CLIParseError* error) {
+    const wchar_t* option = error && error->option ? error->option : L"";
+    const wchar_t* value = error && error->value ? error->value : L"";
+    const wchar_t* expected = error && error->expected ? error->expected : L"";
+    size_t capacity = 256 + wcslen(option) + wcslen(value) + wcslen(expected);
+    wchar_t* message = (wchar_t*)malloc(capacity * sizeof(wchar_t));
+    if (!message) return NULL;
+
+    int written = -1;
+    if (error) {
+        switch (error->kind) {
+            case CLI_PARSE_ERROR_UNKNOWN_OPTION:
+                written = swprintf(message, capacity,
+                                   L"Unknown option \"%ls\". Use --help for usage information.\n",
+                                   option);
+                break;
+            case CLI_PARSE_ERROR_MISSING_VALUE:
+                written = swprintf(message, capacity,
+                                   L"Option \"%ls\" requires a value. Expected %ls.\n",
+                                   option, expected);
+                break;
+            case CLI_PARSE_ERROR_INVALID_VALUE:
+                written = swprintf(message, capacity,
+                                   L"Invalid value \"%ls\" for option \"%ls\"; expected %ls.\n",
+                                   value, option, expected);
+                break;
+            case CLI_PARSE_ERROR_INVALID_ENUM:
+                written = swprintf(message, capacity,
+                                   L"Invalid value \"%ls\" for option \"%ls\"; expected one of: %ls.\n",
+                                   value, option, expected);
+                break;
+            default:
+                break;
+        }
+    }
+    if (written < 0 || (size_t)written >= capacity) {
+        free(message);
+        return NULL;
+    }
+    return message;
+}
+
+static bool write_wide_stderr(const wchar_t* message) {
+    HANDLE output = GetStdHandle(STD_ERROR_HANDLE);
+    if (!output || output == INVALID_HANDLE_VALUE) return false;
+
+    DWORD console_mode;
+    if (GetConsoleMode(output, &console_mode)) {
+        size_t remaining = wcslen(message);
+        const wchar_t* cursor = message;
+        while (remaining > 0) {
+            DWORD requested = remaining > 0x7fffffff ? 0x7fffffff : (DWORD)remaining;
+            DWORD written = 0;
+            if (!WriteConsoleW(output, cursor, requested, &written, NULL) || written == 0) {
+                return false;
+            }
+            cursor += written;
+            remaining -= written;
+        }
+        return true;
+    }
+
+    int utf8_size = WideCharToMultiByte(CP_UTF8, 0, message, -1, NULL, 0, NULL, NULL);
+    if (utf8_size <= 1) return false;
+    char* utf8_message = (char*)malloc((size_t)utf8_size);
+    if (!utf8_message) return false;
+    bool success = false;
+    if (WideCharToMultiByte(CP_UTF8, 0, message, -1, utf8_message,
+                            utf8_size, NULL, NULL) == utf8_size) {
+        DWORD remaining = (DWORD)(utf8_size - 1);
+        char* cursor = utf8_message;
+        success = true;
+        while (remaining > 0) {
+            DWORD written = 0;
+            if (!WriteFile(output, cursor, remaining, &written, NULL) || written == 0) {
+                success = false;
+                break;
+            }
+            cursor += written;
+            remaining -= written;
+        }
+    }
+    free(utf8_message);
+    return success;
+}
+
+static void print_cli_parse_error(const CLIParseError* error) {
+    wchar_t* message = format_cli_parse_error(error);
+    if (!message || !write_wide_stderr(message)) {
+        fprintf(stderr, "Invalid command line arguments. Use --help for usage information.\n");
+    }
+    free(message);
+}
 
 static int relaunch_from_command_line_file(const wchar_t* arguments_path) {
     HANDLE arguments_file = CreateFileW(arguments_path, GENERIC_READ, 0, NULL,
@@ -228,19 +350,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     
     // Parse arguments
-    int parse_result = parse_arguments(argc, argv, &opts);
-    
-    LocalFree(argv);
-    
+    CLIParseError parse_error = {0};
+    int parse_result = parse_arguments(argc, argv, &opts, &parse_error);
+
     if (parse_result == 1) {
         // Error parsing arguments - output to console
         if (AttachConsole(ATTACH_PARENT_PROCESS)) {
             freopen("CONOUT$", "w", stdout);
             freopen("CONOUT$", "w", stderr);
         }
-        fprintf(stderr, "Invalid command line arguments. Use --help for usage information.\n");
+        print_cli_parse_error(&parse_error);
+        LocalFree(argv);
         return 1;
-    } else if (parse_result == 2) {
+    }
+
+    LocalFree(argv);
+
+    if (parse_result == 2) {
         // Help requested - output to console
         if (AttachConsole(ATTACH_PARENT_PROCESS)) {
             freopen("CONOUT$", "w", stdout);
@@ -287,11 +413,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 
 
-static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
+static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
+                           CLIParseError* error) {
+    if (error) {
+        error->kind = CLI_PARSE_ERROR_NONE;
+        error->option = NULL;
+        error->value = NULL;
+        error->expected = NULL;
+    }
+
     for (int i = 1; i < argc; i++) {
+        const wchar_t* option = argv[i];
         // Convert wide char to UTF-8 for comparison
         char arg[256];
-        if (WideCharToMultiByte(CP_UTF8, 0, argv[i], -1, arg, sizeof(arg), NULL, NULL) == 0) return 1;
+        if (WideCharToMultiByte(CP_UTF8, 0, option, -1, arg, sizeof(arg), NULL, NULL) == 0) {
+            return fail_cli_parse(error, CLI_PARSE_ERROR_UNKNOWN_OPTION, option, NULL, NULL);
+        }
         
         if (strcmp(arg, "--help") == 0 || strcmp(arg, "-h") == 0) {
             return 2;
@@ -300,19 +437,35 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             opts->show_version = true;
         }
         else if (strcmp(arg, "--duration") == 0 || strcmp(arg, "-d") == 0) {
-            if (i + 1 >= argc) return 1;
+            if (i + 1 >= argc) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
+                                      L"an integer number of minutes");
+            }
             char value[256];
-            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
-            if (!cli_parse_duration(value, &opts->duration)) return 1;
+            const wchar_t* value_wide = argv[++i];
+            if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
+                                    sizeof(value), NULL, NULL) == 0 ||
+                !cli_parse_duration(value, &opts->duration)) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_VALUE, option, value_wide,
+                                      L"an integer number of minutes");
+            }
             if (opts->duration < 0) {
                 opts->duration = 0; // -1 is the unset sentinel; 0 means indefinite.
             }
         }
         else if (strcmp(arg, "--interval") == 0 || strcmp(arg, "-i") == 0) {
-            if (i + 1 >= argc) return 1;
+            if (i + 1 >= argc) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
+                                      L"a positive integer number of seconds");
+            }
             char value[256];
-            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
-            if (!cli_parse_refresh_interval(value, &opts->interval)) return 1;
+            const wchar_t* value_wide = argv[++i];
+            if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
+                                    sizeof(value), NULL, NULL) == 0 ||
+                !cli_parse_refresh_interval(value, &opts->interval)) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_VALUE, option, value_wide,
+                                      L"a positive integer number of seconds");
+            }
         }
         else if (strcmp(arg, "--prevent-display") == 0 || strcmp(arg, "-p") == 0) {
             opts->prevent_display = CLI_ENABLE;
@@ -340,9 +493,17 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             opts->configure_mode = true;
         }
         else if (strcmp(arg, "--session-finished") == 0) {
-            if (i + 1 >= argc) return 1;
+            if (i + 1 >= argc) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
+                                      L"one of: none, shutdown, sleep");
+            }
             char value[256];
-            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
+            const wchar_t* value_wide = argv[++i];
+            if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
+                                    sizeof(value), NULL, NULL) == 0) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"none, shutdown, sleep");
+            }
             if (strcmp(value, "none") == 0) {
                 opts->session_finished = SESSION_FINISHED_NONE;
             } else if (strcmp(value, "shutdown") == 0) {
@@ -350,13 +511,22 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             } else if (strcmp(value, "sleep") == 0) {
                 opts->session_finished = SESSION_FINISHED_SLEEP;
             } else {
-                return 1;
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"none, shutdown, sleep");
             }
         }
         else if (strcmp(arg, "--notification-mode") == 0) {
-            if (i + 1 >= argc) return 1;
+            if (i + 1 >= argc) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
+                                      L"one of: all, critical, none");
+            }
             char value[256];
-            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
+            const wchar_t* value_wide = argv[++i];
+            if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
+                                    sizeof(value), NULL, NULL) == 0) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"all, critical, none");
+            }
             if (strcmp(value, "all") == 0) {
                 opts->notification_mode = NOTIFY_ALL;
             } else if (strcmp(value, "critical") == 0) {
@@ -364,13 +534,22 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             } else if (strcmp(value, "none") == 0) {
                 opts->notification_mode = NOTIFY_NONE;
             } else {
-                return 1;
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"all, critical, none");
             }
         }
         else if (strcmp(arg, "--auto-check-interval") == 0) {
-            if (i + 1 >= argc) return 1;
+            if (i + 1 >= argc) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
+                                      L"one of: never, daily, weekly");
+            }
             char value[256];
-            if (WideCharToMultiByte(CP_UTF8, 0, argv[++i], -1, value, sizeof(value), NULL, NULL) == 0) return 1;
+            const wchar_t* value_wide = argv[++i];
+            if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
+                                    sizeof(value), NULL, NULL) == 0) {
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"never, daily, weekly");
+            }
             if (strcmp(value, "never") == 0) {
                 opts->auto_check_interval = 0;
             } else if (strcmp(value, "daily") == 0) {
@@ -378,7 +557,8 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             } else if (strcmp(value, "weekly") == 0) {
                 opts->auto_check_interval = 2;
             } else {
-                return 1;
+                return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
+                                      L"never, daily, weekly");
             }
         }
         else if (strcmp(arg, "--auto-start") == 0) {
@@ -400,7 +580,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts) {
             opts->add_to_path = CLI_DISABLE;
         }
         else {
-            return 1; // Unknown argument
+            return fail_cli_parse(error, CLI_PARSE_ERROR_UNKNOWN_OPTION, option, NULL, NULL);
         }
     }
     
