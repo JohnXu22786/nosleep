@@ -4051,7 +4051,9 @@ update_check_done:
 }
 
 static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
-    if (!tray || interval == CB_ERR || tray->auto_check_interval == interval) return;
+    if (!tray || interval == CB_ERR) return;
+    if (tray->auto_check_interval == interval &&
+        (interval == 0 || tray->update_timer_id != 0)) return;
 
     tray->auto_check_interval = interval;
     tray_setup_update_timer(tray);
