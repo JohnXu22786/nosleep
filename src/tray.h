@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <stdbool.h>
 #include "notify_groups.h"
+#include "tray_countdown_icon.h"
 
 // Atomic operation macros for thread-safe flag access
 #ifdef __GNUC__
@@ -95,6 +96,7 @@ typedef struct NoSleepTray {
     bool core_init_succeeded;   // Allow follow-up actions only after NoSleep initialization succeeds - accessed atomically
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
+    SRWLOCK countdown_icon_cache_lock; // Serializes lazy countdown icon creation and cleanup
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
     ULONGLONG start_tick64;     // Monotonic tick count when nosleep started
     HANDLE stop_event;          // Event to signal stop
@@ -104,7 +106,7 @@ typedef struct NoSleepTray {
     DWORD nosleep_thread_id;    // Thread ID for nosleep execution
     HICON hIconDefault;         // Default gray icon
     HICON hIconActive;          // Green active icon
-    HICON hIconNumbered[60];    // Numbered icons for countdown (0-59 minutes)
+    HICON hIconNumbered[TRAY_COUNTDOWN_NUMBERED_ICON_COUNT]; // Cached numbered icons (0-60)
     HICON hIconCurrentNumbered; // Currently displayed numbered icon
     int current_number;         // Currently displayed number (-1 if none)
     bool prevent_display;       // Also prevent display from sleeping

@@ -116,6 +116,7 @@ NoSleepTray* tray_create(void) {
     
     memset(tray, 0, sizeof(NoSleepTray));
     InitializeSRWLock(&tray->delayed_action_lock);
+    InitializeSRWLock(&tray->countdown_icon_cache_lock);
     InitializeConditionVariable(&tray->stop_condition);
     tray->duration_minutes = -1; // Not set
     tray->current_number = -1;   // No numbered icon displayed
@@ -197,6 +198,8 @@ void tray_destroy(NoSleepTray* tray) {
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     tray_stop_nosleep(tray, false, false);
+    // Join the countdown worker even if it already cleared its active flag.
+    tray_stop_countdown(tray);
 
     if (!tray_wait_for_worker_threads(tray)) {
         DEBUG_LOG("tray_destroy: cannot destroy tray from one of its worker threads");
@@ -868,8 +871,8 @@ static void tray_create_icons(NoSleepTray* tray) {
         tray->hIconActive = system_icon_shield;
     }
     
-    // Numbered icons (0-59) are created lazily on demand in tray_update_icon()
-    // to avoid creating 60 GDI icon objects at startup.
+    // Numbered icons (0-60) are created lazily on demand in tray_update_icon()
+    // to avoid creating every numbered GDI icon at startup.
     
     // Create transparent icon for countdown blink off state
     tray->hIconCountdownBlank = create_transparent_icon();
@@ -898,12 +901,9 @@ static void tray_destroy_icons(NoSleepTray* tray) {
         tray->current_number = -1;
     }
     
-    for (int i = 0; i < 60; i++) {
-        if (tray->hIconNumbered[i]) {
-            DestroyIcon(tray->hIconNumbered[i]);
-            tray->hIconNumbered[i] = NULL;
-        }
-    }
+    AcquireSRWLockExclusive(&tray->countdown_icon_cache_lock);
+    tray_destroy_countdown_icon_cache(tray->hIconNumbered, DestroyIcon);
+    ReleaseSRWLockExclusive(&tray->countdown_icon_cache_lock);
     
     if (tray->hIconCountdownBlank) {
         DestroyIcon(tray->hIconCountdownBlank);
@@ -1944,29 +1944,11 @@ void tray_update_icon(NoSleepTray* tray) {
         DEBUG_LOG("tray_update_icon: countdown active, seconds=%d, blink=%s",
                 countdown_seconds, countdown_blink_state ? "show" : "hide");
         
-        if (countdown_blink_state) {
-            // Show number icon for current countdown seconds
-            HICON numbered_icon = NULL;
-            if (countdown_seconds >= 0 && countdown_seconds < 60) {
-                // Use cached icon if available
-                if (tray->hIconNumbered[countdown_seconds] == NULL) {
-                    tray->hIconNumbered[countdown_seconds] = create_numbered_icon(countdown_seconds);
-                }
-                numbered_icon = tray->hIconNumbered[countdown_seconds];
-            } else {
-                // Create new icon for numbers outside cache range
-                numbered_icon = create_numbered_icon(countdown_seconds);
-            }
-            
-            if (numbered_icon) {
-                tray->nid.hIcon = numbered_icon;
-            } else {
-                tray->nid.hIcon = tray->hIconDefault;
-            }
-        } else {
-            // Blink off: show transparent icon (or default if transparent creation failed)
-            tray->nid.hIcon = tray->hIconCountdownBlank ? tray->hIconCountdownBlank : tray->hIconDefault;
-        }
+        AcquireSRWLockExclusive(&tray->countdown_icon_cache_lock);
+        tray->nid.hIcon = tray_countdown_display_icon(
+            tray->hIconNumbered, countdown_seconds, countdown_blink_state,
+            tray->hIconCountdownBlank, tray->hIconDefault, create_numbered_icon);
+        ReleaseSRWLockExclusive(&tray->countdown_icon_cache_lock);
         
         // Update tooltip with remaining seconds
         char tip[128];
