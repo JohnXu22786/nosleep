@@ -41,6 +41,9 @@ jobs:
       - name: Test CLI settings failures and PATH addition
         run: bash test_cli_settings_failures.sh
 
+      - name: Test executable directory extraction
+        run: bash test_exe_dir.sh
+
       - name: Test tray event cleanup on initialization failure
         run: bash test_tray_create_event_cleanup.sh
 
