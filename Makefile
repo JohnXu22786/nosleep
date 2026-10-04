@@ -17,7 +17,7 @@ SRCDIR = src
 OBJDIR = obj
 BINDIR = bin
 
-SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c $(SRCDIR)/cJSON.c
+SOURCES = $(SRCDIR)/core.c $(SRCDIR)/tray.c $(SRCDIR)/main.c $(SRCDIR)/notify_groups.c $(SRCDIR)/updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c
 OBJECTS = $(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
@@ -70,7 +70,7 @@ test-unit: $(OBJDIR)
 	./tests/test_updater_batch_escape_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_command_line.c -o tests/test_updater_command_line_t.exe
 	./tests/test_updater_command_line_t.exe
-	$(CC) -std=c99 -Wall -Wextra -Itests/win32_stubs -Isrc tests/test_updater.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
+	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
 	./tests/test_updater_t.exe
 
 # Build main binary (and test it exists)
