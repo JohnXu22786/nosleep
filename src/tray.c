@@ -3074,6 +3074,8 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_NOTIFY_DEL_GROUP        2203
 #define IDC_NOTIFY_CONFIGURE_GROUP  2204
 #define IDC_NOTIFY_SET_ACTIVE       2205
+#define IDC_NOTIFY_EVENT_SELECT_ALL 2206
+#define IDC_NOTIFY_EVENT_CLEAR_ALL  2207
 
 // Tab indices
 #define TAB_GENERAL       0
@@ -3554,6 +3556,37 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
 // === Notification Group Edit Dialog ===
 // Opens a popup to edit a notification group's name and event checkboxes
 
+static bool handle_notify_group_bulk_toggle(HWND checkboxes[NOTIFY_EVENT_COUNT], UINT command_id) {
+    UINT check_state;
+
+    switch (command_id) {
+        case IDC_NOTIFY_EVENT_SELECT_ALL:
+            check_state = BST_CHECKED;
+            break;
+        case IDC_NOTIFY_EVENT_CLEAR_ALL:
+            check_state = BST_UNCHECKED;
+            break;
+        default:
+            return false;
+    }
+
+    for (int i = 0; i < NOTIFY_EVENT_COUNT; i++) {
+        SendMessage(checkboxes[i], BM_SETCHECK, check_state, 0);
+    }
+    return true;
+}
+
+static unsigned int notify_group_event_mask_from_checkboxes(HWND checkboxes[NOTIFY_EVENT_COUNT]) {
+    unsigned int mask = 0;
+
+    for (int i = 0; i < NOTIFY_EVENT_COUNT; i++) {
+        if (SendMessage(checkboxes[i], BM_GETCHECK, 0, 0) == BST_CHECKED) {
+            mask |= (1u << i);
+        }
+    }
+    return mask;
+}
+
 static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NotifyGroupManager* edit_mgr = NULL;
     static int edit_index = -1;
@@ -3596,6 +3629,15 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                 WS_CHILD | WS_VISIBLE,
                 15, y, 300, 20, hwnd, NULL, hInst, NULL);
             y += 22;
+
+            CreateWindowEx(0, "BUTTON", "Select All",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                15, y, 100, 24, hwnd, (HMENU)IDC_NOTIFY_EVENT_SELECT_ALL, hInst, NULL);
+
+            CreateWindowEx(0, "BUTTON", "Clear All",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                125, y, 100, 24, hwnd, (HMENU)IDC_NOTIFY_EVENT_CLEAR_ALL, hInst, NULL);
+            y += 30;
 
             unsigned int mask = 0;
             if (edit_index >= 0 && edit_mgr && edit_index < edit_mgr->count) {
@@ -3659,6 +3701,9 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
         }
 
         case WM_COMMAND:
+            if (handle_notify_group_bulk_toggle(hCheckboxes, LOWORD(wParam))) {
+                break;
+            }
             switch (LOWORD(wParam)) {
                 case IDC_NOTIFY_GROUP_EDIT_OK:
                 {
@@ -3677,12 +3722,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                     }
 
                     // Read event mask from checkboxes
-                    unsigned int mask = 0;
-                    for (int i = 0; i < NOTIFY_EVENT_COUNT; i++) {
-                        if (SendMessage(hCheckboxes[i], BM_GETCHECK, 0, 0) == BST_CHECKED) {
-                            mask |= (1 << i);
-                        }
-                    }
+                    unsigned int mask = notify_group_event_mask_from_checkboxes(hCheckboxes);
 
                     bool success = false;
                     bool group_change_valid = false;
