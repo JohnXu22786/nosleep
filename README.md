@@ -62,12 +62,7 @@ To run `nosleep.exe` from any directory without specifying the full path:
 1. Copy `bin/nosleep.exe` to a directory already in your PATH (e.g., `C:\Windows\System32`), or
 2. Add the `bin` directory to your system PATH:
 
-   **Via Command Prompt (Administrator)**:
-   ```cmd
-   setx PATH "%PATH%;D:\Administrator\Desktop\Agent\nosleep\bin"
-   ```
-   
-   Replace the path with the actual location of your `bin` directory.
+   Avoid using `setx` to update PATH because it can truncate long values and remove existing entries.
 
    **Via System Properties**:
    - Open System Properties → Advanced → Environment Variables
