@@ -48,6 +48,17 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 // System icon handles for reference (shared icons, should not be destroyed)
 static HICON system_icon_default = NULL;
 static HICON system_icon_shield = NULL;
+static bool update_check_in_progress = false;
+
+static bool tray_update_check_begin(void) {
+    if (update_check_in_progress) return false;
+    update_check_in_progress = true;
+    return true;
+}
+
+static void tray_update_check_end(void) {
+    update_check_in_progress = false;
+}
 
 static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
     // GetTickCount64 is monotonic and does not wrap for ~584 million years.
@@ -3910,7 +3921,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 
 // Update checking - uses updater module
 void tray_check_for_updates(NoSleepTray* tray, bool silent) {
-    if (!tray) return;
+    if (!tray || !tray_update_check_begin()) return;
 
     DEBUG_LOG("tray_check_for_updates: checking for updates");
 
@@ -3924,7 +3935,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
                 "Update Check Failed", "Could not check for updates. Check your internet connection.", false);
         }
-        return;
+        goto update_check_done;
     }
 
     if (!info.update_available) {
@@ -3933,7 +3944,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
                 "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
-        return;
+        goto update_check_done;
     }
 
     // Compare versions
@@ -3943,7 +3954,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
                 "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
         }
-        return;
+        goto update_check_done;
     }
 
     // New version available - show notification
@@ -3956,7 +3967,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     // Ask user if they want to download
     bool want_download = updater_show_prompt_dialog(tray->hwnd, &info);
     if (!want_download) {
-        return;
+        goto update_check_done;
     }
 
     // Get current executable path
@@ -3964,7 +3975,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     if (!exe_path) {
         MessageBox(tray->hwnd, "Could not determine executable path.", 
                    "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
-        return;
+        goto update_check_done;
     }
 
     // Download and install
@@ -3975,6 +3986,9 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         // Exit the application so the update can complete
         PostMessage(tray->hwnd, WM_CLOSE, 0, 0);
     }
+
+update_check_done:
+    tray_update_check_end();
 }
 
 static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
