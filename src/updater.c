@@ -4,6 +4,7 @@
 #include "updater_batch.h"
 #include "updater_command_line.h"
 #include "updater_redirect.h"
+#include "updater_response_buffer.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -743,13 +744,17 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
         NULL, &content_length, &cl_size, NULL);
     
-    DWORD total_read = 0;
-    DWORD buffer_size = 4096;
-    if (content_length > 0) {
-        buffer_size = content_length + 1;
-    } else {
-        buffer_size = 8192;
+    uint32_t initial_buffer_size = 0;
+    if (!updater_initial_response_buffer_size((uint32_t)content_length,
+                                              &initial_buffer_size)) {
+        WinHttpCloseHandle(hRequest);
+        if (hConnect) WinHttpCloseHandle(hConnect);
+        WinHttpCloseHandle(hSession);
+        if (error_msg) *error_msg = "Response is too large";
+        return NULL;
     }
+    DWORD total_read = 0;
+    DWORD buffer_size = (DWORD)initial_buffer_size;
     
     char* response = (char*)malloc(buffer_size);
     if (!response) {

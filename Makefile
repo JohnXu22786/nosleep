@@ -62,6 +62,8 @@ run-cli: $(TARGET)
 
 # Build and run unit tests for updater module (JSON parsing, version comparison)
 test-unit: $(OBJDIR) test-cli
+	$(CC) -std=c99 -Wall -Wextra tests/test_updater_response_buffer.c -o tests/test_updater_response_buffer_t.exe
+	./tests/test_updater_response_buffer_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_stream.c -o tests/test_updater_stream_t.exe
 	./tests/test_updater_stream_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_redirect_target.c -o tests/test_updater_redirect_target_t.exe
