@@ -5,6 +5,7 @@
 #include "updater_command_line.h"
 #include "updater_redirect.h"
 #include "updater_response_buffer.h"
+#include "updater_temp_path.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -534,7 +535,10 @@ static char* get_temp_path_for(const char* prefix) {
     snprintf(unique_name, sizeof(unique_name), "%s_%lu_%lu.exe", 
              prefix, GetCurrentProcessId(), GetTickCount());
     
-    snprintf(path, MAX_PATH, "%s%s", temp_dir, unique_name);
+    if (!updater_build_temp_path(path, MAX_PATH, temp_dir, unique_name)) {
+        free(path);
+        return NULL;
+    }
     return path;
 }
 

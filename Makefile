@@ -64,6 +64,8 @@ run-cli: $(TARGET)
 test-unit: $(OBJDIR) test-cli
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_response_buffer.c -o tests/test_updater_response_buffer_t.exe
 	./tests/test_updater_response_buffer_t.exe
+	$(CC) -std=c99 -Wall -Wextra tests/test_updater_temp_path.c -o tests/test_updater_temp_path_t.exe
+	./tests/test_updater_temp_path_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_stream.c -o tests/test_updater_stream_t.exe
 	./tests/test_updater_stream_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_redirect_target.c -o tests/test_updater_redirect_target_t.exe
