@@ -3629,8 +3629,8 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                     GetWindowText(hNameEdit, name, MAX_GROUP_NAME);
                     
                     // Validate name
-                    if (name[0] == '\0') {
-                        MessageBox(hwnd, "Please enter a group name.", 
+                    if (notify_groups_name_is_blank(name)) {
+                        MessageBox(hwnd, "Please enter a group name containing non-whitespace characters.",
                                    "Invalid Input", MB_OK | MB_ICONWARNING | MB_TOPMOST);
                         SetFocus(hNameEdit);
                         break;

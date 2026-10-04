@@ -65,6 +65,9 @@ bool notify_groups_set_active(NotifyGroupManager* mgr, int index);
 // Check if a notification event should be shown based on the active group
 bool notify_groups_should_show(NotifyGroupManager* mgr, NotifyEventId event_id);
 
+// Check if a group name would be empty or whitespace-only after storage
+bool notify_groups_name_is_blank(const char* name);
+
 // Add a new custom group
 int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int event_mask);
 
