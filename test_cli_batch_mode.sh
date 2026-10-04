@@ -20,12 +20,16 @@ trap "rm -rf $TMPDIR" EXIT
 echo "=== Test: --help output includes new flags ==="
 
 # Extract help text from main.c
-HELP_TEXT=$(sed -n '/HELP_TEXT/,/^;/p' src/main.c | tr -d '\n' | sed 's/static const char\* const HELP_TEXT = //' | sed 's/;$//' | sed 's/"//g')
+# The declaration ends on its final quoted line with a trailing semicolon.
+HELP_TEXT=$(sed -n '/^static const char\* const HELP_TEXT =$/,/";$/p' src/main.c | tr -d '\n' | sed 's/static const char\* const HELP_TEXT = //' | sed 's/;$//' | sed 's/"//g')
+# Examples can repeat flags, so check the option sections only.
+HELP_OPTIONS=${HELP_TEXT%%Examples:*}
 
 check_help_flag() {
     local flag="$1"
     local description="$2"
-    if echo "$HELP_TEXT" | grep -q -- "$flag"; then
+    local option_pattern="(^|[^[:alnum:]_-])${flag}([^[:alnum:]_-]|$)"
+    if echo "$HELP_OPTIONS" | grep -Eq -- "$option_pattern"; then
         pass "--help includes '$flag' flag"
     else
         fail "--help is missing '$flag' flag - $description"
