@@ -21,6 +21,14 @@ static int ends_with(const char* str, const char* suffix) {
     return strcmp(str + str_len - suffix_len, suffix) == 0;
 }
 
+static bool parse_asset_url(const char* url, UpdateInfo* info) {
+    char response[1024];
+    int response_len = snprintf(response, sizeof(response),
+        "{\"tag_name\":\"v2.1.0\",\"assets\":[{\"browser_download_url\":\"%s\"}]}", url);
+    if (response_len < 0 || (size_t)response_len >= sizeof(response)) return false;
+    return updater_parse_response(response, info);
+}
+
 // ---- Sample JSON data ----
 
 static const char* SAMPLE_JSON_FULL =
@@ -165,20 +173,74 @@ static void test_parse_no_exe(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("Parse JSON without EXE asset");
-    ASSERT(updater_parse_response(SAMPLE_JSON_NO_EXE, &info), "Expected parse success (fallback)");
+    TEST("ZIP-only release is unavailable and has no guessed download URL");
+    ASSERT(!updater_parse_response(SAMPLE_JSON_NO_EXE, &info) &&
+           !info.update_available && info.download_url[0] == '\0',
+           "Expected no update without an EXE asset URL");
     PASS();
+}
 
-    TEST("tag_name is 'v2.1.0'");
-    ASSERT(strcmp(info.tag_name, "v2.1.0") == 0, "Expected 'v2.1.0'");
+static void test_parse_exe_suffix(void) {
+    printf("\n--- updater_parse_response (non-EXE suffix) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+
+    TEST("asset URL ending in .exe.zip is unavailable");
+    ASSERT(!parse_asset_url("https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe.zip", &info) &&
+           !info.update_available && info.download_url[0] == '\0',
+           "Expected only an .exe URL path to make an update available");
     PASS();
+}
 
-    TEST("update_available is true");
-    ASSERT(info.update_available == true, "Expected true");
+static void test_parse_malformed_exe_urls(void) {
+    printf("\n--- updater_parse_response (malformed EXE URLs) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char* invalid_urls[] = {
+        "not-a-url.exe",
+        "https:///nosleep-2.1.0.exe",
+        "http://github.com/JohnXu22786/nosleep/nosleep-2.1.0.exe",
+        "https://:443/nosleep-2.1.0.exe",
+        "https://github.com:bogus/nosleep-2.1.0.exe",
+        "https://github.com:65536/nosleep-2.1.0.exe"
+    };
+
+    TEST("malformed and non-HTTPS EXE URLs are unavailable");
+    for (size_t i = 0; i < sizeof(invalid_urls) / sizeof(invalid_urls[0]); i++) {
+        if (parse_asset_url(invalid_urls[i], &info) || info.update_available ||
+            info.download_url[0] != '\0') {
+            FAIL("Expected an absolute HTTPS URL with a valid host and port");
+            return;
+        }
+    }
     PASS();
+}
 
-    TEST("download_url is fallback URL");
-    ASSERT(strstr(info.download_url, "releases/download") != NULL, "Expected fallback URL");
+static void test_parse_exe_url_with_query(void) {
+    printf("\n--- updater_parse_response (EXE URL with query) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+
+    TEST("valid EXE path with a query remains available");
+    ASSERT(parse_asset_url("https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe?download=1", &info) &&
+           info.update_available &&
+           strcmp(info.download_url,
+                  "https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe?download=1") == 0,
+           "Expected to preserve the asset URL including query text");
+    PASS();
+}
+
+static void test_parse_exe_url_with_valid_port(void) {
+    printf("\n--- updater_parse_response (EXE URL with valid port) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+
+    TEST("valid HTTPS port preserves an executable asset URL");
+    ASSERT(parse_asset_url("https://github.com:443/JohnXu22786/nosleep/nosleep-2.1.0.exe", &info) &&
+           info.update_available &&
+           strcmp(info.download_url,
+                  "https://github.com:443/JohnXu22786/nosleep/nosleep-2.1.0.exe") == 0,
+           "Expected valid HTTPS port to be accepted");
     PASS();
 }
 
@@ -197,16 +259,10 @@ static void test_parse_no_exe_assets(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("Parse JSON with no assets array");
-    ASSERT(updater_parse_response(SAMPLE_JSON_NO_ASSETS, &info), "Expected parse success (fallback)");
-    PASS();
-
-    TEST("tag_name is 'v2.1.0'");
-    ASSERT(strcmp(info.tag_name, "v2.1.0") == 0, "Expected 'v2.1.0'");
-    PASS();
-
-    TEST("download_url is fallback");
-    ASSERT(strlen(info.download_url) > 0, "Expected non-empty fallback URL");
+    TEST("release without an assets array is unavailable");
+    ASSERT(!updater_parse_response(SAMPLE_JSON_NO_ASSETS, &info) &&
+           !info.update_available && info.download_url[0] == '\0',
+           "Expected no update without an EXE asset URL");
     PASS();
 }
 
@@ -215,12 +271,10 @@ static void test_parse_empty_assets(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("Parse JSON with empty assets array");
-    ASSERT(updater_parse_response(SAMPLE_JSON_EMPTY_ASSETS, &info), "Expected parse success (fallback)");
-    PASS();
-
-    TEST("download_url is fallback");
-    ASSERT(strlen(info.download_url) > 0, "Expected non-empty fallback URL");
+    TEST("release with an empty assets array is unavailable");
+    ASSERT(!updater_parse_response(SAMPLE_JSON_EMPTY_ASSETS, &info) &&
+           !info.update_available && info.download_url[0] == '\0',
+           "Expected no update without an EXE asset URL");
     PASS();
 }
 
@@ -279,6 +333,10 @@ int main(void) {
     test_ver_compare();
     test_parse_full();
     test_parse_no_exe();
+    test_parse_exe_suffix();
+    test_parse_malformed_exe_urls();
+    test_parse_exe_url_with_query();
+    test_parse_exe_url_with_valid_port();
     test_parse_no_tag();
     test_parse_no_exe_assets();
     test_parse_empty_assets();
