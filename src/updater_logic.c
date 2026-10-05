@@ -4,6 +4,66 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool is_valid_url_port(const char* port, const char* end) {
+    if (port == end) return false;
+
+    unsigned int value = 0;
+    for (; port < end; port++) {
+        if (*port < '0' || *port > '9') return false;
+        unsigned int digit = (unsigned int)(*port - '0');
+        if (value > (65535u - digit) / 10u) return false;
+        value = value * 10u + digit;
+    }
+    return value > 0;
+}
+
+static bool is_valid_url_authority(const char* host, const char* path) {
+    if (host == path || *host == ':' || memchr(host, '@', (size_t)(path - host))) {
+        return false;
+    }
+
+    const char* colon = memchr(host, ':', (size_t)(path - host));
+    const char* host_end = colon ? colon : path;
+    if (host_end == host) return false;
+    for (const char* character = host; character < host_end; character++) {
+        if (!((*character >= '0' && *character <= '9') ||
+              (*character >= 'a' && *character <= 'z') ||
+              (*character >= 'A' && *character <= 'Z') ||
+              *character == '.' || *character == '-')) {
+            return false;
+        }
+    }
+
+    return !colon || is_valid_url_port(colon + 1, path);
+}
+
+static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
+    static const char https_scheme[] = "https://";
+    const size_t scheme_len = sizeof(https_scheme) - 1;
+    if (!url || url_len <= scheme_len) return false;
+
+    for (size_t i = 0; i < scheme_len; i++) {
+        char character = url[i];
+        if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        if (character != https_scheme[i]) return false;
+    }
+
+    const char* host = url + scheme_len;
+    const char* path = strpbrk(host, "/?#");
+    if (!path || *path != '/' || !is_valid_url_authority(host, path)) return false;
+
+    for (size_t i = 0; i < url_len; i++) {
+        unsigned char character = (unsigned char)url[i];
+        if (character <= 0x20 || character == 0x7f || character == '\\') {
+            return false;
+        }
+    }
+
+    const char* path_end = strpbrk(path, "?#");
+    size_t path_len = path_end ? (size_t)(path_end - path) : url_len - (size_t)(path - url);
+    return path_len >= 4 && strncmp(path + path_len - 4, ".exe", 4) == 0;
+}
+
 // Compare two version strings (e.g., "2.0.0" > "1.5.0")
 // Returns: 1 if v1 > v2, 0 if equal, -1 if v1 < v2
 int updater_compare_versions(const char* v1, const char* v2) {
@@ -69,31 +129,16 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
             cJSON* url = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
             if (cJSON_IsString(url) && url->valuestring) {
                 size_t url_len = strlen(url->valuestring);
-                if (url_len > 0 && url_len < sizeof(info->download_url) - 1) {
+                if (url_len < sizeof(info->download_url) - 1 &&
+                    is_valid_exe_asset_url(url->valuestring, url_len)) {
                     strncpy(info->download_url, url->valuestring, sizeof(info->download_url) - 1);
                     info->download_url[sizeof(info->download_url) - 1] = '\0';
-
-                    // Check if this URL points to an EXE file
-                    if (strstr(info->download_url, ".exe") != NULL) {
-                        info->update_available = true;
-                        cJSON_Delete(root);
-                        return true;
-                    }
+                    info->update_available = true;
+                    cJSON_Delete(root);
+                    return true;
                 }
             }
         }
-    }
-
-    // If we found tag_name but no EXE asset, still mark as available
-    // (maybe the asset URL pattern is different)
-    if (info->tag_name[0] != '\0') {
-        info->update_available = true;
-        // Construct fallback URL
-        snprintf(info->download_url, sizeof(info->download_url),
-            "https://github.com/JohnXu22786/nosleep/releases/download/%s/nosleep-%s.exe",
-            info->tag_name, info->tag_name);
-        cJSON_Delete(root);
-        return true;
     }
 
     cJSON_Delete(root);

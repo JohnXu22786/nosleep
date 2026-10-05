@@ -24,7 +24,9 @@ static bool read_partial_then_fail(void* context, void* buffer, size_t capacity,
 }
 
 static int test_read_failure_after_valid_tag_json_fails_update_check(void) {
-    static const char response_json[] = "{\"tag_name\":\"v9.9.9\"}";
+    static const char response_json[] =
+        "{\"tag_name\":\"v9.9.9\",\"assets\":[{\"browser_download_url\":"
+        "\"https://github.com/JohnXu22786/nosleep/releases/download/v9.9.9/nosleep-9.9.9.exe\"}]}";
     PartialThenFailedRead state = {
         response_json, sizeof(response_json) - 1u, 0, true
     };
@@ -44,7 +46,7 @@ static int test_read_failure_after_valid_tag_json_fails_update_check(void) {
 
     UpdateInfo info;
     if (!updater_parse_response(response_json, &info) || !info.update_available) {
-        fprintf(stderr, "regression fixture must be accepted by the tag fallback parser\n");
+        fprintf(stderr, "release with an EXE asset should be accepted by the parser\n");
         return 1;
     }
 
