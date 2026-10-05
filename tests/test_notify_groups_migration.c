@@ -13,11 +13,19 @@ enum {
     REGISTRY_GROUP_LIMIT = 4
 };
 
+#ifndef ERROR_ACCESS_DENIED
+#define ERROR_ACCESS_DENIED 5
+#endif
+
 #define NOTIFY_GROUPS_PARENT_REG_KEY "Software\\nosleep\\settings"
 #define NOTIFY_GROUPS_STAGING_REG_KEY NOTIFY_GROUPS_REG_KEY "_Staging"
 #define NOTIFY_GROUPS_BACKUP_REG_KEY NOTIFY_GROUPS_REG_KEY "_Backup"
 
 typedef struct {
+    bool key_available;
+    bool name_available;
+    bool event_mask_available;
+    bool is_default_available;
     const char *name;
     DWORD event_mask;
     DWORD is_default;
@@ -29,6 +37,7 @@ static int stored_group_count;
 static DWORD stored_active_index;
 static DWORD staged_active_index;
 static StoredGroup stored_groups[REGISTRY_GROUP_LIMIT];
+static int inaccessible_group_index;
 static int saved_active_index;
 static int active_index_writes;
 
@@ -39,8 +48,16 @@ static void reset_registry(void) {
     stored_active_index = 0;
     staged_active_index = 0;
     memset(stored_groups, 0, sizeof(stored_groups));
+    inaccessible_group_index = -1;
     saved_active_index = -1;
     active_index_writes = 0;
+}
+
+static void set_stored_group(int index, const char *name,
+                             DWORD event_mask, DWORD is_default) {
+    stored_groups[index] = (StoredGroup){
+        true, true, true, true, name, event_mask, is_default
+    };
 }
 
 static bool copy_registry_value(const void *source, DWORD source_size,
@@ -98,6 +115,8 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access,
     int group_index;
     if (sscanf(path, NOTIFY_GROUPS_REG_KEY "\\Group_%d", &group_index) == 1 &&
         group_index >= 0 && group_index < stored_group_count) {
+        if (group_index == inaccessible_group_index) return ERROR_ACCESS_DENIED;
+        if (!stored_groups[group_index].key_available) return ERROR_FILE_NOT_FOUND;
         *key = (HKEY)(uintptr_t)(REGISTRY_GROUP_HANDLE_BASE + group_index);
         return ERROR_SUCCESS;
     }
@@ -130,23 +149,27 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
     }
 
     int group_index = (int)(uintptr_t)key - REGISTRY_GROUP_HANDLE_BASE;
-    if (group_index < 0 || group_index >= stored_group_count) {
+    if (group_index < 0 || group_index >= stored_group_count ||
+        !stored_groups[group_index].key_available) {
         return ERROR_FILE_NOT_FOUND;
     }
 
     if (strcmp(name, "name") == 0) {
+        if (!stored_groups[group_index].name_available) return ERROR_FILE_NOT_FOUND;
         const char *group_name = stored_groups[group_index].name;
         return copy_registry_value(group_name, (DWORD)strlen(group_name) + 1,
                                    type, REG_SZ, value, size)
             ? ERROR_SUCCESS : ERROR_FILE_NOT_FOUND;
     }
     if (strcmp(name, "event_mask") == 0) {
+        if (!stored_groups[group_index].event_mask_available) return ERROR_FILE_NOT_FOUND;
         return copy_registry_value(&stored_groups[group_index].event_mask,
                                    sizeof(stored_groups[group_index].event_mask),
                                    type, REG_DWORD, value, size)
             ? ERROR_SUCCESS : ERROR_FILE_NOT_FOUND;
     }
     if (strcmp(name, "is_default") == 0) {
+        if (!stored_groups[group_index].is_default_available) return ERROR_FILE_NOT_FOUND;
         return copy_registry_value(&stored_groups[group_index].is_default,
                                    sizeof(stored_groups[group_index].is_default),
                                    type, REG_DWORD, value, size)
@@ -183,10 +206,10 @@ static int test_saved_custom_group_is_not_replaced(void) {
     stored_groups_available = true;
     stored_group_count = REGISTRY_GROUP_LIMIT;
     stored_active_index = 3;
-    stored_groups[0] = (StoredGroup){"All notifications", 0xFFFFFFFFu, 1};
-    stored_groups[1] = (StoredGroup){"Critical only", 0x290u, 1};
-    stored_groups[2] = (StoredGroup){"None", 0, 1};
-    stored_groups[3] = (StoredGroup){"Custom Work", 0x55u, 0};
+    set_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    set_stored_group(1, "Critical only", 0x290u, 1);
+    set_stored_group(2, "None", 0, 1);
+    set_stored_group(3, "Custom Work", 0x55u, 0);
 
     NotifyGroupManager manager;
     notify_groups_init(&manager, 0);
@@ -225,9 +248,9 @@ static int test_saved_active_group_survives_corrupt_prior_slot(void) {
     stored_groups_available = true;
     stored_group_count = 3;
     stored_active_index = 2;
-    stored_groups[0] = (StoredGroup){"All notifications", 0xFFFFFFFFu, 1};
-    stored_groups[1] = (StoredGroup){"", 0, 0};
-    stored_groups[2] = (StoredGroup){"Custom Work", 0x55u, 0};
+    set_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    set_stored_group(1, "", 0, 0);
+    set_stored_group(2, "Custom Work", 0x55u, 0);
 
     NotifyGroupManager manager;
     notify_groups_init(&manager, 0);
@@ -240,11 +263,81 @@ static int test_saved_active_group_survives_corrupt_prior_slot(void) {
     return 0;
 }
 
+static int test_missing_group_key_is_skipped_and_active_index_is_remapped(void) {
+    reset_registry();
+    stored_groups_available = true;
+    stored_group_count = 3;
+    stored_active_index = 2;
+    set_stored_group(0, "Group A", 0x1u, 0);
+    set_stored_group(2, "Group C", 0x4u, 1);
+    stored_groups[2].event_mask_available = false;
+    stored_groups[2].is_default_available = false;
+
+    NotifyGroupManager manager = {0};
+    notify_groups_load(&manager);
+
+    if (manager.count != 2 || manager.active_index != 1 ||
+        strcmp(manager.groups[0].name, "Group A") != 0 ||
+        strcmp(manager.groups[1].name, "Group C") != 0) {
+        fprintf(stderr, "FAIL: loader did not compact groups around a missing key and remap the active index\n");
+        return 1;
+    }
+    if (manager.groups[1].event_mask != 0 || manager.groups[1].is_default) {
+        fprintf(stderr, "FAIL: missing optional group values did not use their default values\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_missing_group_name_is_skipped_and_loading_continues(void) {
+    reset_registry();
+    stored_groups_available = true;
+    stored_group_count = 2;
+    stored_active_index = 1;
+    set_stored_group(0, "Corrupt", 0x1u, 0);
+    stored_groups[0].name_available = false;
+    set_stored_group(1, "Group B", 0x2u, 0);
+
+    NotifyGroupManager manager = {0};
+    notify_groups_load(&manager);
+
+    if (manager.count != 1 || manager.active_index != 0 ||
+        strcmp(manager.groups[0].name, "Group B") != 0) {
+        fprintf(stderr, "FAIL: loader did not skip a missing required name and continue loading\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_group_open_failure_stops_after_loaded_groups(void) {
+    reset_registry();
+    stored_groups_available = true;
+    stored_group_count = 3;
+    stored_active_index = 2;
+    set_stored_group(0, "Group A", 0x1u, 0);
+    set_stored_group(1, "Group B", 0x2u, 0);
+    set_stored_group(2, "Group C", 0x4u, 0);
+    inaccessible_group_index = 1;
+
+    NotifyGroupManager manager = {0};
+    notify_groups_load(&manager);
+
+    if (manager.count != 1 || manager.active_index != 0 ||
+        strcmp(manager.groups[0].name, "Group A") != 0) {
+        fprintf(stderr, "FAIL: loader crossed a group-open failure or left an invalid active index\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_saved_custom_group_is_not_replaced();
     failures += test_legacy_setting_migrates_when_groups_are_missing();
     failures += test_saved_active_group_survives_corrupt_prior_slot();
+    failures += test_missing_group_key_is_skipped_and_active_index_is_remapped();
+    failures += test_missing_group_name_is_skipped_and_loading_continues();
+    failures += test_group_open_failure_stops_after_loaded_groups();
     if (failures != 0) return 1;
     puts("PASS: notification-group migration preserves saved groups and migrates legacy settings");
     return 0;
