@@ -24,6 +24,22 @@ UpdaterResponseReadResult updater_read_response_body(UpdaterStreamRead read_data
 
     uint32_t total_read = 0;
     for (;;) {
+        if (total_read == UPDATER_MAX_RESPONSE_SIZE) {
+            char overflow_probe = '\0';
+            size_t bytes_read = 0;
+            bool read_ok = read_data(read_context, &overflow_probe,
+                                     sizeof(overflow_probe), &bytes_read);
+            if (!read_ok || bytes_read > sizeof(overflow_probe)) {
+                free(response);
+                return UPDATER_RESPONSE_READ_FAILED;
+            }
+            if (bytes_read != 0) {
+                free(response);
+                return UPDATER_RESPONSE_READ_TOO_LARGE;
+            }
+            break;
+        }
+
         size_t bytes_read = 0;
         bool read_ok = read_data(read_context, response + total_read,
                                  buffer_size - total_read - 1u, &bytes_read);
@@ -38,7 +54,8 @@ UpdaterResponseReadResult updater_read_response_body(UpdaterStreamRead read_data
             return UPDATER_RESPONSE_READ_FAILED;
         }
         total_read += (uint32_t)bytes_read;
-        if (total_read >= buffer_size - 1u) {
+        if (total_read >= buffer_size - 1u &&
+            total_read < UPDATER_MAX_RESPONSE_SIZE) {
             uint32_t new_buffer_size = 0;
             if (!updater_response_buffer_next_size(buffer_size, &new_buffer_size)) {
                 free(response);
