@@ -6,6 +6,7 @@
 #include "updater_redirect.h"
 #include "updater_response_read.h"
 #include "updater_temp_path.h"
+#include "updater_url_policy.h"
 #include "updater_pe.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -598,11 +599,12 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         WinHttpQueryHeaders(*hRequest, WINHTTP_QUERY_LOCATION,
             NULL, redirect_url, &url_size, NULL);
         
-        if (redirect_url[0] == L'\0') {
+        if (!updater_url_is_https(redirect_url)) {
             close_download_request(download_task, *hRequest);
             *hRequest = NULL;
             WinHttpCloseHandle(*hConnect);
             *hConnect = NULL;
+            status_code = 0;
             break;
         }
         
@@ -626,9 +628,11 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         newUrlComp.lpszExtraInfo = newExtraInfo;
         newUrlComp.dwExtraInfoLength = 2048;
 
-        if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp)) {
+        if (!WinHttpCrackUrl(redirect_url, 0, 0, &newUrlComp) ||
+            newUrlComp.nScheme != INTERNET_SCHEME_HTTPS) {
             *hRequest = NULL;
             *hConnect = NULL;
+            status_code = 0;
             break;
         }
 
@@ -642,18 +646,14 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         
         // Create new connection
         *hConnect = WinHttpConnect(hSession, newHost,
-            newUrlComp.nScheme == INTERNET_SCHEME_HTTPS ? 
-                INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
+                                   INTERNET_DEFAULT_HTTPS_PORT, 0);
         if (!*hConnect) {
             *hRequest = NULL;
             break;
         }
         
         // Create new request
-        DWORD newFlags = WINHTTP_FLAG_REFRESH;
-        if (newUrlComp.nScheme == INTERNET_SCHEME_HTTPS) {
-            newFlags |= WINHTTP_FLAG_SECURE;
-        }
+        DWORD newFlags = WINHTTP_FLAG_REFRESH | WINHTTP_FLAG_SECURE;
         
         *hRequest = WinHttpOpenRequest(*hConnect, L"GET", newRequestTarget,
                                         NULL, NULL, NULL, newFlags);
@@ -823,7 +823,10 @@ static bool download_file(const char* url, const char* output_path,
     // Parse the URL
     // Expected format: https://github.com/.../nosleep-vX.X.X.exe
     wchar_t wurl[2048];
-    MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 2048);
+    if (MultiByteToWideChar(CP_UTF8, 0, url, -1, wurl, 2048) == 0 ||
+        !updater_url_is_https(wurl)) {
+        return false;
+    }
     
     // Parse URL to extract host, path
     URL_COMPONENTS urlComp = {0};
@@ -837,7 +840,8 @@ static bool download_file(const char* url, const char* output_path,
     urlComp.lpszUrlPath = urlPath;
     urlComp.dwUrlPathLength = 2048;
     
-    if (!WinHttpCrackUrl(wurl, 0, 0, &urlComp)) {
+    if (!WinHttpCrackUrl(wurl, 0, 0, &urlComp) ||
+        urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
         return false;
     }
     
@@ -845,17 +849,14 @@ static bool download_file(const char* url, const char* output_path,
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) return false;
     
-    HINTERNET hConnect = WinHttpConnect(hSession, hostName, 
-        urlComp.nScheme == INTERNET_SCHEME_HTTPS ? INTERNET_DEFAULT_HTTPS_PORT : INTERNET_DEFAULT_HTTP_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, hostName,
+                                        INTERNET_DEFAULT_HTTPS_PORT, 0);
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         return false;
     }
     
-    DWORD flags = WINHTTP_FLAG_REFRESH;
-    if (urlComp.nScheme == INTERNET_SCHEME_HTTPS) {
-        flags |= WINHTTP_FLAG_SECURE;
-    }
+    DWORD flags = WINHTTP_FLAG_REFRESH | WINHTTP_FLAG_SECURE;
     
     HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath,
         NULL, NULL, NULL, flags);
