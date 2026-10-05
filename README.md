@@ -11,6 +11,7 @@ A lightweight Windows utility written in C that prevents system sleep using the 
 * **Notifications**: Toast notifications for timeouts and errors.
 * **Configurable Refresh Intervals**: Configurable refresh intervals (default: 20 seconds).
 * **Verbose Logging**: Print detailed status on each refresh.
+* **Startup and Update Options**: Configure Windows auto-start and update checks.
 
 ## System Requirements
 
