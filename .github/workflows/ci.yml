@@ -53,6 +53,9 @@ jobs:
       - name: Test tray event cleanup on initialization failure
         run: bash test_tray_create_event_cleanup.sh
 
+      - name: Test tray menu initialization failure cleanup
+        run: bash test_tray_menu_init_failure.sh
+
       - name: Test countdown icon lifetime
         run: bash test_tray_countdown_icon.sh
 

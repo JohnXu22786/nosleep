@@ -290,6 +290,14 @@ bool tray_init(NoSleepTray* tray) {
     
     // Create menu
     tray_create_menu(tray);
+    if (!tray->hmenu) {
+        DEBUG_PRINT("tray_init: Failed to create required context menu\n");
+        tray_destroy_icons(tray);
+        DestroyWindow(tray->hwnd);
+        tray->hwnd = NULL;
+        UnregisterClass(TRAY_WINDOW_CLASS, wc.hInstance);
+        return false;
+    }
     
     // Register unique tray message
     tray->uTrayMessage = RegisterWindowMessage("nosleep_tray_message");
