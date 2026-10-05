@@ -61,7 +61,7 @@ run-cli: $(TARGET)
 	./$(TARGET) --duration 30
 
 # Build and run unit tests for updater module (JSON parsing, version comparison)
-test-unit: $(OBJDIR) test-cli
+test-unit: $(OBJDIR) test-cli test-updater-url-policy
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_response_buffer.c -o tests/test_updater_response_buffer_t.exe
 	./tests/test_updater_response_buffer_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_response_read.c $(SRCDIR)/updater_response_read.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c -o tests/test_updater_response_read_t.exe
@@ -80,6 +80,10 @@ test-unit: $(OBJDIR) test-cli
 	./tests/test_updater_command_line_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c -o tests/test_updater_t.exe
 	./tests/test_updater_t.exe
+
+test-updater-url-policy:
+	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_url_policy.c -o tests/test_updater_url_policy_t.exe
+	./tests/test_updater_url_policy_t.exe
 
 test-cli:
 	bash ./test_cli_run_mode_overrides.sh
