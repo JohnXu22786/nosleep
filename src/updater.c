@@ -4,7 +4,7 @@
 #include "updater_batch.h"
 #include "updater_command_line.h"
 #include "updater_redirect.h"
-#include "updater_response_buffer.h"
+#include "updater_response_read.h"
 #include "updater_temp_path.h"
 #include "updater_pe.h"
 #include <stdio.h>
@@ -778,59 +778,31 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
     WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
         NULL, &content_length, &cl_size, NULL);
     
-    uint32_t initial_buffer_size = 0;
-    if (!updater_initial_response_buffer_size((uint32_t)content_length,
-                                              &initial_buffer_size)) {
+    char* response = NULL;
+    UpdaterResponseReadResult read_result = updater_read_response_body(
+        updater_read_winhttp, hRequest, (uint32_t)content_length, &response);
+    if (read_result != UPDATER_RESPONSE_READ_OK) {
         WinHttpCloseHandle(hRequest);
         if (hConnect) WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        if (error_msg) *error_msg = "Response is too large";
-        return NULL;
-    }
-    DWORD total_read = 0;
-    DWORD buffer_size = (DWORD)initial_buffer_size;
-    
-    char* response = (char*)malloc(buffer_size);
-    if (!response) {
-        WinHttpCloseHandle(hRequest);
-        if (hConnect) WinHttpCloseHandle(hConnect);
-        WinHttpCloseHandle(hSession);
-        if (error_msg) *error_msg = "Out of memory";
-        return NULL;
-    }
-    memset(response, 0, buffer_size);
-    
-    DWORD bytes_read = 0;
-    while (WinHttpReadData(hRequest, response + total_read, 
-                           buffer_size - total_read - 1, &bytes_read) && bytes_read > 0) {
-        total_read += bytes_read;
-        if (total_read >= buffer_size - 1) {
-            uint32_t new_buffer_size = 0;
-            if (!updater_response_buffer_next_size(buffer_size,
-                                                   &new_buffer_size)) {
-                free(response);
-                WinHttpCloseHandle(hRequest);
-                if (hConnect) WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                if (error_msg) *error_msg = "Response is too large";
-                return NULL;
+        if (error_msg) {
+            switch (read_result) {
+                case UPDATER_RESPONSE_READ_TOO_LARGE:
+                    *error_msg = "Response is too large";
+                    break;
+                case UPDATER_RESPONSE_READ_OUT_OF_MEMORY:
+                    *error_msg = "Out of memory";
+                    break;
+                case UPDATER_RESPONSE_READ_OUT_OF_MEMORY_GROWTH:
+                    *error_msg = "Out of memory during download";
+                    break;
+                default:
+                    *error_msg = "Could not read response";
+                    break;
             }
-            buffer_size = new_buffer_size;
-            char* new_response = (char*)realloc(response, buffer_size);
-            if (!new_response) {
-                // realloc failed - free original buffer and abort
-                free(response);
-                WinHttpCloseHandle(hRequest);
-                if (hConnect) WinHttpCloseHandle(hConnect);
-                WinHttpCloseHandle(hSession);
-                if (error_msg) *error_msg = "Out of memory during download";
-                return NULL;
-            }
-            response = new_response;
-            memset(response + total_read, 0, buffer_size - total_read);
         }
+        return NULL;
     }
-    response[total_read] = '\0';
     
     WinHttpCloseHandle(hRequest);
     if (hConnect) WinHttpCloseHandle(hConnect);
