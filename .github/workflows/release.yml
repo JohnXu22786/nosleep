@@ -21,8 +21,8 @@ jobs:
 
       - name: Build
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres VERSION=$VERSION
+          VERSION="$(bash .github/scripts/validate-release-version.sh "$GITHUB_REF_NAME")"
+          make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres VERSION="$VERSION"
 
       - name: Rename executable
         run: mv bin/nosleep.exe "nosleep-${GITHUB_REF_NAME}.exe"
