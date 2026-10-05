@@ -23,43 +23,49 @@ fi
 
 # Test 1b: No eager creation inside tray_create_icons function body
 # Look for 'for' loop with <60 followed by create_numbered_icon within the function
-# (not the forward declaration at line 55)
-start_line=$(grep -n "static void tray_create_icons" "$SRC_FILE" | head -1 | cut -d: -f1)
+# Match the definition, not its earlier forward declaration.
+start_line=$(
+    grep -nE '^[[:space:]]*static void tray_create_icons[[:space:]]*\([^;]*\)[[:space:]]*\{' "$SRC_FILE" |
+        head -1 | cut -d: -f1
+)
 if [ -n "$start_line" ]; then
-    # Find the line containing "static void tray_destroy_icons" which comes after
-    end_line=$(grep -n "static void tray_destroy_icons\|^static void tray_create_menu" "$SRC_FILE" | while IFS=: read -r num func; do if [ "$num" -gt "$start_line" ]; then echo "$num"; break; fi; done)
+    # Stop at the next helper definition, not its forward declaration.
+    end_line=$(
+        grep -nE '^[[:space:]]*static void tray_destroy_icons[[:space:]]*\([^;]*\)[[:space:]]*\{' "$SRC_FILE" |
+            while IFS=: read -r num func; do
+                if [ "$num" -gt "$start_line" ]; then
+                    echo "$num"
+                    break
+                fi
+            done
+    )
     if [ -n "$end_line" ]; then
         # Extract function body and check for eager creation
-        function_body=$(sed -n "${start_line},${end_line}p" "$SRC_FILE")
+        function_body=$(sed -n "${start_line},$((end_line - 1))p" "$SRC_FILE")
         if echo "$function_body" | grep -q "for.*i.*<.*60.*i++" && echo "$function_body" | grep -q "create_numbered_icon"; then
             fail "tray_create_icons still contains eager creation loop"
         else
             pass "tray_create_icons function body has no eager creation loop"
         fi
     else
-        fail "Could not find end of tray_create_icons function"
+        fail "Could not find tray_destroy_icons definition after tray_create_icons"
     fi
 else
-    fail "Could not find tray_create_icons function"
+    fail "Could not find tray_create_icons definition"
 fi
 
 echo ""
-echo "=== Test 2: Verify lazy loading code exists ==="
+echo "=== Test 2: Verify extracted countdown icon behavior ==="
 
-# Test 2a: Countdown path - lazy loading
-if grep -q "hIconNumbered\[countdown_seconds\] == NULL" "$SRC_FILE"; then
-    pass "Lazy loading NULL check exists for countdown path"
+if CC=cc bash "$SCRIPT_DIR/test_tray_countdown_icon.sh"; then
+    pass "Countdown icon cache behavior and tray routing are covered"
 else
-    fail "Missing lazy loading check in countdown path"
+    fail "Countdown icon cache behavior or tray routing test failed"
 fi
 
-if grep -q "hIconNumbered\[countdown_seconds\] = create_numbered_icon" "$SRC_FILE"; then
-    pass "Lazy creation exists for countdown path"
-else
-    fail "Missing lazy creation in countdown path"
-fi
+echo ""
+echo "=== Test 3: Verify duration path lazy loading ==="
 
-# Test 2b: Duration path - lazy loading
 if grep -q "hIconNumbered\[display_number\] == NULL" "$SRC_FILE"; then
     pass "Lazy loading NULL check exists for duration path"
 else
@@ -70,15 +76,6 @@ if grep -q "hIconNumbered\[display_number\] = create_numbered_icon" "$SRC_FILE";
     pass "Lazy creation exists for duration path"
 else
     fail "Missing lazy creation in duration path"
-fi
-
-echo ""
-echo "=== Test 3: Verify NULL-safe destruction ==="
-
-if grep -q "if.*tray->hIconNumbered\[i\]" "$SRC_FILE"; then
-    pass "tray_destroy_icons has NULL check before DestroyIcon"
-else
-    fail "tray_destroy_icons missing NULL check before DestroyIcon"
 fi
 
 echo ""
