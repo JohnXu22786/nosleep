@@ -19,7 +19,8 @@ import sys
 tray = (Path(sys.argv[1]) / "src/tray.c").read_text()
 assert re.search(
     r"tray_ensure_indefinite_icon\s*\(\s*&tray->hIconCurrentNumbered\s*,\s*"
-    r"&tray->current_number\s*,\s*create_numbered_icon\s*,\s*DestroyIcon",
+    r"&tray->current_number\s*,\s*tray->hIconActive\s*,\s*"
+    r"create_numbered_icon\s*,\s*DestroyIcon",
     tray,
 ), "tray_update_icon must use the tested indefinite-icon transition helper"
 assert re.search(

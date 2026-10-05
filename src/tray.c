@@ -2100,6 +2100,7 @@ void tray_update_icon(NoSleepTray* tray) {
         } else {
             // Indefinite
             tray_ensure_indefinite_icon(&tray->hIconCurrentNumbered, &tray->current_number,
+                                        tray->hIconActive,
                                         create_numbered_icon, DestroyIcon);
             
             tray->nid.hIcon = tray->hIconCurrentNumbered ? tray->hIconCurrentNumbered : tray->hIconActive;
