@@ -86,6 +86,7 @@ harness = r'''#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef void* HWND;
 typedef unsigned int UINT;
@@ -97,6 +98,9 @@ typedef struct {
 } NoSleepTray;
 
 #define CB_ERR (-1)
+#define NOTIFY_EVENT_UPDATE_CHECK_FAILED 7
+
+typedef int NotifyEventId;
 
 static bool update_check_in_progress;
 
@@ -104,6 +108,20 @@ static int kill_count;
 static int set_count;
 static int fail_next_set;
 static UINT last_interval_ms;
+static int notification_count;
+static NotifyEventId last_notification_event;
+static char last_notification_title[128];
+static char last_notification_message[256];
+
+static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
+                                   const char* title, const char* message, bool critical) {
+    (void)tray;
+    (void)critical;
+    ++notification_count;
+    last_notification_event = event_type;
+    snprintf(last_notification_title, sizeof(last_notification_title), "%s", title);
+    snprintf(last_notification_message, sizeof(last_notification_message), "%s", message);
+}
 
 static int KillTimer(HWND hwnd, UINT_PTR timer_id) {
     (void)hwnd;
@@ -138,6 +156,7 @@ static int fail(const char* scenario) {
 
 int main(void) {
     NoSleepTray tray = { (HWND)1, 0, 0 };
+    NoSleepTray startup_tray = { (HWND)1, 1, 0 };
 
     if (!tray_update_check_begin()) {
         return fail("the first update check must start");
@@ -150,6 +169,28 @@ int main(void) {
         return fail("update checks must be allowed after the active check ends");
     }
     tray_update_check_end();
+
+    fail_next_set = 1;
+    tray_setup_update_timer(&startup_tray);
+    if (startup_tray.auto_check_interval != 1 || startup_tray.update_timer_id != 0 ||
+        set_count != 1 || kill_count != 0 || last_interval_ms != 86400000U ||
+        notification_count != 1 ||
+        last_notification_event != NOTIFY_EVENT_UPDATE_CHECK_FAILED ||
+        strcmp(last_notification_title, "Automatic Updates Not Scheduled") != 0 ||
+        strcmp(last_notification_message,
+               "Could not schedule automatic update checks. Open Settings and reapply your interval to retry.") != 0) {
+        return fail("a startup SetTimer failure must preserve the saved interval and notify the user");
+    }
+
+    tray_apply_auto_check_interval(&startup_tray, 1);
+    if (startup_tray.auto_check_interval != 1 || startup_tray.update_timer_id == 0 ||
+        set_count != 2 || notification_count != 1) {
+        return fail("the saved interval must remain available for a later settings retry");
+    }
+
+    set_count = 0;
+    kill_count = 0;
+    notification_count = 0;
 
     fail_next_set = 1;
     tray_apply_auto_check_interval(&tray, 1);

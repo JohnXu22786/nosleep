@@ -59,6 +59,9 @@ jobs:
       - name: Test countdown icon lifetime
         run: bash test_tray_countdown_icon.sh
 
+      - name: Test automatic update timer failures
+        run: bash test_tray_auto_update_timer.sh
+
       - name: Test numbered icon ownership
         run: bash test_tray_numbered_icon.sh
 
