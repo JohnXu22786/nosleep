@@ -1187,10 +1187,22 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
 
     // Preserve countdown state before its worker observes cancellation and clears it.
     bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
-    SessionFinishedAction countdown_action = tray->countdown_action;
 
     HANDLE sleep_timer = tray->sleep_timer;
     HANDLE shutdown_timer = tray->shutdown_timer;
+    bool was_delayed_action_pending = sleep_timer != NULL || shutdown_timer != NULL;
+    SessionFinishedAction countdown_action = tray->countdown_action;
+    bool saved_action_matches_pending =
+        (countdown_action == SESSION_FINISHED_SHUTDOWN && shutdown_timer) ||
+        (countdown_action == SESSION_FINISHED_SLEEP && sleep_timer);
+    if (!saved_action_matches_pending) {
+        // The pending timer identifies the action when the saved countdown type is stale.
+        if (shutdown_timer) {
+            countdown_action = SESSION_FINISHED_SHUTDOWN;
+        } else if (sleep_timer) {
+            countdown_action = SESSION_FINISHED_SLEEP;
+        }
+    }
     tray->sleep_timer = NULL;
     tray->shutdown_timer = NULL;
     if (sleep_timer) SetEvent(tray->sleep_stop_event);
@@ -1265,7 +1277,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     int seconds = (int)(elapsed_seconds % 60);
     
     char message[256];
-    DEBUG_LOG("tray_stop_nosleep: timer_expired=%s, duration_expired=%s, was_countdown_active=%s", timer_expired ? "true" : "false", ATOMIC_LOAD_BOOL(&tray->duration_expired) ? "true" : "false", was_countdown_active ? "true" : "false");
+    DEBUG_LOG("tray_stop_nosleep: timer_expired=%s, duration_expired=%s, was_countdown_active=%s, was_delayed_action_pending=%s", timer_expired ? "true" : "false", ATOMIC_LOAD_BOOL(&tray->duration_expired) ? "true" : "false", was_countdown_active ? "true" : "false", was_delayed_action_pending ? "true" : "false");
     
     // Determine which notification to show
     bool nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
@@ -1274,8 +1286,8 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
             tray_show_notification(tray, NOTIFY_EVENT_ERROR,
                 "Sleep prevention failed",
                 "Sleep prevention stopped after repeated refresh failures.", true);
-        } else if (was_countdown_active) {
-            // Countdown was cancelled
+        } else if (was_countdown_active || was_delayed_action_pending) {
+            // Countdown or delayed action was cancelled
             DEBUG_LOG("tray_stop_nosleep: showing countdown cancellation notification");
             if (countdown_action == SESSION_FINISHED_SHUTDOWN) {
                 tray_show_notification(tray, NOTIFY_EVENT_COUNTDOWN_CANCEL,

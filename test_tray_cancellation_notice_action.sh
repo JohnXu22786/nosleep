@@ -193,12 +193,16 @@ main = r'''
 static int expect_cancellation_notice(const char *scenario,
                                       SessionFinishedAction scheduled_action,
                                       SessionFinishedAction changed_preference,
+                                      SessionFinishedAction saved_countdown_action,
+                                      bool countdown_display_active,
+                                      bool duration_expired,
                                       const char *expected_title,
                                       const char *expected_message) {
     NoSleepTray tray = {0};
     tray.session_finished_action = scheduled_action;
-    tray.countdown_action = scheduled_action;
-    tray.delayed_sleep_countdown_active = true;
+    tray.countdown_action = saved_countdown_action;
+    tray.delayed_sleep_countdown_active = countdown_display_active;
+    tray.duration_expired = duration_expired;
     tray.session_finished_action = changed_preference;
     if (scheduled_action == SESSION_FINISHED_SHUTDOWN) {
         tray.shutdown_timer = &delayed_action_handle;
@@ -237,13 +241,35 @@ int main(void) {
     failures += expect_cancellation_notice(
         "sleep countdown changed to shutdown preference",
         SESSION_FINISHED_SLEEP, SESSION_FINISHED_SHUTDOWN,
+        SESSION_FINISHED_SLEEP,
+        true, false,
         "Sleep cancelled", "System sleep has been cancelled");
     failures += expect_cancellation_notice(
         "shutdown countdown changed to sleep preference",
         SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SLEEP,
+        SESSION_FINISHED_SHUTDOWN,
+        true, false,
+        "Shutdown cancelled", "System shutdown has been cancelled");
+    failures += expect_cancellation_notice(
+        "pending sleep action with failed countdown display after duration expiry",
+        SESSION_FINISHED_SLEEP, SESSION_FINISHED_SHUTDOWN,
+        SESSION_FINISHED_SLEEP,
+        false, true,
+        "Sleep cancelled", "System sleep has been cancelled");
+    failures += expect_cancellation_notice(
+        "pending shutdown action before countdown worker records its type",
+        SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SLEEP,
+        SESSION_FINISHED_NONE,
+        false, true,
+        "Shutdown cancelled", "System shutdown has been cancelled");
+    failures += expect_cancellation_notice(
+        "pending shutdown action after a sleep countdown left a stale type",
+        SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SLEEP,
+        SESSION_FINISHED_SLEEP,
+        false, true,
         "Shutdown cancelled", "System shutdown has been cancelled");
     if (failures) return 1;
-    puts("PASS: cancellation notices use the active countdown action after preference changes");
+    puts("PASS: cancellation notices use the scheduled action across countdown states");
     return 0;
 }
 '''
