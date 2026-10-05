@@ -1,6 +1,7 @@
 // Portable parsing and version comparison used by the updater
 #include "updater_logic.h"
 #include "cJSON.h"
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -72,6 +73,71 @@ static bool is_numeric_identifier(const char* identifier, size_t length) {
     return true;
 }
 
+static bool is_ascii_digit(char character) {
+    return character >= '0' && character <= '9';
+}
+
+static bool is_ascii_alphanumeric(char character) {
+    return (character >= '0' && character <= '9') ||
+           (character >= 'a' && character <= 'z') ||
+           (character >= 'A' && character <= 'Z');
+}
+
+static bool consume_version_component(const char** version) {
+    const char* character = *version;
+    if (!is_ascii_digit(*character)) return false;
+
+    unsigned int value = 0;
+    do {
+        unsigned int digit = (unsigned int)(*character - '0');
+        if (value > ((unsigned int)INT_MAX - digit) / 10u) return false;
+        value = value * 10u + digit;
+        character++;
+    } while (is_ascii_digit(*character));
+
+    *version = character;
+    return true;
+}
+
+static bool consume_version_identifiers(const char** version) {
+    const char* character = *version;
+    const char* identifier_start = character;
+    while (is_ascii_alphanumeric(*character) || *character == '-') character++;
+    if (character == identifier_start) return false;
+
+    while (*character == '.') {
+        character++;
+        identifier_start = character;
+        while (is_ascii_alphanumeric(*character) || *character == '-') character++;
+        if (character == identifier_start) return false;
+    }
+
+    *version = character;
+    return true;
+}
+
+static bool is_valid_version(const char* version) {
+    if (!version) return false;
+    if (version[0] == 'v' || version[0] == 'V') version++;
+
+    if (!consume_version_component(&version) || *version++ != '.' ||
+        !consume_version_component(&version) || *version++ != '.' ||
+        !consume_version_component(&version)) {
+        return false;
+    }
+
+    if (*version == '-') {
+        version++;
+        if (!consume_version_identifiers(&version)) return false;
+    }
+    if (*version == '+') {
+        version++;
+        if (!consume_version_identifiers(&version)) return false;
+    }
+
+    return *version == '\0';
+}
+
 static int compare_prerelease(const char* v1, size_t v1_len,
                               const char* v2, size_t v2_len) {
     const char* end1 = v1 + v1_len;
@@ -133,6 +199,8 @@ static const char* get_prerelease(const char* version, int core_length, size_t* 
 int updater_compare_versions(const char* v1, const char* v2) {
     if (!v1 || !v2) return 0;
 
+    if (!is_valid_version(v1) || !is_valid_version(v2)) return -2;
+
     // Strip leading 'v' or 'V'
     if (v1[0] == 'v' || v1[0] == 'V') v1++;
     if (v2[0] == 'v' || v2[0] == 'V') v2++;
@@ -184,7 +252,8 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
     }
 
     size_t len = strlen(tag_name->valuestring);
-    if (len == 0 || len >= sizeof(info->tag_name)) {
+    if (len == 0 || len >= sizeof(info->tag_name) ||
+        !is_valid_version(tag_name->valuestring)) {
         cJSON_Delete(root);
         return false;
     }

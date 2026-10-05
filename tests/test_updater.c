@@ -153,6 +153,11 @@ static void test_ver_compare(void) {
     ASSERT(updater_compare_versions("1.2.3+build.1", "1.2.3+build.2") == 0, "Expected 0");
     PASS();
 
+    TEST("malformed version suffix is not treated as an equal numeric core");
+    ASSERT(updater_compare_versions("v1.2.3garbage", "1.2.3") == -2,
+           "Expected invalid-version result");
+    PASS();
+
     TEST("both NULL returns 0");
     ASSERT(updater_compare_versions(NULL, NULL) == 0, "Expected 0");
     PASS();
@@ -278,6 +283,22 @@ static void test_parse_no_tag(void) {
     PASS();
 }
 
+static void test_parse_malformed_tag(void) {
+    printf("\n--- updater_parse_response (malformed release tag) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    const char* malformed_release =
+        "{\"tag_name\":\"v1.2.3garbage\",\"assets\":["
+        "{\"browser_download_url\":"
+        "\"https://github.com/JohnXu22786/nosleep/releases/download/v1.2.3/nosleep-1.2.3.exe\"}]}";
+
+    TEST("release tag with trailing garbage is rejected");
+    ASSERT(!updater_parse_response(malformed_release, &info) &&
+           !info.update_available && info.download_url[0] == '\0',
+           "Expected malformed release tag to be unavailable");
+    PASS();
+}
+
 static void test_parse_no_exe_assets(void) {
     printf("\n--- updater_parse_response (no assets) ---\n");
     fflush(stdout);
@@ -362,6 +383,7 @@ int main(void) {
     test_parse_exe_url_with_query();
     test_parse_exe_url_with_valid_port();
     test_parse_no_tag();
+    test_parse_malformed_tag();
     test_parse_no_exe_assets();
     test_parse_empty_assets();
     test_parse_no_leading_v();
