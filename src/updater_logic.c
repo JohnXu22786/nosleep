@@ -64,6 +64,70 @@ static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
     return path_len >= 4 && strncmp(path + path_len - 4, ".exe", 4) == 0;
 }
 
+static bool is_numeric_identifier(const char* identifier, size_t length) {
+    if (length == 0) return false;
+    for (size_t i = 0; i < length; i++) {
+        if (identifier[i] < '0' || identifier[i] > '9') return false;
+    }
+    return true;
+}
+
+static int compare_prerelease(const char* v1, size_t v1_len,
+                              const char* v2, size_t v2_len) {
+    const char* end1 = v1 + v1_len;
+    const char* end2 = v2 + v2_len;
+
+    while (v1 < end1 && v2 < end2) {
+        const char* id1_end = memchr(v1, '.', (size_t)(end1 - v1));
+        const char* id2_end = memchr(v2, '.', (size_t)(end2 - v2));
+        if (!id1_end) id1_end = end1;
+        if (!id2_end) id2_end = end2;
+
+        size_t id1_len = (size_t)(id1_end - v1);
+        size_t id2_len = (size_t)(id2_end - v2);
+        bool id1_numeric = is_numeric_identifier(v1, id1_len);
+        bool id2_numeric = is_numeric_identifier(v2, id2_len);
+
+        if (id1_numeric && id2_numeric) {
+            if (id1_len > id2_len) return 1;
+            if (id1_len < id2_len) return -1;
+            int result = memcmp(v1, v2, id1_len);
+            if (result > 0) return 1;
+            if (result < 0) return -1;
+        } else if (id1_numeric != id2_numeric) {
+            return id1_numeric ? -1 : 1;
+        } else {
+            size_t common_len = id1_len < id2_len ? id1_len : id2_len;
+            int result = memcmp(v1, v2, common_len);
+            if (result > 0) return 1;
+            if (result < 0) return -1;
+            if (id1_len > id2_len) return 1;
+            if (id1_len < id2_len) return -1;
+        }
+
+        if (id1_end == end1 || id2_end == end2) {
+            if (id1_end == end1 && id2_end == end2) return 0;
+            return id1_end == end1 ? -1 : 1;
+        }
+        v1 = id1_end + 1;
+        v2 = id2_end + 1;
+    }
+
+    if (v1 == end1 && v2 == end2) return 0;
+    return v1 == end1 ? -1 : 1;
+}
+
+static const char* get_prerelease(const char* version, int core_length, size_t* length) {
+    const char* suffix = version + core_length;
+    if (*suffix != '-') return NULL;
+
+    const char* prerelease = suffix + 1;
+    const char* build = strchr(prerelease, '+');
+    const char* end = build ? build : prerelease + strlen(prerelease);
+    *length = (size_t)(end - prerelease);
+    return prerelease;
+}
+
 // Compare two version strings (e.g., "2.0.0" > "1.5.0")
 // Returns: 1 if v1 > v2, 0 if equal, -1 if v1 < v2
 int updater_compare_versions(const char* v1, const char* v2) {
@@ -74,11 +138,11 @@ int updater_compare_versions(const char* v1, const char* v2) {
     if (v2[0] == 'v' || v2[0] == 'V') v2++;
 
     // Parse major.minor.patch
-    int maj1 = 0, min1 = 0, pat1 = 0;
-    int maj2 = 0, min2 = 0, pat2 = 0;
+    int maj1 = 0, min1 = 0, pat1 = 0, core_length1 = 0;
+    int maj2 = 0, min2 = 0, pat2 = 0, core_length2 = 0;
 
-    sscanf(v1, "%d.%d.%d", &maj1, &min1, &pat1);
-    sscanf(v2, "%d.%d.%d", &maj2, &min2, &pat2);
+    int parsed1 = sscanf(v1, "%d.%d.%d%n", &maj1, &min1, &pat1, &core_length1);
+    int parsed2 = sscanf(v2, "%d.%d.%d%n", &maj2, &min2, &pat2, &core_length2);
 
     if (maj1 > maj2) return 1;
     if (maj1 < maj2) return -1;
@@ -86,6 +150,20 @@ int updater_compare_versions(const char* v1, const char* v2) {
     if (min1 < min2) return -1;
     if (pat1 > pat2) return 1;
     if (pat1 < pat2) return -1;
+
+    if (parsed1 == 3 && parsed2 == 3) {
+        size_t prerelease1_len = 0;
+        size_t prerelease2_len = 0;
+        const char* prerelease1 = get_prerelease(v1, core_length1, &prerelease1_len);
+        const char* prerelease2 = get_prerelease(v2, core_length2, &prerelease2_len);
+
+        if (!prerelease1 && !prerelease2) return 0;
+        if (!prerelease1) return 1;
+        if (!prerelease2) return -1;
+        return compare_prerelease(prerelease1, prerelease1_len,
+                                  prerelease2, prerelease2_len);
+    }
+
     return 0;
 }
 

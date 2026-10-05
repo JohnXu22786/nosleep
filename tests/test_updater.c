@@ -129,6 +129,30 @@ static void test_ver_compare(void) {
     ASSERT(updater_compare_versions("V1.1.1", "1.1.1") == 0, "Expected 0");
     PASS();
 
+    TEST("stable release is greater than same-core prerelease");
+    ASSERT(updater_compare_versions("1.2.3", "1.2.3-rc.1") == 1, "Expected 1");
+    PASS();
+
+    TEST("same-core prerelease is less than stable release");
+    ASSERT(updater_compare_versions("1.2.3-rc.1", "1.2.3") == -1, "Expected -1");
+    PASS();
+
+    TEST("numeric prerelease identifiers compare numerically");
+    ASSERT(updater_compare_versions("1.2.3-rc.2", "1.2.3-rc.10") == -1, "Expected -1");
+    PASS();
+
+    TEST("numeric prerelease identifier has lower precedence than nonnumeric");
+    ASSERT(updater_compare_versions("1.2.3-1", "1.2.3-alpha") == -1, "Expected -1");
+    PASS();
+
+    TEST("shorter equal-prefix prerelease has lower precedence");
+    ASSERT(updater_compare_versions("1.2.3-alpha", "1.2.3-alpha.1") == -1, "Expected -1");
+    PASS();
+
+    TEST("build metadata does not affect version precedence");
+    ASSERT(updater_compare_versions("1.2.3+build.1", "1.2.3+build.2") == 0, "Expected 0");
+    PASS();
+
     TEST("both NULL returns 0");
     ASSERT(updater_compare_versions(NULL, NULL) == 0, "Expected 0");
     PASS();
