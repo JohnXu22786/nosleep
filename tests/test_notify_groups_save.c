@@ -52,6 +52,7 @@ typedef struct {
 static StoredRegistryTree stored_trees[REGISTRY_TREE_COUNT];
 static bool fail_root_create;
 static int fail_group_create_index;
+static int fail_group_open_index;
 static int fail_group_delete_index;
 static int fail_write_group_index;
 static char fail_write_name[32];
@@ -65,6 +66,7 @@ static void reset_registry(void) {
     memset(stored_trees, 0, sizeof(stored_trees));
     fail_root_create = false;
     fail_group_create_index = -1;
+    fail_group_open_index = -1;
     fail_group_delete_index = -1;
     fail_write_group_index = -2;
     fail_write_name[0] = '\0';
@@ -203,8 +205,9 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access,
     }
 
     int index;
-    if (!get_group_location(path, &tree, &index) ||
-        !stored_trees[tree].groups[index].exists) {
+    if (!get_group_location(path, &tree, &index)) return ERROR_FILE_NOT_FOUND;
+    if (index == fail_group_open_index) return ERROR_ACCESS_DENIED;
+    if (!stored_trees[tree].groups[index].exists) {
         return ERROR_FILE_NOT_FOUND;
     }
     *key = (HKEY)(intptr_t)group_handle(tree, index);
@@ -545,6 +548,60 @@ static int test_successful_save_round_trips_groups(void) {
     return 0;
 }
 
+static int test_load_skips_missing_group_slots_and_preserves_persistence(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 2;
+    seed_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    seed_stored_group(2, "Later group", 0x155u, 0);
+
+    NotifyGroupManager loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    notify_groups_load(&loaded);
+    if (loaded.count != 2 || loaded.active_index != 1 ||
+        strcmp(loaded.groups[0].name, "All notifications") != 0 ||
+        strcmp(loaded.groups[1].name, "Later group") != 0 ||
+        loaded.groups[1].event_mask != 0x155u) {
+        fprintf(stderr, "FAIL: loading stopped at a missing notification-group slot\n");
+        return 1;
+    }
+
+    if (!notify_groups_save(&loaded)) {
+        fprintf(stderr, "FAIL: loaded groups could not be saved after a missing slot\n");
+        return 1;
+    }
+
+    NotifyGroupManager reloaded;
+    memset(&reloaded, 0, sizeof(reloaded));
+    notify_groups_load(&reloaded);
+    if (reloaded.count != 2 || reloaded.active_index != 1 ||
+        strcmp(reloaded.groups[0].name, "All notifications") != 0 ||
+        strcmp(reloaded.groups[1].name, "Later group") != 0 ||
+        reloaded.groups[1].event_mask != 0x155u) {
+        fprintf(stderr, "FAIL: saving after a missing slot lost a later notification group\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_load_stops_on_non_missing_group_open_error(void) {
+    reset_registry();
+    stored_root_exists = true;
+    seed_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    seed_stored_group(2, "Later group", 0x155u, 0);
+    fail_group_open_index = 1;
+
+    NotifyGroupManager loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    notify_groups_load(&loaded);
+    if (loaded.count != 1 || strcmp(loaded.groups[0].name, "All notifications") != 0) {
+        fprintf(stderr, "FAIL: a registry-open error did not stop group enumeration\n");
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_group_names_reject_whitespace_only();
@@ -557,6 +614,8 @@ int main(void) {
     failures += test_staging_cleanup_failure();
     failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
+    failures += test_load_skips_missing_group_slots_and_preserves_persistence();
+    failures += test_load_stops_on_non_missing_group_open_error();
 
     if (failures != 0) return 1;
     puts("PASS: notification-group saves report registry failures and round-trip successfully");

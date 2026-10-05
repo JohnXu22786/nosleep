@@ -343,6 +343,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         
         HKEY hKeyGroup;
         result = RegOpenKeyEx(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &hKeyGroup);
+        if (result == ERROR_FILE_NOT_FOUND) continue;
         if (result != ERROR_SUCCESS) break;
         
         // Read name with proper error checking
