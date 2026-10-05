@@ -4170,6 +4170,11 @@ static void tray_setup_update_timer(NoSleepTray* tray) {
     }
 
     tray->update_timer_id = SetTimer(tray->hwnd, 1002, interval_ms, NULL);
+    if (!tray->update_timer_id) {
+        tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
+            "Automatic Updates Not Scheduled",
+            "Could not schedule automatic update checks. Open Settings and reapply your interval to retry.", false);
+    }
 }
 
 
