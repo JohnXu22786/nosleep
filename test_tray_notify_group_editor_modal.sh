@@ -89,6 +89,7 @@ edit_save_case = extract_case(
     edit_proc, "IDC_NOTIFY_GROUP_EDIT_OK", "IDC_NOTIFY_GROUP_EDIT_CANCEL"
 )
 settings_proc = extract_function("settings_dialog_proc")
+notifications_tab = extract_function("create_notifications_tab")
 set_active_case = extract_case(
     settings_proc, "IDC_NOTIFY_SET_ACTIVE", "IDC_NOTIFY_DEL_GROUP"
 )
@@ -108,6 +109,11 @@ assert "notify_groups_save(&updated)" in set_active_case and (
 assert settings_proc.count("if (notify_groups_save(&updated))") == 2 and (
     settings_proc.count("settings_tray->notify_groups = updated;") == 2
 ), "Set Active and Delete must both gate their in-memory changes on save success"
+assert re.search(
+    r'"Changes are saved immediately; Settings Cancel does\\n"\s*'
+    r'"not undo notification group changes\."',
+    notifications_tab,
+), "the Notifications tab must explain that Settings Cancel does not undo saved group changes"
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
