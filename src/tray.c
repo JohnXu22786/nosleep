@@ -3609,11 +3609,11 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
 
     // Help text for notification groups
     CreateWindowEx(0, "STATIC", 
-        "Notification groups let you control which\n"
-        "notification types produce balloon messages.\n"
-        "Select a group from the list and click\n"
-        "\"Configure...\" to customize which events\n"
-        "produce notifications for that group.",
+        "Notification groups control which notification types\n"
+        "produce balloon messages. Select a group and click\n"
+        "Configure... to customize which events produce them.\n"
+        "Changes are saved immediately; Settings Cancel does\n"
+        "not undo notification group changes.",
         WS_CHILD | WS_VISIBLE,
         15, 220, 410, 80, hwnd_parent, NULL, hInst, NULL);
 
