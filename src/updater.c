@@ -645,8 +645,7 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
         }
         
         // Create new connection
-        *hConnect = WinHttpConnect(hSession, newHost,
-                                   INTERNET_DEFAULT_HTTPS_PORT, 0);
+        *hConnect = WinHttpConnect(hSession, newHost, newUrlComp.nPort, 0);
         if (!*hConnect) {
             *hRequest = NULL;
             break;
@@ -858,8 +857,7 @@ static bool download_file(const char* url, const char* output_path,
         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, NULL, NULL, 0);
     if (!hSession) return false;
     
-    HINTERNET hConnect = WinHttpConnect(hSession, hostName,
-                                        INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET hConnect = WinHttpConnect(hSession, hostName, urlComp.nPort, 0);
     if (!hConnect) {
         WinHttpCloseHandle(hSession);
         return false;
