@@ -192,4 +192,144 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(binary)], check=True)
 
 print("PASS: countdown startup and tray update use the scheduled action snapshot")
+
+startup_failure_harness = r'''#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef unsigned long DWORD;
+typedef void *LPVOID;
+typedef void *HANDLE;
+#define WINAPI
+#define DEBUG_LOG(...) ((void)0)
+#define ATOMIC_STORE_BOOL(dest, value) (*(dest) = (value))
+#define ATOMIC_STORE_INT(dest, value) (*(dest) = (value))
+
+typedef enum {
+    SESSION_FINISHED_NONE = 0,
+    SESSION_FINISHED_SHUTDOWN,
+    SESSION_FINISHED_SLEEP
+} SessionFinishedAction;
+
+typedef enum {
+    NOTIFY_EVENT_ERROR = 4
+} NotifyEventId;
+
+typedef struct NoSleepTray {
+    SessionFinishedAction countdown_action;
+    bool delayed_sleep_countdown_active;
+    int countdown_seconds;
+    bool countdown_blink_state;
+    bool countdown_stopping;
+    HANDLE countdown_stop_event;
+    HANDLE countdown_timer_thread;
+} NoSleepTray;
+
+static bool create_thread_success;
+static int notification_count;
+static int icon_update_count;
+static int menu_update_count;
+static NotifyEventId notification_event;
+static char notification_title[128];
+static char notification_message[256];
+
+static DWORD WINAPI countdown_thread(LPVOID lp_param) {
+    (void)lp_param;
+    return 0;
+}
+
+static HANDLE CreateThread(void *attributes, size_t stack_size,
+                           DWORD (WINAPI *start)(LPVOID), LPVOID parameter,
+                           DWORD flags, DWORD *thread_id) {
+    (void)attributes;
+    (void)stack_size;
+    (void)start;
+    (void)parameter;
+    (void)flags;
+    (void)thread_id;
+    return create_thread_success ? (HANDLE)1 : NULL;
+}
+
+static int ResetEvent(HANDLE event) {
+    (void)event;
+    return 1;
+}
+
+static void tray_stop_countdown(NoSleepTray *tray) {
+    (void)tray;
+}
+
+static void tray_update_icon(NoSleepTray *tray) {
+    (void)tray;
+    ++icon_update_count;
+}
+
+static void tray_update_stop_menu_item(NoSleepTray *tray) {
+    (void)tray;
+    ++menu_update_count;
+}
+
+static void tray_show_notification(NoSleepTray *tray, NotifyEventId event,
+                                   const char *title, const char *message,
+                                   bool critical) {
+    (void)tray;
+    (void)critical;
+    ++notification_count;
+    notification_event = event;
+    snprintf(notification_title, sizeof(notification_title), "%s", title);
+    snprintf(notification_message, sizeof(notification_message), "%s", message);
+}
+
+''' + start_countdown + r'''
+
+static int expect_failure_notice(SessionFinishedAction action,
+                                 const char *expected_message) {
+    NoSleepTray tray = {0};
+    tray.countdown_stop_event = (HANDLE)1;
+    create_thread_success = false;
+    notification_count = 0;
+    icon_update_count = 0;
+    menu_update_count = 0;
+
+    tray_start_countdown(&tray, action);
+
+    if (notification_count != 1 || notification_event != NOTIFY_EVENT_ERROR ||
+        strcmp(notification_title, "Countdown Display Unavailable") != 0 ||
+        strcmp(notification_message, expected_message) != 0) {
+        fprintf(stderr,
+                "FAIL: thread creation failure notice was '%s': '%s' (%d notices)\n",
+                notification_title, notification_message, notification_count);
+        return 1;
+    }
+    if (icon_update_count != 1 || menu_update_count != 1) {
+        fprintf(stderr, "FAIL: startup failure skipped tray state refresh\n");
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    int failures = 0;
+    failures += expect_failure_notice(
+        SESSION_FINISHED_SLEEP,
+        "System will sleep in 60 seconds, but the countdown display could not be started.");
+    failures += expect_failure_notice(
+        SESSION_FINISHED_SHUTDOWN,
+        "System will shut down in 60 seconds, but the countdown display could not be started.");
+    if (failures) return 1;
+    puts("PASS: countdown thread startup failure reports the pending action");
+    return 0;
+}
+'''
+
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "test_tray_countdown_start_failure.c"
+    binary = Path(tmp) / "test_tray_countdown_start_failure"
+    source.write_text(startup_failure_harness)
+    command = shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c99", "-Wall", "-Wextra", str(source), "-o", str(binary),
+    ]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)
 PY

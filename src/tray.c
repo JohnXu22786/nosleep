@@ -1907,6 +1907,12 @@ void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action) {
     if (!tray->countdown_timer_thread) {
         ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, false);
         DEBUG_LOG("tray_start_countdown: failed to create countdown thread");
+        char message[128];
+        snprintf(message, sizeof(message),
+                 "System will %s in 60 seconds, but the countdown display could not be started.",
+                 action == SESSION_FINISHED_SHUTDOWN ? "shut down" : "sleep");
+        tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                               "Countdown Display Unavailable", message, true);
     } else {
         DEBUG_LOG("tray_start_countdown: countdown thread created");
     }
