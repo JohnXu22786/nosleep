@@ -636,9 +636,9 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
             break;
         }
 
-        if (!updater_build_redirect_target(newPath, newExtraInfo,
-                                            newRequestTarget,
-                                            sizeof(newRequestTarget) / sizeof(newRequestTarget[0]))) {
+        if (!updater_build_request_target(newPath, newExtraInfo,
+                                          newRequestTarget,
+                                          sizeof(newRequestTarget) / sizeof(newRequestTarget[0]))) {
             *hRequest = NULL;
             *hConnect = NULL;
             break;
@@ -828,20 +828,29 @@ static bool download_file(const char* url, const char* output_path,
         return false;
     }
     
-    // Parse URL to extract host, path
+    // Parse URL to extract host, path, and query data
     URL_COMPONENTS urlComp = {0};
     urlComp.dwStructSize = sizeof(urlComp);
     
     wchar_t hostName[256] = {0};
     wchar_t urlPath[2048] = {0};
+    wchar_t urlExtraInfo[2048] = {0};
+    wchar_t requestTarget[4096] = {0};
     
     urlComp.lpszHostName = hostName;
     urlComp.dwHostNameLength = 256;
     urlComp.lpszUrlPath = urlPath;
     urlComp.dwUrlPathLength = 2048;
+    urlComp.lpszExtraInfo = urlExtraInfo;
+    urlComp.dwExtraInfoLength = 2048;
     
     if (!WinHttpCrackUrl(wurl, 0, 0, &urlComp) ||
         urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
+        return false;
+    }
+
+    if (!updater_build_request_target(urlPath, urlExtraInfo, requestTarget,
+                                      sizeof(requestTarget) / sizeof(requestTarget[0]))) {
         return false;
     }
     
@@ -858,7 +867,7 @@ static bool download_file(const char* url, const char* output_path,
     
     DWORD flags = WINHTTP_FLAG_REFRESH | WINHTTP_FLAG_SECURE;
     
-    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", urlPath,
+    HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", requestTarget,
         NULL, NULL, NULL, flags);
     if (!hRequest) {
         WinHttpCloseHandle(hConnect);
