@@ -585,6 +585,29 @@ static int test_load_skips_missing_group_slots_and_preserves_persistence(void) {
     return 0;
 }
 
+static int test_load_skips_whitespace_only_group_and_maps_active_selection(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 2;
+    seed_stored_group(0, " \t\r\n", 0x1u, 0);
+    seed_stored_group(1, "Earlier group", 0x2u, 0);
+    seed_stored_group(2, "Active group", 0x4u, 0);
+
+    NotifyGroupManager loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    notify_groups_load(&loaded);
+    NotifyGroup *active = notify_groups_get_active(&loaded);
+    if (loaded.count != 2 || loaded.active_index != 1 || !active ||
+        strcmp(loaded.groups[0].name, "Earlier group") != 0 ||
+        strcmp(loaded.groups[1].name, "Active group") != 0 ||
+        strcmp(active->name, "Active group") != 0) {
+        fprintf(stderr, "FAIL: loading retained a whitespace-only group or mis-mapped the active group\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_load_stops_on_non_missing_group_open_error(void) {
     reset_registry();
     stored_root_exists = true;
@@ -615,6 +638,7 @@ int main(void) {
     failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
     failures += test_load_skips_missing_group_slots_and_preserves_persistence();
+    failures += test_load_skips_whitespace_only_group_and_maps_active_selection();
     failures += test_load_stops_on_non_missing_group_open_error();
 
     if (failures != 0) return 1;
