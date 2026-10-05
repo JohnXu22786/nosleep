@@ -805,7 +805,17 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
                            buffer_size - total_read - 1, &bytes_read) && bytes_read > 0) {
         total_read += bytes_read;
         if (total_read >= buffer_size - 1) {
-            buffer_size *= 2;
+            uint32_t new_buffer_size = 0;
+            if (!updater_response_buffer_next_size(buffer_size,
+                                                   &new_buffer_size)) {
+                free(response);
+                WinHttpCloseHandle(hRequest);
+                if (hConnect) WinHttpCloseHandle(hConnect);
+                WinHttpCloseHandle(hSession);
+                if (error_msg) *error_msg = "Response is too large";
+                return NULL;
+            }
+            buffer_size = new_buffer_size;
             char* new_response = (char*)realloc(response, buffer_size);
             if (!new_response) {
                 // realloc failed - free original buffer and abort
