@@ -3,48 +3,35 @@
 #include <stdint.h>
 #include <stdio.h>
 
-static int test_rejects_max_content_length_before_adding_terminator(void) {
+static int test_initial_buffer_respects_response_limit(void) {
     uint32_t buffer_size = 0;
-    if (updater_initial_response_buffer_size(UINT32_MAX, &buffer_size)) {
-        fprintf(stderr, "maximum Content-Length should be rejected before size addition\n");
-        return 1;
-    }
-    return 0;
-}
-
-static int test_initial_buffer_size_stays_within_safe_growth_limit(void) {
-    uint32_t buffer_size = 0;
-    uint32_t largest_safe_content_length = UINT32_MAX / 2u - 1u;
-    if (!updater_initial_response_buffer_size(largest_safe_content_length,
+    if (!updater_initial_response_buffer_size(UPDATER_MAX_RESPONSE_SIZE,
                                               &buffer_size) ||
-        buffer_size != UINT32_MAX / 2u) {
-        fprintf(stderr, "largest safe Content-Length should reserve a growable buffer\n");
+        buffer_size != UPDATER_MAX_RESPONSE_BUFFER_SIZE) {
+        fprintf(stderr, "1 MiB Content-Length should reserve space for a terminator\n");
         return 1;
     }
-
-    if (updater_initial_response_buffer_size(UINT32_MAX / 2u, &buffer_size)) {
-        fprintf(stderr, "Content-Length requiring an overflowing first growth should be rejected\n");
-        return 1;
-    }
-    if (updater_initial_response_buffer_size(UINT32_MAX / 2u + 1u,
+    if (updater_initial_response_buffer_size(UPDATER_MAX_RESPONSE_SIZE + 1u,
                                               &buffer_size)) {
-        fprintf(stderr, "2 GiB Content-Length should be rejected before allocation\n");
+        fprintf(stderr, "Content-Length above 1 MiB should be rejected before allocation\n");
         return 1;
     }
     return 0;
 }
 
-static int test_capacity_growth_rejects_dword_overflow(void) {
+static int test_capacity_growth_stops_at_response_limit(void) {
     uint32_t next_size = 0;
-    if (!updater_response_buffer_next_size(UINT32_MAX / 2u, &next_size) ||
-        next_size != UINT32_MAX - 1u) {
-        fprintf(stderr, "largest safely doubleable capacity should double without wrapping\n");
+    if (!updater_response_buffer_next_size(
+            UPDATER_MAX_RESPONSE_BUFFER_SIZE / 2u + 1u, &next_size) ||
+        next_size != UPDATER_MAX_RESPONSE_BUFFER_SIZE) {
+        fprintf(stderr, "buffer growth should clamp at the 1 MiB limit plus terminator\n");
         return 1;
     }
 
-    if (updater_response_buffer_next_size(UINT32_MAX / 2u + 1u, &next_size) ||
+    if (updater_response_buffer_next_size(UPDATER_MAX_RESPONSE_BUFFER_SIZE,
+                                          &next_size) ||
         updater_response_buffer_next_size(UINT32_MAX, &next_size)) {
-        fprintf(stderr, "capacity doubling past the DWORD limit should be rejected\n");
+        fprintf(stderr, "buffer growth beyond the response limit should be rejected\n");
         return 1;
     }
     return 0;
@@ -52,10 +39,9 @@ static int test_capacity_growth_rejects_dword_overflow(void) {
 
 int main(void) {
     int failures = 0;
-    failures += test_rejects_max_content_length_before_adding_terminator();
-    failures += test_initial_buffer_size_stays_within_safe_growth_limit();
-    failures += test_capacity_growth_rejects_dword_overflow();
+    failures += test_initial_buffer_respects_response_limit();
+    failures += test_capacity_growth_stops_at_response_limit();
     printf("updater response buffer tests: %d passed, %d failed\n",
-           3 - failures, failures);
+           2 - failures, failures);
     return failures == 0 ? 0 : 1;
 }
