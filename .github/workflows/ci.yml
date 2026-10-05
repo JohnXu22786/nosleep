@@ -91,6 +91,9 @@ jobs:
       - name: Test countdown tooltip rounding
         run: bash test_tray_countdown_action.sh
 
+      - name: Test delayed action handle cleanup
+        run: ./test_tray_delayed_action_completion.sh
+
       - name: Test tray stop timeout worker retention
         run: ./test_tray_concurrent_stop.sh
 

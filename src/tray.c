@@ -1184,9 +1184,18 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         return is_nosleep_thread;
     }
+
     // Preserve countdown state before its worker observes cancellation and clears it.
     bool was_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
     SessionFinishedAction countdown_action = tray->countdown_action;
+
+    HANDLE sleep_timer = tray->sleep_timer;
+    HANDLE shutdown_timer = tray->shutdown_timer;
+    tray->sleep_timer = NULL;
+    tray->shutdown_timer = NULL;
+    if (sleep_timer) SetEvent(tray->sleep_stop_event);
+    if (shutdown_timer) SetEvent(tray->shutdown_stop_event);
+
     ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -1214,34 +1223,26 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     }
     
     // Cancel and wait for sleep timer thread if active
-    if (tray->sleep_timer) {
-        // Signal cancellation
-        SetEvent(tray->sleep_stop_event);
-        
+    if (sleep_timer) {
         DWORD current_thread_id = GetCurrentThreadId();
-        DWORD sleep_timer_thread_id = GetThreadId(tray->sleep_timer);
+        DWORD sleep_timer_thread_id = GetThreadId(sleep_timer);
         if (current_thread_id != sleep_timer_thread_id) {
-            WaitForSingleObject(tray->sleep_timer, INFINITE);
+            WaitForSingleObject(sleep_timer, INFINITE);
         }
-        CloseHandle(tray->sleep_timer);
-        tray->sleep_timer = NULL;
+        CloseHandle(sleep_timer);
         
         // Reset the event for future use
         ResetEvent(tray->sleep_stop_event);
     }
     
     // Cancel and wait for shutdown timer thread if active
-    if (tray->shutdown_timer) {
-        // Signal cancellation
-        SetEvent(tray->shutdown_stop_event);
-        
+    if (shutdown_timer) {
         DWORD current_thread_id = GetCurrentThreadId();
-        DWORD shutdown_timer_thread_id = GetThreadId(tray->shutdown_timer);
+        DWORD shutdown_timer_thread_id = GetThreadId(shutdown_timer);
         if (current_thread_id != shutdown_timer_thread_id) {
-            WaitForSingleObject(tray->shutdown_timer, INFINITE);
+            WaitForSingleObject(shutdown_timer, INFINITE);
         }
-        CloseHandle(tray->shutdown_timer);
-        tray->shutdown_timer = NULL;
+        CloseHandle(shutdown_timer);
         
         // Reset the event for future use
         ResetEvent(tray->shutdown_stop_event);
@@ -1323,6 +1324,24 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
 
 void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification) {
     (void)tray_stop_nosleep_for_session(tray, 0, timer_expired, suppress_notification);
+}
+
+static bool tray_has_stop_work(NoSleepTray* tray) {
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                                       ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                                       tray->sleep_timer != NULL,
+                                       tray->shutdown_timer != NULL);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    return has_work;
+}
+
+static void tray_reap_delayed_action_handle(NoSleepTray* tray, HANDLE* timer_handle) {
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    HANDLE completed_timer = *timer_handle;
+    *timer_handle = NULL;
+    if (completed_timer) CloseHandle(completed_timer);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 }
 
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
@@ -1766,15 +1785,19 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
             if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
                 DEBUG_LOG("delayed_sleep_thread: cancelled before sleep could start");
-            } else {
-                // Stop and action initiation are serialized by delayed_action_lock.
-                DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
-                trigger_system_sleep(tray);
                 ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-                return 0;
+                break;
             }
+
+            // Reserve the action under the lock; the OS call may broadcast a
+            // power event that must be able to take the same lock.
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-            break;
+            DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
+            trigger_system_sleep(tray);
+
+            // Reap this completed worker before Stop can claim the handle.
+            tray_reap_delayed_action_handle(tray, &tray->sleep_timer);
+            return 0;
         }
         
         // Wait for 1 second or until cancelled
@@ -1788,6 +1811,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     
     // Cancel sleep display (only reached if sleep was cancelled)
     tray_stop_countdown(tray);
+    tray_reap_delayed_action_handle(tray, &tray->sleep_timer);
 
     return 0;
 }
@@ -1819,15 +1843,19 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
             if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
                 DEBUG_LOG("delayed_shutdown_thread: cancelled before shutdown could start");
-            } else {
-                // Stop and action initiation are serialized by delayed_action_lock.
-                DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
-                trigger_system_shutdown(tray);
                 ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-                return 0;
+                break;
             }
+
+            // Reserve the action under the lock; the OS call may broadcast a
+            // power event that must be able to take the same lock.
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-            break;
+            DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
+            trigger_system_shutdown(tray);
+
+            // Reap this completed worker before Stop can claim the handle.
+            tray_reap_delayed_action_handle(tray, &tray->shutdown_timer);
+            return 0;
         }
         
         // Wait for 1 second or until cancelled
@@ -1841,6 +1869,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     
     // Cancel countdown display
     tray_stop_countdown(tray);
+    tray_reap_delayed_action_handle(tray, &tray->shutdown_timer);
 
     return 0;
 }
@@ -4171,10 +4200,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
             // Enable/disable Stop menu item based on running state
-            if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
-                                   ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                                   tray->sleep_timer != NULL,
-                                   tray->shutdown_timer != NULL)) {
+            if (tray_has_stop_work(tray)) {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
             } else {
                 EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
@@ -4210,15 +4236,16 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_STOP:
                     {
+                        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                        bool sleep_timer_active = tray->sleep_timer != NULL;
+                        bool shutdown_timer_active = tray->shutdown_timer != NULL;
+                        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                         DEBUG_LOG("IDM_STOP: is_running=%s, delayed_sleep_countdown_active=%s, sleep_timer=%s, shutdown_timer=%s",
                                 ATOMIC_LOAD_BOOL(&tray->is_running) ? "true" : "false",
                                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false",
-                                tray->sleep_timer ? "active" : "inactive",
-                                tray->shutdown_timer ? "active" : "inactive");
-                        if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
-                                               ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                                               tray->sleep_timer != NULL,
-                                               tray->shutdown_timer != NULL)) {
+                                sleep_timer_active ? "active" : "inactive",
+                                shutdown_timer_active ? "active" : "inactive");
+                        if (tray_has_stop_work(tray)) {
                             tray_stop_nosleep(tray, false, false); // show notification when manually stopping
                         }
                     }
@@ -4304,21 +4331,10 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                             tray_stop_countdown(tray);
                         }
                         
-                        // Cancel delayed sleep if active
-                        if (tray->sleep_timer) {
-                            SetEvent(tray->sleep_stop_event);
-                            WaitForSingleObject(tray->sleep_timer, 2000);
-                            CloseHandle(tray->sleep_timer);
-                            tray->sleep_timer = NULL;
-                        }
-                        
-                        // Cancel delayed shutdown if active
-                        if (tray->shutdown_timer) {
-                            SetEvent(tray->shutdown_stop_event);
-                            WaitForSingleObject(tray->shutdown_timer, 2000);
-                            CloseHandle(tray->shutdown_timer);
-                            tray->shutdown_timer = NULL;
-                        }
+                        // Do not wait for action workers here: a sleep action can
+                        // be generating this broadcast while waiting for it to return.
+                        SetEvent(tray->sleep_stop_event);
+                        SetEvent(tray->shutdown_stop_event);
                         
                         // Show notification
                         tray_show_notification(tray, NOTIFY_EVENT_SLEEP_DETECTED,
@@ -4344,10 +4360,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     GetCursorPos(&pt);
                     SetForegroundWindow(hwnd);
                     // Enable/disable Stop menu item based on running state
-                    if (tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
-                                           ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                                           tray->sleep_timer != NULL,
-                                           tray->shutdown_timer != NULL)) {
+                    if (tray_has_stop_work(tray)) {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
                     } else {
                         EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
