@@ -1049,6 +1049,18 @@ static bool create_update_batch_script(const char* current_exe_path,
         return false;
     }
 
+    char* downloaded_path_error_line =
+        updater_format_batch_error_path_line(escaped_downloaded_path);
+    if (!downloaded_path_error_line) {
+        free(escaped_current_exe_path);
+        free(escaped_downloaded_path);
+        free(escaped_exe_name);
+        free(escaped_arguments_path);
+        free(escaped_internal_marker);
+        DeleteFileA(arguments_path);
+        return false;
+    }
+
     char script_content[8192];
     int written = snprintf(script_content, sizeof(script_content),
         "@echo off\r\n"
@@ -1067,7 +1079,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         "    echo Failed to update. The file may be in use.\r\n"
         "    echo.\r\n"
         "    echo The downloaded file is at:\r\n"
-        "    echo   %s\r\n"
+        "%s"
         "    echo.\r\n"
         "    del \"%s\" > nul 2>&1\r\n"
         "    pause\r\n"
@@ -1083,7 +1095,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         escaped_exe_name,            // for find
         escaped_downloaded_path,     // source file to copy from
         escaped_current_exe_path,    // destination (original EXE path)
-        escaped_downloaded_path,     // info message about temp file
+        downloaded_path_error_line,  // info message about temp file
         escaped_arguments_path,      // remove original arguments after copy failure
         escaped_current_exe_path,    // executable to start the argument-file relay
         escaped_internal_marker,     // select relay mode in the updated executable
@@ -1097,6 +1109,7 @@ static bool create_update_batch_script(const char* current_exe_path,
     free(escaped_exe_name);
     free(escaped_arguments_path);
     free(escaped_internal_marker);
+    free(downloaded_path_error_line);
     
     if (written <= 0 || (size_t)written >= sizeof(script_content)) {
         DeleteFileA(arguments_path);
