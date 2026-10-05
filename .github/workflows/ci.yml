@@ -62,6 +62,9 @@ jobs:
       - name: Test automatic update timer failures
         run: bash test_tray_auto_update_timer.sh
 
+      - name: Test asynchronous update checks
+        run: bash test_tray_async_update_check.sh
+
       - name: Test numbered icon ownership
         run: bash test_tray_numbered_icon.sh
 
