@@ -351,7 +351,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         DWORD name_size = sizeof(name);
         DWORD name_type = 0;
         result = RegQueryValueEx(hKeyGroup, "name", NULL, &name_type, (LPBYTE)name, &name_size);
-        if (result != ERROR_SUCCESS || name_type != REG_SZ || name[0] == '\0') {
+        if (result != ERROR_SUCCESS || name_type != REG_SZ || notify_groups_name_is_blank(name)) {
             RegCloseKey(hKeyGroup);
             continue; // Corrupt entry, skip and continue enumeration
         }
