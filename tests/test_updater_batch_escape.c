@@ -26,6 +26,20 @@ int main(void) {
     }
     free(escaped);
 
+    const char injected_path[] = "C:\\Temp\\download & run\\100% complete\\nosleep.exe";
+    const char expected_error_line[] =
+        "    echo   \"C:\\Temp\\download & run\\100%% complete\\nosleep.exe\"\r\n";
+    escaped = updater_escape_batch_path(injected_path);
+    char* error_line = escaped ? updater_format_batch_error_path_line(escaped) : NULL;
+    if (!error_line || strcmp(error_line, expected_error_line) != 0) {
+        fprintf(stderr, "downloaded path was not quoted in the batch error message\n");
+        free(escaped);
+        free(error_line);
+        return 1;
+    }
+    free(escaped);
+    free(error_line);
+
     puts("updater batch path escaping test passed");
     return 0;
 }
