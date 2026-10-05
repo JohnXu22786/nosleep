@@ -94,6 +94,7 @@ typedef struct NoSleepTray {
     CONDITION_VARIABLE stop_condition; // Wakes concurrent stops after cleanup completes
     bool core_init_failed;      // Suppress follow-up actions if NoSleep initialization fails - accessed atomically
     bool core_init_succeeded;   // Allow follow-up actions only after NoSleep initialization succeeds - accessed atomically
+    bool nosleep_run_failed;    // Whether the core worker ended after refresh failures - accessed atomically
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
     SRWLOCK countdown_icon_cache_lock; // Serializes lazy countdown icon creation and cleanup

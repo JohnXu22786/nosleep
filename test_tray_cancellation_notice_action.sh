@@ -96,6 +96,7 @@ typedef enum {
 #define NOTIFY_EVENT_COUNTDOWN_CANCEL 1
 #define NOTIFY_EVENT_TIMER_EXPIRED 2
 #define NOTIFY_EVENT_SESSION_STOP 3
+#define NOTIFY_EVENT_ERROR 4
 #define DEBUG_LOG(...) do { if (0) fprintf(stderr, __VA_ARGS__); } while (0)
 #define ATOMIC_LOAD_BOOL(src) (*(src))
 #define ATOMIC_STORE_BOOL(dest, value) (*(dest) = (value))
@@ -115,6 +116,7 @@ typedef struct NoSleepTray {
     bool duration_expired;
     bool stopping;
     bool core_init_failed;
+    bool nosleep_run_failed;
     HANDLE stop_event;
     HANDLE timer_thread;
     HANDLE nosleep_thread;

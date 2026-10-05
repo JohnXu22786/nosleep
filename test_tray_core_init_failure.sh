@@ -120,7 +120,9 @@ typedef enum {
 
 typedef struct NoSleepTray {
     bool is_running, duration_expired, stopping, core_init_failed;
-    bool core_init_succeeded, starting_nosleep;
+    bool core_init_succeeded, starting_nosleep, nosleep_run_failed;
+    bool prevent_display_cli_override_set, prevent_display_cli_override;
+    bool away_mode_cli_override_set, away_mode_cli_override;
     SRWLOCK delayed_action_lock;
     CONDITION_VARIABLE stop_condition;
     DWORD stopping_thread_id;
@@ -158,6 +160,7 @@ static bool worker_lock_observed, worker_lock_blocked, start_worker_completed;
 static bool pause_core_resolution, timer_waiting_for_init;
 static bool action_attempted_before_init, release_core_resolution;
 static unsigned int action_threads_started, error_notifications;
+static unsigned int refresh_failure_notifications, stopped_notifications;
 static unsigned int action_stop_signals;
 static ULONGLONG mock_tick64;
 static MockHandle action_handle, replacement_worker_handle;
@@ -167,6 +170,9 @@ static pthread_t start_worker_thread;
 static bool fail_initial_worker_creation;
 static bool icon_running_states[4];
 static unsigned int icon_update_count;
+static int mock_nosleep_run_result;
+static DWORD last_single_wait_ms;
+static unsigned int single_wait_calls;
 
 static void* run_start_failure_worker(void* context) {
     mock_thread_id = 42;
@@ -206,7 +212,8 @@ static ULONGLONG GetTickCount64(void) { return mock_tick64; }
 static DWORD GetThreadId(HANDLE handle) { return ((MockHandle*)handle)->thread_id; }
 static DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
     (void)handle;
-    (void)milliseconds;
+    last_single_wait_ms = milliseconds;
+    ++single_wait_calls;
     return WAIT_OBJECT_0;
 }
 static bool SetEvent(HANDLE handle) {
@@ -302,10 +309,16 @@ static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
                                    const char* title, const char* message,
                                    bool critical) {
     (void)tray;
-    (void)event_type;
     (void)message;
     (void)critical;
     if (strcmp(title, "Error") == 0) ++error_notifications;
+    if (event_type == NOTIFY_EVENT_ERROR &&
+        strcmp(title, "Sleep prevention failed") == 0) {
+        ++refresh_failure_notifications;
+    }
+    if (event_type == NOTIFY_EVENT_SESSION_STOP && strcmp(title, "Stopped") == 0) {
+        ++stopped_notifications;
+    }
 }
 static NoSleep* nosleep_create(void) {
     if (start_test_active && mock_thread_id == 42) {
@@ -319,7 +332,7 @@ static int nosleep_run(NoSleep* ns, int duration, int interval, bool display,
                        bool away_mode, bool verbose, HANDLE stop_event) {
     (void)ns; (void)duration; (void)interval; (void)display;
     (void)away_mode; (void)verbose; (void)stop_event;
-    return 0;
+    return mock_nosleep_run_result;
 }
 static void nosleep_destroy(NoSleep* ns) { (void)ns; }
 
@@ -400,6 +413,125 @@ static int check_successful_initialization_marks_ready(void) {
         ++failures;
     }
     create_nosleep_succeeds = false;
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return failures;
+}
+
+static int check_refresh_failure_reports_error(void) {
+    NoSleepTray tray;
+    MockHandle events[1] = {{0}};
+    memset(&tray, 0, sizeof(tray));
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.is_running = true;
+    tray.nosleep_thread_id = 43;
+    tray.stop_event = &events[0];
+    mock_thread_id = 43;
+    mock_tick64 = 60000;
+    create_nosleep_succeeds = true;
+    mock_nosleep_run_result = 1;
+    refresh_failure_notifications = 0;
+    stopped_notifications = 0;
+
+    int result = tray_nosleep_thread(&tray);
+
+    int failures = 0;
+    if (result != 1 || tray.is_running || !events[0].signaled ||
+        !tray.nosleep_run_failed) {
+        fprintf(stderr, "FAIL: refresh failure did not stop the active tray session\n");
+        ++failures;
+    }
+    if (refresh_failure_notifications != 1 || stopped_notifications != 0) {
+        fprintf(stderr, "FAIL: refresh failure did not replace the Stopped notification with an error\n");
+        ++failures;
+    }
+
+    create_nosleep_succeeds = false;
+    mock_nosleep_run_result = 0;
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return failures;
+}
+
+static int check_external_stop_reports_pending_run_failure(void) {
+    NoSleepTray tray;
+    MockHandle events[2] = {{0}};
+    memset(&tray, 0, sizeof(tray));
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.is_running = true;
+    tray.nosleep_run_failed = true;
+    tray.stop_event = &events[0];
+    tray.nosleep_thread = &events[1];
+    tray.nosleep_thread_id = 43;
+    mock_thread_id = 99;
+    refresh_failure_notifications = 0;
+    stopped_notifications = 0;
+    single_wait_calls = 0;
+
+    int stopped = tray_stop_nosleep_for_session(&tray, 0, false, false);
+
+    int failures = 0;
+    if (!stopped || tray.is_running || refresh_failure_notifications != 1 ||
+        stopped_notifications != 0 || single_wait_calls != 1 ||
+        last_single_wait_ms != INFINITE || tray.nosleep_thread != NULL ||
+        !events[1].closed) {
+        fprintf(stderr, "FAIL: external stop did not preserve the core failure notification\n");
+        ++failures;
+    }
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return failures;
+}
+
+static int check_timer_stop_reports_pending_run_failure(void) {
+    NoSleepTray tray;
+    MockHandle events[1] = {{0}};
+    memset(&tray, 0, sizeof(tray));
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.is_running = true;
+    tray.nosleep_run_failed = true;
+    tray.stop_event = &events[0];
+    tray.timer_thread_id = 42;
+    mock_thread_id = 42;
+    refresh_failure_notifications = 0;
+    stopped_notifications = 0;
+
+    int stopped = tray_stop_nosleep_for_session(&tray, 42, true, true);
+
+    int failures = 0;
+    if (!stopped || tray.is_running || refresh_failure_notifications != 1 ||
+        stopped_notifications != 0) {
+        fprintf(stderr, "FAIL: timer stop suppressed a pending core failure notification\n");
+        ++failures;
+    }
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return failures;
+}
+
+static int check_failed_run_skips_finished_action(SessionFinishedAction action,
+                                                  const char* label) {
+    NoSleepTray tray;
+    MockHandle events[3] = {{0}};
+    memset(&tray, 0, sizeof(tray));
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.core_init_succeeded = true;
+    tray.nosleep_run_failed = true;
+    tray.start_tick64 = 0;
+    tray.session_finished_action = action;
+    tray.stop_event = &events[0];
+    tray.sleep_stop_event = &events[1];
+    tray.shutdown_stop_event = &events[2];
+    tray.timer_thread_id = 42;
+    mock_tick64 = 120000;
+    mock_thread_id = 42;
+    action_threads_started = 0;
+
+    tray_duration_timer(&tray);
+
+    int failures = 0;
+    if (action_threads_started != 0 || !tray.is_running || tray.duration_expired) {
+        fprintf(stderr, "FAIL: %s started after the core worker failed\n", label);
+        ++failures;
+    }
     pthread_mutex_destroy(&tray.delayed_action_lock);
     return failures;
 }
@@ -793,6 +925,13 @@ int main(void) {
     failures += check_direct_failure(SESSION_FINISHED_SLEEP, "sleep core failure");
     failures += check_direct_failure(SESSION_FINISHED_SHUTDOWN, "shutdown core failure");
     failures += check_successful_initialization_marks_ready();
+    failures += check_refresh_failure_reports_error();
+    failures += check_external_stop_reports_pending_run_failure();
+    failures += check_timer_stop_reports_pending_run_failure();
+    failures += check_failed_run_skips_finished_action(SESSION_FINISHED_SLEEP,
+                                                        "sleep follow-up action");
+    failures += check_failed_run_skips_finished_action(SESSION_FINISHED_SHUTDOWN,
+                                                        "shutdown follow-up action");
     failures += check_stale_worker_failure();
     failures += check_failure_race(SESSION_FINISHED_SLEEP, "sleep expiry race");
     failures += check_failure_race(SESSION_FINISHED_SHUTDOWN, "shutdown expiry race");
@@ -816,6 +955,7 @@ functions = "\n\n".join(
     extract_function(signature)
     for signature in (
         "static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64)",
+        "static bool tray_mode_for_run(bool preference, bool override_set, bool override_value)",
         "static bool tray_wait_for_worker_threads(NoSleepTray* tray)",
         "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n                                          DWORD expected_thread_id,\n                                          bool timer_expired,\n                                          bool suppress_notification)",
         "void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification)",
