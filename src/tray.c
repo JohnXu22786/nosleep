@@ -24,6 +24,7 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 
 // Timer ID for auto-start debug feature
 #define TIMER_ID_AUTO_START 1000
+#define WM_TRAY_UPDATE_CHECK_COMPLETE (WM_APP + 2)
 
 // Notify Icon Notification codes (for NOTIFYICON_VERSION_4)
 #ifndef NIN_SELECT
@@ -49,6 +50,15 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 static HICON system_icon_default = NULL;
 static HICON system_icon_shield = NULL;
 static bool update_check_in_progress = false;
+
+struct TrayUpdateCheckTask {
+    HWND hwnd;
+    bool silent;
+    bool check_succeeded;
+    UpdateInfo info;
+    HANDLE thread;
+    DWORD thread_id;
+};
 
 static bool tray_update_check_begin(void) {
     if (update_check_in_progress) return false;
@@ -79,6 +89,12 @@ static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int heigh
 static void load_gray_and_color_icons(NoSleepTray* tray);
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
 static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam);
+static DWORD WINAPI tray_update_check_worker(LPVOID parameter);
+static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
+                                              bool check_ok, UpdateInfo* info);
+static void tray_handle_update_check_complete(NoSleepTray* tray,
+                                               TrayUpdateCheckTask* task);
+static bool tray_wait_for_update_check(NoSleepTray* tray);
 static void trigger_system_sleep(NoSleepTray* tray);
 static void trigger_system_shutdown(NoSleepTray* tray);
 static char* get_exe_path(void);
@@ -202,6 +218,27 @@ static bool tray_wait_for_worker_threads(NoSleepTray* tray) {
     return true;
 }
 
+static bool tray_wait_for_update_check(NoSleepTray* tray) {
+    if (!tray || !tray->update_check_task) return true;
+
+    TrayUpdateCheckTask* task = tray->update_check_task;
+    if (task->thread && GetCurrentThreadId() == task->thread_id) return false;
+
+    if (task->thread) {
+        // Do not leave shutdown waiting on the check's synchronous WinHTTP call.
+        CancelSynchronousIo(task->thread);
+        if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) {
+            DEBUG_LOG("tray_wait_for_update_check: waiting for update worker failed");
+            return false;
+        }
+        CloseHandle(task->thread);
+    }
+
+    tray->update_check_task = NULL;
+    free(task);
+    return true;
+}
+
 void tray_destroy(NoSleepTray* tray) {
     if (!tray) return;
 
@@ -216,6 +253,11 @@ void tray_destroy(NoSleepTray* tray) {
 
     if (!tray_wait_for_worker_threads(tray)) {
         DEBUG_LOG("tray_destroy: cannot destroy tray from one of its worker threads");
+        return;
+    }
+
+    if (!tray_wait_for_update_check(tray)) {
+        DEBUG_LOG("tray_destroy: cannot safely wait for update worker");
         return;
     }
     
@@ -4071,15 +4113,25 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-// Update checking - uses updater module
-void tray_check_for_updates(NoSleepTray* tray, bool silent) {
-    if (!tray || !tray_update_check_begin()) return;
+// This worker performs only the network request. It hands the result to the
+// tray window, which remains responsible for notifications and dialogs.
+static DWORD WINAPI tray_update_check_worker(LPVOID parameter) {
+    TrayUpdateCheckTask* task = (TrayUpdateCheckTask*)parameter;
+    task->check_succeeded = updater_check(&task->info, NULL);
+    MEMORY_BARRIER();
+    while (!PostMessage(task->hwnd, WM_TRAY_UPDATE_CHECK_COMPLETE, 0,
+                        (LPARAM)task)) {
+        if (!IsWindow(task->hwnd)) {
+            DEBUG_LOG("tray_update_check_worker: tray window closed before result delivery");
+            return 0;
+        }
+        Sleep(10);
+    }
+    return 0;
+}
 
-    DEBUG_LOG("tray_check_for_updates: checking for updates");
-
-    UpdateInfo info;
-    bool check_ok = updater_check(&info, tray->hwnd);
-
+static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
+                                              bool check_ok, UpdateInfo* info) {
     save_last_update_check_time();
 
     if (!check_ok) {
@@ -4090,7 +4142,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
         goto update_check_done;
     }
 
-    if (!info.update_available) {
+    if (!info || !info->update_available) {
         if (!silent) {
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
                 "No Updates",
@@ -4100,7 +4152,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     }
 
     // Compare versions
-    if (updater_compare_versions(info.latest_version, CURRENT_VERSION) <= 0) {
+    if (updater_compare_versions(info->latest_version, CURRENT_VERSION) <= 0) {
         if (!silent) {
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
                 "No Updates",
@@ -4112,12 +4164,12 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     // New version available - show notification
     {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Version %s is available! (You have v" CURRENT_VERSION ")", info.latest_version);
+        snprintf(msg, sizeof(msg), "Version %s is available! (You have v" CURRENT_VERSION ")", info->latest_version);
         tray_show_notification(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
     }
 
     // Ask user if they want to download
-    bool want_download = updater_show_prompt_dialog(tray->hwnd, &info);
+    bool want_download = updater_show_prompt_dialog(tray->hwnd, info);
     if (!want_download) {
         goto update_check_done;
     }
@@ -4125,13 +4177,13 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     // Get current executable path
     char* exe_path = get_exe_path();
     if (!exe_path) {
-        MessageBox(tray->hwnd, "Could not determine executable path.", 
+        MessageBox(tray->hwnd, "Could not determine executable path.",
                    "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         goto update_check_done;
     }
 
     // Download and install
-    bool update_started = updater_download_and_install(&info, exe_path, tray->hwnd);
+    bool update_started = updater_download_and_install(info, exe_path, tray->hwnd);
     free(exe_path);
 
     if (update_started) {
@@ -4141,6 +4193,56 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
 
 update_check_done:
     tray_update_check_end();
+}
+
+static void tray_handle_update_check_complete(NoSleepTray* tray,
+                                               TrayUpdateCheckTask* task) {
+    if (!tray || !task || tray->update_check_task != task) return;
+
+    // The worker publishes its result before posting this message.
+    MEMORY_BARRIER();
+    if (task->thread) {
+        if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) {
+            DEBUG_LOG("tray_handle_update_check_complete: waiting for update worker failed");
+            return;
+        }
+        CloseHandle(task->thread);
+        task->thread = NULL;
+    }
+
+    bool silent = task->silent;
+    bool check_ok = task->check_succeeded;
+    UpdateInfo info = task->info;
+    tray->update_check_task = NULL;
+    free(task);
+
+    tray_process_update_check_result(tray, silent, check_ok, &info);
+}
+
+// Update checking - performs network access on a worker and UI handling on the tray thread.
+void tray_check_for_updates(NoSleepTray* tray, bool silent) {
+    if (!tray || tray->update_check_task || !tray_update_check_begin()) return;
+
+    DEBUG_LOG("tray_check_for_updates: starting asynchronous check");
+
+    TrayUpdateCheckTask* task = (TrayUpdateCheckTask*)calloc(1, sizeof(TrayUpdateCheckTask));
+    if (!task) {
+        UpdateInfo empty_info = {0};
+        tray_process_update_check_result(tray, silent, false, &empty_info);
+        return;
+    }
+
+    task->hwnd = tray->hwnd;
+    task->silent = silent;
+    tray->update_check_task = task;
+    task->thread = CreateThread(NULL, 0, tray_update_check_worker, task, 0,
+                                &task->thread_id);
+    if (!task->thread) {
+        tray->update_check_task = NULL;
+        free(task);
+        UpdateInfo empty_info = {0};
+        tray_process_update_check_result(tray, silent, false, &empty_info);
+    }
 }
 
 static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
@@ -4235,6 +4337,13 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     }
     
     switch (msg) {
+
+        case WM_TRAY_UPDATE_CHECK_COMPLETE:
+            if (tray) {
+                tray_handle_update_check_complete(tray,
+                    (TrayUpdateCheckTask*)lParam);
+            }
+            break;
             
         case WM_COMMAND:
             switch (LOWORD(wParam)) {

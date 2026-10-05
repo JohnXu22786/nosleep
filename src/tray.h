@@ -51,6 +51,7 @@
 
 // Forward declaration
 struct NoSleep;
+typedef struct TrayUpdateCheckTask TrayUpdateCheckTask;
 
 // Tray icon message ID
 #define TRAY_ICON_MESSAGE_ID 1000
@@ -137,6 +138,7 @@ typedef struct NoSleepTray {
     bool check_updates_on_startup; // Whether to check for updates on startup
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
     UINT_PTR update_timer_id;   // Timer ID for periodic update checks
+    TrayUpdateCheckTask* update_check_task; // Active updater request, if any
     int notification_mode;      // 0=all, 1=critical only, 2=none (legacy, use notify_groups instead)
     bool add_to_path;           // Whether to add nosleep directory to environment PATH
     NotifyGroupManager notify_groups; // Notification group manager for per-event filtering

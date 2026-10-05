@@ -91,6 +91,11 @@ typedef enum {
     NOTIFY_EVENT_ERROR
 } NotifyEventId;
 
+typedef struct TrayUpdateCheckTask {
+    HANDLE thread;
+    DWORD thread_id;
+} TrayUpdateCheckTask;
+
 #define TRUE 1
 #define FALSE 0
 #define INFINITE 0xffffffffu
@@ -123,6 +128,7 @@ typedef struct NoSleepTray {
     HANDLE timer_thread;
     HANDLE nosleep_thread;
     DWORD timer_thread_id;
+    TrayUpdateCheckTask *update_check_task;
     ULONGLONG start_tick64;
     bool duration_expired;
     HANDLE sleep_stop_event;
@@ -218,6 +224,11 @@ static void WakeAllConditionVariable(CONDITION_VARIABLE *condition) {
 
 static DWORD GetCurrentThreadId(void) {
     return current_thread_id;
+}
+
+static BOOL CancelSynchronousIo(HANDLE thread) {
+    (void)thread;
+    return TRUE;
 }
 
 static DWORD GetThreadId(HANDLE thread) {
@@ -337,6 +348,9 @@ static bool tray_stop_has_work(bool is_running,
 
 wait_function = extract_function(
     "static bool tray_wait_for_worker_threads(NoSleepTray* tray)"
+)
+update_check_wait_function = extract_function(
+    "static bool tray_wait_for_update_check(NoSleepTray* tray)"
 )
 destroy_function = extract_function("void tray_destroy(NoSleepTray* tray)")
 stop_function = extract_function(
@@ -496,7 +510,7 @@ int main(void) {
 }
 """
 
-output.write_text(prelude + wait_function + "\n" + destroy_function + "\n" +
+output.write_text(prelude + update_check_wait_function + "\n" + wait_function + "\n" + destroy_function + "\n" +
                   stop_function + "\n" + wrapper)
 PY
 
