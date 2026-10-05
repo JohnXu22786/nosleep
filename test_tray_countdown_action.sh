@@ -170,7 +170,7 @@ int main(void) {
         "nosleep - System will shut down in 27 seconds");
     failures += expect_tooltip_for_remaining_time(
         "positive sub-second sleep countdown", 1,
-        "nosleep - System will sleep in 1 seconds");
+        "nosleep - System will sleep in 1 second");
     failures += expect_tooltip_for_remaining_time(
         "zero remaining sleep countdown", 0,
         "nosleep - System will sleep in 0 seconds");

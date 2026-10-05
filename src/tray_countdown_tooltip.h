@@ -13,8 +13,9 @@ static inline void tray_format_countdown_tooltip(char* tip,
                                                  size_t tip_size,
                                                  bool shutdown_scheduled,
                                                  int countdown_seconds) {
-    snprintf(tip, tip_size, "nosleep - System will %s in %d seconds",
-             shutdown_scheduled ? "shut down" : "sleep", countdown_seconds);
+    snprintf(tip, tip_size, "nosleep - System will %s in %d %s",
+             shutdown_scheduled ? "shut down" : "sleep", countdown_seconds,
+             countdown_seconds == 1 ? "second" : "seconds");
 }
 
 #endif
