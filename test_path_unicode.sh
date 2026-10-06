@@ -111,7 +111,7 @@ LONG RegCloseKey(HKEY key) { (void)key; return ERROR_SUCCESS; }
 '''
 main = r'''
 int main(void) {
-    (void)get_exe_path;
+    (void)get_exe_path_w;
     wcscpy(registry, L"%USERPROFILE%\\工具; C:\\既存 ");
     registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
     assert(add_app_to_path());
