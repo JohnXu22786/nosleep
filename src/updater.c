@@ -355,8 +355,30 @@ static DWORD WINAPI download_worker(LPVOID parameter) {
     return 0;
 }
 
+// Batch files are written as UTF-8 and select that code page before reading paths.
+static char* updater_path_to_utf8(const wchar_t* path) {
+    int length = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, -1,
+                                    NULL, 0, NULL, NULL);
+    if (length == 0) return NULL;
+    char* utf8 = (char*)malloc((size_t)length);
+    if (!utf8) return NULL;
+    if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, path, -1,
+                            utf8, length, NULL, NULL)) {
+        free(utf8);
+        return NULL;
+    }
+    return utf8;
+}
+
+// Temporary paths still use the application's ANSI filesystem APIs.
+static char* updater_ansi_path_to_utf8(const char* path) {
+    wchar_t wide[MAX_PATH];
+    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, wide, MAX_PATH)) return NULL;
+    return updater_path_to_utf8(wide);
+}
+
 // Download a new version and perform the update
-bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path, HWND hwnd_parent) {
+static bool updater_download_and_install_utf8(UpdateInfo* info, const char* current_exe_path, HWND hwnd_parent) {
     if (!info || !current_exe_path) return false;
     
     // Get temp path for downloaded file
@@ -542,6 +564,16 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     
     // Signal the application to exit (caller should handle this)
     return true;
+}
+
+bool updater_download_and_install(UpdateInfo* info, const wchar_t* current_exe_path,
+                                  HWND hwnd_parent) {
+    if (!info || !current_exe_path) return false;
+    char* utf8_path = updater_path_to_utf8(current_exe_path);
+    if (!utf8_path) return false;
+    bool started = updater_download_and_install_utf8(info, utf8_path, hwnd_parent);
+    free(utf8_path);
+    return started;
 }
 
 // --- Helper functions ---
@@ -1051,9 +1083,13 @@ static bool create_update_batch_script(const char* current_exe_path,
     // 4. Deletes itself
     
     char* escaped_current_exe_path = updater_escape_batch_path(current_exe_path);
-    char* escaped_downloaded_path = updater_escape_batch_path(downloaded_path);
+    char* downloaded_utf8 = updater_ansi_path_to_utf8(downloaded_path);
+    char* arguments_utf8 = updater_ansi_path_to_utf8(arguments_path);
+    char* escaped_downloaded_path = downloaded_utf8 ? updater_escape_batch_path(downloaded_utf8) : NULL;
     char* escaped_exe_name = updater_escape_batch_path(exe_name);
-    char* escaped_arguments_path = updater_escape_batch_path(arguments_path);
+    char* escaped_arguments_path = arguments_utf8 ? updater_escape_batch_path(arguments_utf8) : NULL;
+    free(downloaded_utf8);
+    free(arguments_utf8);
     char* escaped_internal_marker =
         updater_escape_batch_path(UPDATER_INTERNAL_RELAUNCH_OPTION);
     if (!escaped_current_exe_path || !escaped_downloaded_path || !escaped_exe_name ||
@@ -1079,9 +1115,10 @@ static bool create_update_batch_script(const char* current_exe_path,
         return false;
     }
 
-    char script_content[8192];
+    char script_content[32768];
     int written = snprintf(script_content, sizeof(script_content),
         "@echo off\r\n"
+        "chcp 65001 > nul\r\n"
         "setlocal DisableDelayedExpansion\r\n"
         "title Updating nosleep...\r\n"
         "echo Waiting for nosleep to close...\r\n"

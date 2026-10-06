@@ -100,7 +100,6 @@ static void tray_handle_update_check_complete(NoSleepTray* tray,
 static bool tray_wait_for_update_check(NoSleepTray* tray);
 static void trigger_system_sleep(NoSleepTray* tray);
 static void trigger_system_shutdown(NoSleepTray* tray);
-static char* get_exe_path(void);
 static bool is_startup_enabled(void);
 static bool set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
@@ -2373,17 +2372,6 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     DEBUG_LOG("tray_update_session_finished_menu: updated to '%s'", finished_text);
 }
 
-static char* get_exe_path(void) {
-    char* path = (char*)malloc(MAX_PATH);
-    if (!path) return NULL;
-    DWORD len = GetModuleFileName(NULL, path, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
-        free(path);
-        return NULL;
-    }
-    return path;
-}
-
 // PATH registry values use UTF-16, independently of the application's ANSI UI.
 static wchar_t* get_exe_path_w(void) {
     wchar_t* path = (wchar_t*)malloc(MAX_PATH * sizeof(wchar_t));
@@ -4323,7 +4311,7 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
     }
 
     // Get current executable path
-    char* exe_path = get_exe_path();
+    wchar_t* exe_path = get_exe_path_w();
     if (!exe_path) {
         MessageBox(tray->hwnd, "Could not determine executable path.",
                    "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
