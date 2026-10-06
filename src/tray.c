@@ -1106,6 +1106,9 @@ static void tray_create_menu(NoSleepTray* tray) {
     if (!AppendMenu(tray->hmenu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...")) {
         goto fail;
     }
+    if (!AppendMenu(tray->hmenu, MF_STRING | MF_GRAYED, IDM_REVIEW_UPDATE, "Review Available Update...")) {
+        goto fail;
+    }
     if (!AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About")) {
         goto fail;
     }
@@ -4415,6 +4418,33 @@ static DWORD WINAPI tray_update_check_worker(LPVOID parameter) {
     return 0;
 }
 
+// Only explicit user actions call this prompt, which retains the release-notes choice.
+static void tray_prompt_available_update(NoSleepTray* tray, UpdateInfo* info) {
+    // Ask user if they want to download
+    bool want_download = updater_show_prompt_dialog(tray->hwnd, info);
+    if (!want_download) {
+        return;
+    }
+
+    // Get current executable path
+    wchar_t* exe_path = get_exe_path_w();
+    if (!exe_path) {
+        MessageBox(tray->hwnd, "Could not determine executable path.",
+                   "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return;
+    }
+
+    // Download and install
+    bool update_started = updater_download_and_install(info, exe_path, tray->hwnd);
+    free(exe_path);
+
+    if (update_started) {
+        // Exit the application so the update can complete
+        PostMessage(tray->hwnd, WM_CLOSE, 0, 0);
+    }
+
+}
+
 static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
                                               bool check_ok, UpdateInfo* info) {
     save_last_update_check_time();
@@ -4426,6 +4456,10 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         }
         goto update_check_done;
     }
+
+    // A successful check replaces the cached result; failures keep the last known update.
+    memset(&tray->available_update, 0, sizeof(tray->available_update));
+    EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_GRAYED);
 
     if (!info || !info->update_available) {
         if (!silent) {
@@ -4446,34 +4480,20 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         goto update_check_done;
     }
 
-    // New version available - show notification
+    // Copy the worker result before its stack snapshot goes out of scope.
+    tray->available_update = *info;
+    EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_ENABLED);
+
+    // The menu remains available even when notifications are suppressed.
     {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Version %s is available! (You have v" CURRENT_VERSION ")", info->latest_version);
+        snprintf(msg, sizeof(msg), "Version %s is available! Right-click the tray icon and choose Review Available Update.", info->latest_version);
         tray_show_notification(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
     }
 
-    // Ask user if they want to download
-    bool want_download = updater_show_prompt_dialog(tray->hwnd, info);
-    if (!want_download) {
-        goto update_check_done;
-    }
-
-    // Get current executable path
-    wchar_t* exe_path = get_exe_path_w();
-    if (!exe_path) {
-        MessageBox(tray->hwnd, "Could not determine executable path.",
-                   "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
-        goto update_check_done;
-    }
-
-    // Download and install
-    bool update_started = updater_download_and_install(info, exe_path, tray->hwnd);
-    free(exe_path);
-
-    if (update_started) {
-        // Exit the application so the update can complete
-        PostMessage(tray->hwnd, WM_CLOSE, 0, 0);
+    if (!silent) {
+        UpdateInfo available = tray->available_update;
+        tray_prompt_available_update(tray, &available);
     }
 
 update_check_done:
@@ -4673,6 +4693,13 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_SETTINGS:
                     tray_show_settings_dialog(tray);
+                    break;
+                case IDM_REVIEW_UPDATE:
+                    if (tray->available_update.update_available && tray_update_check_begin()) {
+                        UpdateInfo available = tray->available_update;
+                        tray_prompt_available_update(tray, &available);
+                        tray_update_check_end();
+                    }
                     break;
                 case IDM_CHECK_UPDATES:
                     tray_check_for_updates(tray, false);
