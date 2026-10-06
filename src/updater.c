@@ -519,12 +519,12 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     MessageBox(hwnd_parent, notify_msg, "Update Ready", 
         MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
     
-    // Launch the update batch script
+    // Keep recovery instructions and the failure prompt visible after this app exits.
     SHELLEXECUTEINFO sei = {0};
     sei.cbSize = sizeof(SHELLEXECUTEINFO);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
     sei.lpFile = script_path;
-    sei.nShow = SW_HIDE;
+    sei.nShow = SW_SHOWNORMAL;
     
     if (!ShellExecuteEx(&sei)) {
         DeleteFileA(script_path);
