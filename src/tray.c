@@ -1809,7 +1809,7 @@ static void trigger_system_shutdown(NoSleepTray* tray) {
     DEBUG_LOG("trigger_system_shutdown: trying alternative method via InitiateSystemShutdown");
     
     // Try InitiateSystemShutdown
-    result = InitiateSystemShutdown(NULL, NULL, 0, TRUE, TRUE);
+    result = InitiateSystemShutdown(NULL, NULL, 0, TRUE, FALSE);
     
     if (result) {
         DEBUG_LOG("trigger_system_shutdown: InitiateSystemShutdown succeeded");
