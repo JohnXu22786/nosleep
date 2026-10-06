@@ -242,7 +242,7 @@ LONG RegDeleteValue(HKEY key, const char *name) {
 
 LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
                      BYTE *value, DWORD *size) {
-    (void)reserved; (void)type;
+    (void)reserved;
     if (key == (HKEY)2) {
         ++settings_query_count;
         if (saved_update_settings &&
@@ -251,6 +251,7 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
             DWORD data = strcmp(name, "auto_check_interval") == 0 ? 2 : 0;
             memcpy(value, &data, sizeof(data));
             *size = sizeof(data);
+            if (type) *type = REG_DWORD;
             return ERROR_SUCCESS;
         }
         return ERROR_FILE_NOT_FOUND;
