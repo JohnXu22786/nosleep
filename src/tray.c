@@ -18,6 +18,7 @@
 #include <winhttp.h>
 #include <commctrl.h>
 #include <ctype.h>
+#include <limits.h>
 
 // Window class name for tray icon
 static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
@@ -112,7 +113,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 static bool add_app_to_path(void);
 static bool remove_app_from_path(void);
 static bool apply_path_preference(bool add_to_path);
-static int str_icmp_n(const wchar_t* a, const wchar_t* b, size_t n);
+static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n);
 static wchar_t* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -2427,18 +2428,12 @@ static wchar_t* get_exe_path_w(void) {
     return path;
 }
 
-// Case-insensitive string comparison (C99-compatible, no strnicmp/strncasecmp)
-static int str_icmp_n(const wchar_t* a, const wchar_t* b, size_t n) {
-    for (size_t i = 0; i < n; i++) {
-        if (a[i] == '\0' && b[i] == '\0') return 0;
-        wchar_t ca = a[i];
-        wchar_t cb = b[i];
-        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
-        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-        if (ca != cb) return (unsigned int)ca - (unsigned int)cb;
-        if (ca == '\0') return 0;
-    }
-    return 0;
+// Compare bounded UTF-16 PATH segments using Windows ordinal case folding.
+static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n) {
+    if (n == 0) return true;
+    if (n > INT_MAX) return false;
+    // A zero API result indicates failure and must never count as a match.
+    return CompareStringOrdinal(a, (int)n, b, (int)n, TRUE) == CSTR_EQUAL;
 }
 
 // Get the directory containing the executable
@@ -2583,7 +2578,7 @@ static bool add_app_to_path(void) {
             // Trim trailing spaces
             while (seg_len > 0 && p[seg_len - 1] == ' ') seg_len--;
             
-            if (seg_len == dir_len && str_icmp_n(p, dir, dir_len) == 0) {
+            if (seg_len == dir_len && path_segment_equal(p, dir, dir_len)) {
                 already_in_path = true;
                 break;
             }
@@ -2734,7 +2729,7 @@ static bool remove_app_from_path(void) {
         while (trimmed_len > 0 && compare_start[trimmed_len - 1] == ' ') trimmed_len--;
         
         // Check if this segment matches our directory
-        bool is_match = (trimmed_len == dir_len && str_icmp_n(compare_start, dir, dir_len) == 0);
+        bool is_match = (trimmed_len == dir_len && path_segment_equal(compare_start, dir, dir_len));
         
         if (!is_match) {
             // Keep this segment with original formatting
