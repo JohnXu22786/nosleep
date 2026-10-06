@@ -390,6 +390,7 @@ bool tray_init(NoSleepTray* tray) {
 
     // Load settings from registry
     tray_load_settings(tray);
+    tray_update_session_finished_menu(tray);
 
     // Apply the saved PATH preference on every startup. A failed update is
     // retried next time because the preference records the desired state.
@@ -2355,7 +2356,7 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
             stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false", tray->session_finished_action);
 }
 
-static void tray_update_session_finished_menu(NoSleepTray* tray) {
+void tray_update_session_finished_menu(NoSleepTray* tray) {
     if (!tray || !tray->hmenu) return;
     
     DEBUG_LOG("tray_update_session_finished_menu: action=%d", tray->session_finished_action);

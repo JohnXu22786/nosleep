@@ -174,6 +174,7 @@ void tray_update_icon(NoSleepTray* tray);
 void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
                             const char* title, const char* message, bool critical);
 void tray_update_stop_menu_item(NoSleepTray* tray);
+void tray_update_session_finished_menu(NoSleepTray* tray);
 void tray_set_startup_enabled(NoSleepTray* tray, bool enable);
 bool tray_set_add_to_path(NoSleepTray* tray, bool enable);
 
