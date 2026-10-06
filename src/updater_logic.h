@@ -8,6 +8,7 @@
 typedef struct {
     char latest_version[64];   // Latest version string (e.g., "2.0.0")
     char download_url[512];    // Direct download URL for the EXE asset
+    char release_notes_url[512]; // Validated GitHub release page, empty if unavailable
     char tag_name[64];         // Full tag name (e.g., "v2.0.0")
     bool update_available;     // Whether an update is available
 } UpdateInfo;

@@ -1,6 +1,7 @@
 // Updater implementation for nosleep
 #include "updater.h"
 #include "constants.h"
+#include "resources.h"
 #include "updater_batch.h"
 #include "updater_command_line.h"
 #include "updater_redirect.h"
@@ -163,6 +164,47 @@ bool updater_check(UpdateInfo* info, HWND hwnd_parent) {
     return parsed;
 }
 
+typedef struct {
+    const char* message;
+    const UpdateInfo* info;
+} UpdatePrompt;
+
+static INT_PTR CALLBACK update_prompt_proc(HWND hwnd, UINT message,
+                                            WPARAM wparam, LPARAM lparam) {
+    UpdatePrompt* prompt = (UpdatePrompt*)GetWindowLongPtrA(hwnd, DWLP_USER);
+    if (message == WM_INITDIALOG) {
+        prompt = (UpdatePrompt*)lparam;
+        SetWindowLongPtrA(hwnd, DWLP_USER, (LONG_PTR)prompt);
+        SetDlgItemTextA(hwnd, IDC_UPDATE_MESSAGE, prompt->message);
+        if (!prompt->info->release_notes_url[0]) {
+            EnableWindow(GetDlgItem(hwnd, IDC_UPDATE_NOTES), FALSE);
+            SetDlgItemTextA(hwnd, IDC_UPDATE_NOTES, "Notes unavailable");
+        }
+        return TRUE;
+    }
+    if (message == WM_COMMAND) {
+        switch (LOWORD(wparam)) {
+            case IDC_UPDATE_NOTES:
+                if (prompt && prompt->info->release_notes_url[0] &&
+                    (INT_PTR)ShellExecuteA(hwnd, "open", prompt->info->release_notes_url,
+                                           NULL, NULL, SW_SHOWNORMAL) <= 32) {
+                    MessageBoxA(hwnd, "Could not open release notes in your browser.",
+                                "Release notes", MB_OK | MB_ICONWARNING);
+                }
+                return TRUE;
+            case IDYES:
+            case IDCANCEL:
+                EndDialog(hwnd, LOWORD(wparam));
+                return TRUE;
+        }
+    }
+    if (message == WM_CLOSE) {
+        EndDialog(hwnd, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
 // Show the "Update Available" dialog
 bool updater_show_prompt_dialog(HWND hwnd_parent, UpdateInfo* info) {
     if (!info || !info->update_available) return false;
@@ -177,8 +219,15 @@ bool updater_show_prompt_dialog(HWND hwnd_parent, UpdateInfo* info) {
     char title[128];
     snprintf(title, sizeof(title), "Update Available - nosleep");
     
-    int result = MessageBox(hwnd_parent, msg, title, 
-                             MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_TOPMOST);
+    UpdatePrompt prompt = {msg, info};
+    INT_PTR result = DialogBoxParamA(GetModuleHandleA(NULL),
+        MAKEINTRESOURCEA(IDD_UPDATE_PROMPT), hwnd_parent,
+        update_prompt_proc, (LPARAM)&prompt);
+    if (result == -1) {
+        // Retain the installation choice if the resource dialog cannot be created.
+        result = MessageBoxA(hwnd_parent, msg, title,
+                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_TOPMOST);
+    }
     
     return (result == IDYES);
 }
