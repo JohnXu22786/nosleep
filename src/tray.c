@@ -3480,6 +3480,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
+                case IDOK: // Enter from IsDialogMessage
                 case IDC_SETTINGS_OK:
                 {
                     if (!settings_tray) break;
@@ -3987,6 +3988,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                 break;
             }
             switch (LOWORD(wParam)) {
+                case IDOK: // Enter from IsDialogMessage
                 case IDC_NOTIFY_GROUP_EDIT_OK:
                 {
                     if (!edit_mgr) break;
