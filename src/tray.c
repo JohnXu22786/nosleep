@@ -50,6 +50,8 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 static HICON system_icon_default = NULL;
 static HICON system_icon_shield = NULL;
 static bool update_check_in_progress = false;
+static bool update_check_visible = false;
+static HWND about_dialog_hwnd = NULL;
 // Settings/About procedures share static state; allow only one tray dialog pump.
 // Acquire before CreateWindowEx, which can synchronously dispatch window messages.
 static bool tray_dialog_open = false;
@@ -98,6 +100,7 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
 static void tray_handle_update_check_complete(NoSleepTray* tray,
                                                TrayUpdateCheckTask* task);
 static bool tray_wait_for_update_check(NoSleepTray* tray);
+static void tray_set_update_check_visible(NoSleepTray* tray, bool checking);
 static void trigger_system_sleep(NoSleepTray* tray);
 static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction action);
 static bool is_startup_enabled(void);
@@ -238,6 +241,8 @@ static bool tray_wait_for_update_check(NoSleepTray* tray) {
 
     tray->update_check_task = NULL;
     free(task);
+    tray_update_check_end();
+    tray_set_update_check_visible(tray, false);
     return true;
 }
 
@@ -4307,6 +4312,21 @@ void tray_show_about_dialog(NoSleepTray* tray) {
 #define IDC_ABOUT_CHECK_UPDATES 3001
 #define IDC_ABOUT_OK            3002
 
+// Called only on the tray UI thread; the About handle is cleared on destruction.
+static void tray_set_update_check_visible(NoSleepTray* tray, bool checking) {
+    update_check_visible = checking;
+    const char* label = checking ? "Checking for updates..." : "Check for Updates...";
+    if (tray->hmenu) {
+        ModifyMenu(tray->hmenu, IDM_CHECK_UPDATES,
+            MF_BYCOMMAND | MF_STRING | (checking ? MF_GRAYED : MF_ENABLED),
+            IDM_CHECK_UPDATES, label);
+    }
+    if (about_dialog_hwnd) {
+        SetDlgItemText(about_dialog_hwnd, IDC_ABOUT_CHECK_UPDATES, label);
+        EnableWindow(GetDlgItem(about_dialog_hwnd, IDC_ABOUT_CHECK_UPDATES), !checking);
+    }
+}
+
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static int* pResult = NULL;
 
@@ -4316,6 +4336,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
             pResult = (int*)cs->lpCreateParams;
             if (pResult) *pResult = 0;
+            about_dialog_hwnd = hwnd;
 
             HINSTANCE hInst = GetModuleHandle(NULL);
             int y = 15;
@@ -4340,8 +4361,10 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
             y += 30;
 
-            CreateWindowEx(0, "BUTTON", "Check for Updates...",
-                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            CreateWindowEx(0, "BUTTON",
+                update_check_visible ? "Checking for updates..." : "Check for Updates...",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON |
+                    (update_check_visible ? WS_DISABLED : 0),
                 20, y, 160, 28, hwnd, (HMENU)IDC_ABOUT_CHECK_UPDATES, hInst, NULL);
 
             CreateWindowEx(0, "BUTTON", "OK",
@@ -4370,6 +4393,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
                 case IDC_ABOUT_CHECK_UPDATES:
+                    if (update_check_visible) return TRUE;
                     if (pResult) *pResult = 1;
                     DestroyWindow(hwnd);
                     return TRUE;
@@ -4389,6 +4413,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     DeleteObject(hFont);
                 }
             }
+            about_dialog_hwnd = NULL;
             pResult = NULL;
             PostQuitMessage(0);
             break;
@@ -4498,6 +4523,7 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
 
 update_check_done:
     tray_update_check_end();
+    tray_set_update_check_visible(tray, false);
 }
 
 static void tray_handle_update_check_complete(NoSleepTray* tray,
@@ -4528,6 +4554,7 @@ static void tray_handle_update_check_complete(NoSleepTray* tray,
 void tray_check_for_updates(NoSleepTray* tray, bool silent) {
     if (!tray || tray->update_check_task || !tray_update_check_begin()) return;
 
+    tray_set_update_check_visible(tray, true);
     DEBUG_LOG("tray_check_for_updates: starting asynchronous check");
 
     TrayUpdateCheckTask* task = (TrayUpdateCheckTask*)calloc(1, sizeof(TrayUpdateCheckTask));
