@@ -312,6 +312,13 @@ bool notify_groups_save(NotifyGroupManager* mgr) {
     return true;
 }
 
+// Missing values and oversized payloads use the existing corrupt-data fallback.
+// Other query failures leave persisted data unread and must block replacement.
+static bool notify_groups_value_read_failed(LONG result) {
+    return result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND &&
+        result != ERROR_MORE_DATA;
+}
+
 void notify_groups_load(NotifyGroupManager* mgr) {
     if (!mgr) return;
     mgr->load_incomplete = false;
@@ -332,7 +339,9 @@ void notify_groups_load(NotifyGroupManager* mgr) {
     // Read active index
     DWORD val = 0;
     DWORD size = sizeof(DWORD);
-    RegQueryValueEx(hKeyRoot, "active_index", NULL, NULL, (LPBYTE)&val, &size);
+    result = RegQueryValueEx(hKeyRoot, "active_index", NULL, NULL, (LPBYTE)&val, &size);
+    if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
+    if (result != ERROR_SUCCESS) val = 0;
     DWORD persisted_active_index = val;
     mgr->active_index = 0;
     bool active_index_mapped = false;
@@ -359,6 +368,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         DWORD name_size = sizeof(name);
         DWORD name_type = 0;
         result = RegQueryValueEx(hKeyGroup, "name", NULL, &name_type, (LPBYTE)name, &name_size);
+        if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
         if (result != ERROR_SUCCESS || name_type != REG_SZ || notify_groups_name_is_blank(name)) {
             RegCloseKey(hKeyGroup);
             continue; // Corrupt entry, skip and continue enumeration
@@ -375,6 +385,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         size = sizeof(DWORD);
         DWORD mask_type = 0;
         result = RegQueryValueEx(hKeyGroup, "event_mask", NULL, &mask_type, (LPBYTE)&val, &size);
+        if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
         if (result != ERROR_SUCCESS || mask_type != REG_DWORD) {
             val = 0;
         }
@@ -385,6 +396,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         size = sizeof(DWORD);
         DWORD def_type = 0;
         result = RegQueryValueEx(hKeyGroup, "is_default", NULL, &def_type, (LPBYTE)&val, &size);
+        if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
         mgr->groups[mgr->count].is_default = (result == ERROR_SUCCESS && def_type == REG_DWORD && val != 0);
         
         RegCloseKey(hKeyGroup);
