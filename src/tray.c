@@ -3157,6 +3157,58 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
+// Older SDK targets omit this message even though newer systems send it.
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
+// Resolve newer DPI APIs at runtime so older Windows versions keep working.
+static UINT custom_dialog_dpi(HWND hwnd) {
+    typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+    GetDpiForWindowFn get_dpi = (GetDpiForWindowFn)GetProcAddress(
+        GetModuleHandle("user32.dll"), "GetDpiForWindow");
+    UINT dpi = get_dpi ? get_dpi(hwnd) : 0;
+    if (!dpi) {
+        HDC dc = GetDC(hwnd);
+        dpi = dc ? (UINT)GetDeviceCaps(dc, LOGPIXELSX) : 96;
+        if (dc) ReleaseDC(hwnd, dc);
+    }
+    return dpi ? dpi : 96;
+}
+
+static void layout_custom_dialog(HWND hwnd, UINT dpi, HFONT* font) {
+    const int ids[] = {3, 4, 1, 2};
+    const int geometry[][4] = {
+        {20, 10, 220, 20}, {20, 35, 220, 25},
+        {20, 75, 100, 30}, {140, 75, 100, 30}
+    };
+    for (int i = 0; i < 4; ++i) {
+        MoveWindow(GetDlgItem(hwnd, ids[i]),
+            MulDiv(geometry[i][0], dpi, 96), MulDiv(geometry[i][1], dpi, 96),
+            MulDiv(geometry[i][2], dpi, 96), MulDiv(geometry[i][3], dpi, 96), TRUE);
+    }
+    HFONT replacement = create_dialog_font(MulDiv(14, dpi, 96));
+    if (replacement) {
+        EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)replacement);
+        if (*font) DeleteObject(*font);
+        *font = replacement;
+    }
+}
+
+static void size_custom_dialog(HWND hwnd, UINT dpi) {
+    typedef BOOL (WINAPI *AdjustWindowRectExForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    AdjustWindowRectExForDpiFn adjust = (AdjustWindowRectExForDpiFn)GetProcAddress(
+        GetModuleHandle("user32.dll"), "AdjustWindowRectExForDpi");
+    RECT rect = {0, 0, MulDiv(260, dpi, 96), MulDiv(125, dpi, 96)};
+    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    if (!adjust || !adjust(&rect, style, FALSE, ex_style, dpi)) {
+        AdjustWindowRectEx(&rect, style, FALSE, ex_style);
+    }
+    SetWindowPos(hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 // Simple input dialog window procedure
 static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static HWND hEdit = NULL;
@@ -3172,28 +3224,13 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     *pResult = -1;
                 }
                 
-                // Center dialog on screen
-                RECT rc;
-                GetWindowRect(hwnd, &rc);
-                int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-                int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-                int x = (screenWidth - (rc.right - rc.left)) / 2;
-                int y = (screenHeight - (rc.bottom - rc.top)) / 2;
-                SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-                
                 // Create edit control
                 hEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "30",
                     WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
                     20, 30, 150, 25,
-                    hwnd, NULL, GetModuleHandle(NULL), NULL);
+                    hwnd, (HMENU)4, GetModuleHandle(NULL), NULL);
                 
                 if (hEdit) {
-                    // Set font with ClearType quality for high-resolution rendering
-                    hInputFont = create_dialog_font(14);
-                    if (hInputFont) {
-                        SendMessage(hEdit, WM_SETFONT, (WPARAM)hInputFont, TRUE);
-                    }
-                    
                     // Limit input to 4 characters
                     SendMessage(hEdit, EM_SETLIMITTEXT, 4, 0);
                     SetFocus(hEdit);
@@ -3230,6 +3267,21 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             }
             break;
             
+        case WM_DPICHANGED:
+            {
+                RECT* suggested = (RECT*)lParam;
+                SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
+                    suggested->right - suggested->left, suggested->bottom - suggested->top,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+                size_custom_dialog(hwnd, HIWORD(wParam));
+                layout_custom_dialog(hwnd, HIWORD(wParam), &hInputFont);
+            }
+            return 0;
+
+        case WM_APP:
+            layout_custom_dialog(hwnd, custom_dialog_dpi(hwnd), &hInputFont);
+            return 0;
+
         case WM_DESTROY:
             if (hInputFont) {
                 DeleteObject(hInputFont);
@@ -3263,14 +3315,37 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
         return -1;
     }
     
+    typedef HANDLE (WINAPI *SetThreadDpiAwarenessContextFn)(HANDLE);
+    SetThreadDpiAwarenessContextFn set_dpi_context =
+        (SetThreadDpiAwarenessContextFn)GetProcAddress(
+            GetModuleHandle("user32.dll"), "SetThreadDpiAwarenessContext");
+    HANDLE previous_context = NULL;
+    if (set_dpi_context) {
+        previous_context = set_dpi_context((HANDLE)(INT_PTR)-4);
+        if (!previous_context) previous_context = set_dpi_context((HANDLE)(INT_PTR)-3);
+    }
+
+    // Use the tray interaction's monitor, including its taskbar work-area inset.
+    POINT cursor;
+    HMONITOR monitor = GetCursorPos(&cursor)
+        ? MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
+        : MonitorFromWindow(tray->hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info = {0};
+    monitor_info.cbSize = sizeof(monitor_info);
+    RECT work_area;
+    if (GetMonitorInfo(monitor, &monitor_info)) {
+        work_area = monitor_info.rcWork;
+    } else if (!SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0)) {
+        work_area = (RECT){0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    }
     // Create dialog window
     HWND hwndDlg = CreateWindowEx(
         0,
         "NoSleepInputDialog",
         "Custom Duration - nosleep",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        220, 150,
+        work_area.left, work_area.top,
+        260, 150,
         tray->hwnd,
         NULL,
         hInstance,
@@ -3278,6 +3353,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     );
     
     if (!hwndDlg) {
+        if (previous_context) set_dpi_context(previous_context);
         UnregisterClass("NoSleepInputDialog", hInstance);
         return -1;
     }
@@ -3298,16 +3374,21 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     CreateWindowEx(0, "STATIC", "Enter duration (minutes, 1-1440):",
         WS_CHILD | WS_VISIBLE,
         20, 10, 180, 20,
-        hwndDlg, NULL, hInstance, NULL);
-    
-    // Apply high-quality ClearType font to all dialog controls
-    HFONT dlgFont = create_dialog_font(14);
-    if (dlgFont) {
-        EnumChildWindows(hwndDlg, set_child_font_proc, (LPARAM)dlgFont);
-        // Store font handle on window for cleanup in WM_DESTROY
-        SetWindowLongPtr(hwndDlg, GWLP_USERDATA, (LONG_PTR)dlgFont);
-    }
-    
+        hwndDlg, (HMENU)3, hInstance, NULL);
+
+    UINT dpi = custom_dialog_dpi(hwndDlg);
+    size_custom_dialog(hwndDlg, dpi);
+    SendMessage(hwndDlg, WM_APP, 0, 0);
+    RECT bounds;
+    GetWindowRect(hwndDlg, &bounds);
+    int width = bounds.right - bounds.left;
+    int height = bounds.bottom - bounds.top;
+    int x = work_area.left + (work_area.right - work_area.left - width) / 2;
+    int y = work_area.top + (work_area.bottom - work_area.top - height) / 2;
+    if (x < work_area.left) x = work_area.left;
+    if (y < work_area.top) y = work_area.top;
+    SetWindowPos(hwndDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
     // Show dialog
     ShowWindow(hwndDlg, SW_SHOW);
     
@@ -3321,9 +3402,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     }
     
     // Cleanup
-    if (dlgFont) {
-        DeleteObject(dlgFont);
-    }
+    if (previous_context) set_dpi_context(previous_context);
     UnregisterClass("NoSleepInputDialog", hInstance);
     
     return result;
