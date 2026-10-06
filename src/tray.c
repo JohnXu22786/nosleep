@@ -1237,7 +1237,9 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
 
     HANDLE sleep_timer = tray->sleep_timer;
     HANDLE shutdown_timer = tray->shutdown_timer;
-    bool was_delayed_action_pending = sleep_timer != NULL || shutdown_timer != NULL;
+    bool sleep_pending = sleep_timer != NULL && !tray->sleep_action_claimed;
+    bool shutdown_pending = shutdown_timer != NULL && !tray->shutdown_action_claimed;
+    bool was_delayed_action_pending = sleep_pending || shutdown_pending;
     SessionFinishedAction countdown_action = tray->countdown_action;
     bool saved_action_matches_pending =
         (countdown_action == SESSION_FINISHED_SHUTDOWN && shutdown_timer) ||
@@ -1252,8 +1254,8 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     }
     tray->sleep_timer = NULL;
     tray->shutdown_timer = NULL;
-    if (sleep_timer) SetEvent(tray->sleep_stop_event);
-    if (shutdown_timer) SetEvent(tray->shutdown_stop_event);
+    if (sleep_pending) SetEvent(tray->sleep_stop_event);
+    if (shutdown_pending) SetEvent(tray->shutdown_stop_event);
 
     ATOMIC_STORE_BOOL(&tray->is_running, false);
     SetEvent(tray->stop_event);
@@ -1502,6 +1504,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     if (!stale_session && !session_starting && !core_init_failed &&
                         !nosleep_run_failed && core_init_succeeded) {
                         ResetEvent(tray->sleep_stop_event);
+                        tray->sleep_action_claimed = false;
                         tray->sleep_timer = CreateThread(
                             NULL, 0, delayed_sleep_thread, tray, 0, NULL
                         );
@@ -1565,6 +1568,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         !shutdown_core_init_failed && !shutdown_nosleep_run_failed &&
                         shutdown_core_init_succeeded) {
                         ResetEvent(tray->shutdown_stop_event);
+                        tray->shutdown_action_claimed = false;
                         tray->shutdown_timer = CreateThread(
                             NULL, 0, delayed_shutdown_thread, tray, 0, NULL
                         );
@@ -1848,8 +1852,9 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
                 break;
             }
 
-            // Reserve the action under the lock; the OS call may broadcast a
-            // power event that must be able to take the same lock.
+            // Claim dispatch before Stop can cancel it. Keep the handle for
+            // cleanup to join, and release the lock before OS power callbacks.
+            tray->sleep_action_claimed = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
             trigger_system_sleep(tray);
@@ -1906,8 +1911,9 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
                 break;
             }
 
-            // Reserve the action under the lock; the OS call may broadcast a
-            // power event that must be able to take the same lock.
+            // Claim dispatch before Stop can cancel it. Keep the handle for
+            // cleanup to join, and release the lock before OS power callbacks.
+            tray->shutdown_action_claimed = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
             trigger_system_shutdown(tray);

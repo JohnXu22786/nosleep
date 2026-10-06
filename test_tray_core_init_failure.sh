@@ -133,6 +133,7 @@ typedef struct NoSleepTray {
     bool prevent_display, away_mode, verbose;
     int refresh_interval_seconds;
     SessionFinishedAction session_finished_action;
+    bool sleep_action_claimed, shutdown_action_claimed;
     HANDLE sleep_timer, sleep_stop_event;
     HANDLE shutdown_timer, shutdown_stop_event;
     bool delayed_sleep_countdown_active;

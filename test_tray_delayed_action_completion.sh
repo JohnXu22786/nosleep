@@ -75,6 +75,10 @@ def extract_function(name):
 sleep_thread = extract_function("delayed_sleep_thread")
 shutdown_thread = extract_function("delayed_shutdown_thread")
 reap_handle = extract_function("tray_reap_delayed_action_handle")
+stop = extract_function("tray_stop_nosleep_for_session")
+stop_snapshot = stop[stop.index("    HANDLE sleep_timer = tray->sleep_timer;"):stop.index("    ATOMIC_STORE_BOOL(&tray->is_running, false);")]
+stop_snapshot = "static void boundary_stop(NoSleepTray *tray) {\n" + stop_snapshot + "\n    boundary_pending = was_delayed_action_pending;\n}"
+
 
 prelude = r'''#define _POSIX_C_SOURCE 200809L
 #include <stdbool.h>
@@ -82,6 +86,7 @@ prelude = r'''#define _POSIX_C_SOURCE 200809L
 #include <pthread.h>
 #include "tray_stop_guard.h"
 
+typedef int SessionFinishedAction;
 typedef unsigned int DWORD;
 typedef unsigned long long ULONGLONG;
 typedef void *HANDLE;
@@ -97,6 +102,9 @@ typedef pthread_mutex_t SRWLOCK;
 typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
     bool stopping;
+    bool sleep_action_claimed;
+    bool shutdown_action_claimed;
+    int countdown_action;
     bool delayed_sleep_countdown_active;
     HANDLE sleep_timer;
     HANDLE sleep_stop_event;
@@ -116,6 +124,14 @@ static int sleep_handle_token;
 static int shutdown_handle_token;
 static HANDLE signaled_stop_event;
 static __thread unsigned int delayed_action_lock_depth;
+static bool boundary_pending;
+static bool stop_at_dispatch;
+static bool stop_before_claim;
+static NoSleepTray *boundary_tray;
+static void boundary_stop(NoSleepTray *tray);
+enum { SESSION_FINISHED_SLEEP = 1, SESSION_FINISHED_SHUTDOWN = 2 };
+void SetEvent(HANDLE event) { signaled_stop_event = event; }
+
 
 void AcquireSRWLockExclusive(SRWLOCK *lock) {
     pthread_mutex_lock(lock);
@@ -124,6 +140,12 @@ void AcquireSRWLockExclusive(SRWLOCK *lock) {
 void ReleaseSRWLockExclusive(SRWLOCK *lock) {
     --delayed_action_lock_depth;
     pthread_mutex_unlock(lock);
+    if (stop_at_dispatch && boundary_tray) {
+        stop_at_dispatch = false;
+        pthread_mutex_lock(lock);
+        boundary_stop(boundary_tray);
+        pthread_mutex_unlock(lock);
+    }
 }
 ULONGLONG GetTickCount64(void) { return 1; }
 ULONGLONG get_elapsed_milliseconds(ULONGLONG start) {
@@ -150,7 +172,14 @@ void tray_start_countdown(NoSleepTray *tray, int action) {
     (void)tray;
     (void)action;
 }
-void tray_stop_countdown(NoSleepTray *tray) { (void)tray; }
+void tray_stop_countdown(NoSleepTray *tray) {
+    if (stop_before_claim) {
+        stop_before_claim = false;
+        pthread_mutex_lock(&tray->delayed_action_lock);
+        boundary_stop(tray);
+        pthread_mutex_unlock(&tray->delayed_action_lock);
+    }
+}
 void trigger_system_sleep(NoSleepTray *tray) {
     (void)tray;
     ++sleep_action_calls;
@@ -162,7 +191,6 @@ void trigger_system_shutdown(NoSleepTray *tray) {
     shutdown_action_called_without_lock = delayed_action_lock_depth == 0;
 }
 
-enum { SESSION_FINISHED_SLEEP = 1, SESSION_FINISHED_SHUTDOWN = 2 };
 '''
 
 harness = r'''
@@ -254,15 +282,45 @@ static int test_shutdown_cancellation_reaps_handle(void) {
     return 0;
 }
 
+static int test_dispatch_boundary(bool shutdown, bool cancel_first) {
+    NoSleepTray tray = {0};
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.sleep_stop_event = &tray.sleep_stop_event;
+    tray.shutdown_stop_event = &tray.shutdown_stop_event;
+    if (shutdown) tray.shutdown_timer = &shutdown_handle_token;
+    else tray.sleep_timer = &sleep_handle_token;
+    int calls_before = shutdown ? shutdown_action_calls : sleep_action_calls;
+    boundary_tray = &tray;
+    stop_before_claim = cancel_first;
+    stop_at_dispatch = !cancel_first;
+    signaled_stop_event = NULL;
+    if (shutdown) delayed_shutdown_thread(&tray);
+    else delayed_sleep_thread(&tray);
+    boundary_tray = NULL;
+    int calls_after = shutdown ? shutdown_action_calls : sleep_action_calls;
+    if (boundary_pending != cancel_first ||
+        (signaled_stop_event != NULL) != cancel_first ||
+        calls_after - calls_before != (cancel_first ? 0 : 1)) {
+        fprintf(stderr, "FAIL: cancellation and dispatch disagreed at the boundary (%s, cancel_first=%d)\n",
+                shutdown ? "shutdown" : "sleep", cancel_first);
+        return 1;
+    }
+    signaled_stop_event = NULL;
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return 0;
+}
+
 int main(void) {
     if (test_sleep_completion() || test_shutdown_completion() ||
         test_sleep_cancellation_reaps_handle() || test_shutdown_cancellation_reaps_handle()) return 1;
+    if (test_dispatch_boundary(false, false) || test_dispatch_boundary(true, false) ||
+        test_dispatch_boundary(false, true) || test_dispatch_boundary(true, true)) return 1;
     puts("PASS: delayed action completion and cancellation reap their handles");
     return 0;
 }
 '''
 
-output.write_text(prelude + "\n" + reap_handle + "\n" + sleep_thread + "\n" + shutdown_thread + "\n" + harness)
+output.write_text(prelude + "\n" + stop_snapshot + "\n" + reap_handle + "\n" + sleep_thread + "\n" + shutdown_thread + "\n" + harness)
 command = shlex.split(os.environ.get("CC", "cc")) + [
     "-std=c99", "-Wall", "-Wextra", "-pthread", f"-I{root / 'src'}",
     str(output), "-o", str(output.with_suffix("")),

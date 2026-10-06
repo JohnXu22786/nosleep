@@ -121,6 +121,8 @@ typedef struct NoSleepTray {
     int refresh_interval_seconds; // Interval between sleep-prevention refreshes
     SessionFinishedAction session_finished_action; // Action to take when session finishes
     bool sleep_after_timeout;   // Whether to sleep after timeout expires (deprecated, use session_finished_action)
+    bool sleep_action_claimed;  // Dispatch won cancellation - protected by delayed_action_lock
+    bool shutdown_action_claimed; // Dispatch won cancellation - protected by delayed_action_lock
     HANDLE sleep_timer;         // Timer handle for delayed sleep
     HANDLE sleep_stop_event;    // Event to signal stop delayed sleep
     HANDLE shutdown_timer;      // Timer handle for delayed shutdown
