@@ -997,6 +997,9 @@ static void tray_destroy_icons(NoSleepTray* tray) {
 }
 
 static void tray_create_menu(NoSleepTray* tray) {
+    HMENU hSubMenu = NULL;
+    HMENU hSessionFinishedMenu = NULL;
+
     tray->hmenu = CreatePopupMenu();
     DEBUG_LOG("tray_create_menu: CreatePopupMenu returned %p", tray->hmenu);
     if (!tray->hmenu) {
@@ -1005,34 +1008,47 @@ static void tray_create_menu(NoSleepTray* tray) {
     }
     
     // Duration submenu
-    HMENU hSubMenu = CreatePopupMenu();
+    hSubMenu = CreatePopupMenu();
     DEBUG_LOG("tray_create_menu: CreatePopupMenu submenu returned %p", hSubMenu);
     if (!hSubMenu) {
         DEBUG_LOG("tray_create_menu: Failed to create submenu (error %lu)", GetLastError());
-        DestroyMenu(tray->hmenu);
-        tray->hmenu = NULL;
-        return;
+        goto fail;
     }
     
-    AppendMenu(hSubMenu, MF_STRING, IDM_START_30MIN, "30 minutes");
-    AppendMenu(hSubMenu, MF_STRING, IDM_START_1HOUR, "1 hour");
-    AppendMenu(hSubMenu, MF_STRING, IDM_START_2HOURS, "2 hours");
-    AppendMenu(hSubMenu, MF_STRING, IDM_START_CUSTOM, "Custom...");
-    AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite");
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_30MIN, "30 minutes")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_1HOUR, "1 hour")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_2HOURS, "2 hours")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_CUSTOM, "Custom...")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL)) {
+        goto fail;
+    }
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite")) {
+        goto fail;
+    }
     
     // When finished submenu
-    HMENU hSessionFinishedMenu = CreatePopupMenu();
+    hSessionFinishedMenu = CreatePopupMenu();
     if (!hSessionFinishedMenu) {
         DEBUG_LOG("tray_create_menu: Failed to create When finished submenu (error %lu)", GetLastError());
-        DestroyMenu(hSubMenu);
-        DestroyMenu(tray->hmenu);
-        tray->hmenu = NULL;
-        return;
+        goto fail;
     }
-    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None");
-    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown");
-    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep");
+    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep")) {
+        goto fail;
+    }
     
     // Create main menu item text based on current selection
     char finished_text[64];
@@ -1058,18 +1074,52 @@ static void tray_create_menu(NoSleepTray* tray) {
     // 4. Settings, Check for Updates, About (grouped together)
     // 5. --- separator ---
     // 6. Exit
-    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, finished_text);
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration");
-    AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
+    if (!AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSessionFinishedMenu, finished_text)) {
+        goto fail;
+    }
+    hSessionFinishedMenu = NULL; // The parent menu now owns this submenu.
+    if (!AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL)) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration")) {
+        goto fail;
+    }
+    hSubMenu = NULL; // The parent menu now owns this submenu.
+    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop")) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL)) {
+        goto fail;
+    }
     // Group: Settings, Check for Updates, About
-    AppendMenu(tray->hmenu, MF_STRING, IDM_SETTINGS, "Settings...");
-    AppendMenu(tray->hmenu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...");
-    AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About");
-    AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL);
-    AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit");
+    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_SETTINGS, "Settings...")) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_CHECK_UPDATES, "Check for Updates...")) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_ABOUT, "About")) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL)) {
+        goto fail;
+    }
+    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_EXIT, "Exit")) {
+        goto fail;
+    }
     DEBUG_LOG("tray_create_menu: Menu created successfully");
+    return;
+
+fail:
+    DEBUG_LOG("tray_create_menu: Menu construction failed (error %lu)", GetLastError());
+    if (hSessionFinishedMenu) {
+        DestroyMenu(hSessionFinishedMenu);
+    }
+    if (hSubMenu) {
+        DestroyMenu(hSubMenu);
+    }
+    DestroyMenu(tray->hmenu);
+    tray->hmenu = NULL;
 }
 
 void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
