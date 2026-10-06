@@ -82,7 +82,8 @@ typedef void *HMENU;
 typedef enum {
     SESSION_FINISHED_NONE,
     SESSION_FINISHED_SHUTDOWN,
-    SESSION_FINISHED_SLEEP
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
 } SessionFinishedAction;
 typedef enum {
     NOTIFY_EVENT_COUNTDOWN_CANCEL,
@@ -123,6 +124,7 @@ typedef struct NoSleepTray {
     bool is_running;
     bool delayed_sleep_countdown_active;
     bool sleep_action_claimed;
+    SessionFinishedAction shutdown_action;
     bool shutdown_action_claimed;
     HANDLE sleep_timer;
     HANDLE shutdown_timer;
