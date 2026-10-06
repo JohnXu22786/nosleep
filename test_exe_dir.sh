@@ -87,6 +87,8 @@ int main(void) {
         const char *expected_dir;
     } cases[] = {
         {"C:\\nosleep.exe", "C:\\"},
+        {"\\\\?\\C:\\nosleep.exe", "\\\\?\\C:\\"},
+        {"\\\\?\\C:\\NoSleep\\nosleep.exe", "\\\\?\\C:\\NoSleep"},
         {"C:\\Program Files\\NoSleep\\nosleep.exe", "C:\\Program Files\\NoSleep"},
         {"\\\\server\\share\\nosleep.exe", "\\\\server\\share"},
         {"\\\\server\\share\\NoSleep\\nosleep.exe", "\\\\server\\share\\NoSleep"},
