@@ -2348,7 +2348,9 @@ static char* get_exe_dir(void) {
     char* last_backslash = strrchr(path, '\\');
     if (last_backslash) {
         // Keep the separator when the executable is directly under a drive root.
-        if (last_backslash == path + 2 && path[1] == ':') {
+        if ((last_backslash == path + 2 && path[1] == ':') ||
+            (last_backslash == path + 6 &&
+             strncmp(path, "\\\\?\\", 4) == 0 && path[5] == ':')) {
             last_backslash[1] = '\0';
         } else {
             *last_backslash = '\0';
