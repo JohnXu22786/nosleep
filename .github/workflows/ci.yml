@@ -47,6 +47,9 @@ jobs:
       - name: Test CLI settings failures and PATH addition
         run: bash test_cli_settings_failures.sh
 
+      - name: Test Unicode PATH registry updates
+        run: bash test_path_unicode.sh
+
       - name: Test executable directory extraction
         run: bash test_exe_dir.sh
 

@@ -69,13 +69,14 @@ prelude = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
-static const char *test_exe_path;
+static const wchar_t *test_exe_path;
 
-static char *get_exe_path(void) {
-    size_t length = strlen(test_exe_path);
-    char *path = (char *)malloc(length + 1);
-    if (path) memcpy(path, test_exe_path, length + 1);
+static wchar_t *get_exe_path_w(void) {
+    size_t length = wcslen(test_exe_path);
+    wchar_t *path = (wchar_t *)malloc((length + 1) * sizeof(wchar_t));
+    if (path) memcpy(path, test_exe_path, (length + 1) * sizeof(wchar_t));
     return path;
 }
 """
@@ -83,24 +84,24 @@ static char *get_exe_path(void) {
 main = r"""
 int main(void) {
     static const struct {
-        const char *exe_path;
-        const char *expected_dir;
+        const wchar_t *exe_path;
+        const wchar_t *expected_dir;
     } cases[] = {
-        {"C:\\nosleep.exe", "C:\\"},
-        {"\\\\?\\C:\\nosleep.exe", "\\\\?\\C:\\"},
-        {"\\\\?\\C:\\NoSleep\\nosleep.exe", "\\\\?\\C:\\NoSleep"},
-        {"C:\\Program Files\\NoSleep\\nosleep.exe", "C:\\Program Files\\NoSleep"},
-        {"\\\\server\\share\\nosleep.exe", "\\\\server\\share"},
-        {"\\\\server\\share\\NoSleep\\nosleep.exe", "\\\\server\\share\\NoSleep"},
+        {L"C:\\nosleep.exe", L"C:\\"},
+        {L"\\\\?\\C:\\nosleep.exe", L"\\\\?\\C:\\"},
+        {L"\\\\?\\C:\\NoSleep\\nosleep.exe", L"\\\\?\\C:\\NoSleep"},
+        {L"C:\\Program Files\\NoSleep\\nosleep.exe", L"C:\\Program Files\\NoSleep"},
+        {L"\\\\server\\share\\nosleep.exe", L"\\\\server\\share"},
+        {L"\\\\server\\share\\NoSleep\\nosleep.exe", L"\\\\server\\share\\NoSleep"},
     };
     int failures = 0;
 
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
         test_exe_path = cases[i].exe_path;
-        char *actual_dir = get_exe_dir();
-        if (!actual_dir || strcmp(actual_dir, cases[i].expected_dir) != 0) {
-            fprintf(stderr, "FAIL: directory for '%s' was '%s', expected '%s'\n",
-                    cases[i].exe_path, actual_dir ? actual_dir : "(null)",
+        wchar_t *actual_dir = get_exe_dir();
+        if (!actual_dir || wcscmp(actual_dir, cases[i].expected_dir) != 0) {
+            fprintf(stderr, "FAIL: directory for '%ls' was '%ls', expected '%ls'\n",
+                    cases[i].exe_path, actual_dir ? actual_dir : L"(null)",
                     cases[i].expected_dir);
             ++failures;
         }
@@ -113,7 +114,7 @@ int main(void) {
 }
 """
 
-function = extract_function("static char* get_exe_dir(void)")
+function = extract_function("static wchar_t* get_exe_dir(void)")
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "test_exe_dir.c"
     binary = Path(tmp) / "test_exe_dir"

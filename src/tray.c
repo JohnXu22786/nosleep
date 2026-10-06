@@ -107,8 +107,8 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 static bool add_app_to_path(void);
 static bool remove_app_from_path(void);
 static bool apply_path_preference(bool add_to_path);
-static int str_icmp_n(const char* a, const char* b, size_t n);
-static char* get_exe_dir(void);
+static int str_icmp_n(const wchar_t* a, const wchar_t* b, size_t n);
+static wchar_t* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // Forward declaration for notification group edit dialog
@@ -2325,32 +2325,44 @@ static char* get_exe_path(void) {
     return path;
 }
 
+// PATH registry values use UTF-16, independently of the application's ANSI UI.
+static wchar_t* get_exe_path_w(void) {
+    wchar_t* path = (wchar_t*)malloc(MAX_PATH * sizeof(wchar_t));
+    if (!path) return NULL;
+    DWORD len = GetModuleFileNameW(NULL, path, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) {
+        free(path);
+        return NULL;
+    }
+    return path;
+}
+
 // Case-insensitive string comparison (C99-compatible, no strnicmp/strncasecmp)
-static int str_icmp_n(const char* a, const char* b, size_t n) {
+static int str_icmp_n(const wchar_t* a, const wchar_t* b, size_t n) {
     for (size_t i = 0; i < n; i++) {
         if (a[i] == '\0' && b[i] == '\0') return 0;
-        char ca = a[i];
-        char cb = b[i];
+        wchar_t ca = a[i];
+        wchar_t cb = b[i];
         if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
         if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (ca != cb) return (unsigned int)ca - (unsigned int)cb;
         if (ca == '\0') return 0;
     }
     return 0;
 }
 
 // Get the directory containing the executable
-static char* get_exe_dir(void) {
-    char* path = get_exe_path();
+static wchar_t* get_exe_dir(void) {
+    wchar_t* path = get_exe_path_w();
     if (!path) return NULL;
     
     // Find last backslash and terminate there to get directory
-    char* last_backslash = strrchr(path, '\\');
+    wchar_t* last_backslash = wcsrchr(path, '\\');
     if (last_backslash) {
         // Keep the separator when the executable is directly under a drive root.
         if ((last_backslash == path + 2 && path[1] == ':') ||
             (last_backslash == path + 6 &&
-             strncmp(path, "\\\\?\\", 4) == 0 && path[5] == ':')) {
+             wcsncmp(path, L"\\\\?\\", 4) == 0 && path[5] == ':')) {
             last_backslash[1] = '\0';
         } else {
             *last_backslash = '\0';
@@ -2361,15 +2373,15 @@ static char* get_exe_dir(void) {
 
 // Add nosleep directory to user PATH in registry
 static bool add_app_to_path(void) {
-    char* dir = get_exe_dir();
+    wchar_t* dir = get_exe_dir();
     if (!dir) return false;
     
     HKEY hKey;
-    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
-        "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
+    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Environment", 0, KEY_READ | KEY_WRITE, &hKey);
     if (result == ERROR_FILE_NOT_FOUND) {
-        result = RegCreateKeyEx(HKEY_CURRENT_USER,
-            "Environment", 0, NULL, REG_OPTION_NON_VOLATILE,
+        result = RegCreateKeyExW(HKEY_CURRENT_USER,
+            L"Environment", 0, NULL, REG_OPTION_NON_VOLATILE,
             KEY_READ | KEY_WRITE, NULL, &hKey, NULL);
     }
     if (result != ERROR_SUCCESS) {
@@ -2379,7 +2391,7 @@ static bool add_app_to_path(void) {
     
     // Read current PATH
     DWORD path_size = 0;
-    result = RegQueryValueEx(hKey, "Path", NULL, NULL, NULL, &path_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, NULL, &path_size);
     if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
         RegCloseKey(hKey);
         free(dir);
@@ -2388,22 +2400,22 @@ static bool add_app_to_path(void) {
     
     if (path_size == 0) {
         // PATH is empty or doesn't exist, just set it to our directory
-        result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
-            (LPBYTE)dir, (DWORD)(strlen(dir) + 1));
+        result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+            (LPBYTE)dir, (DWORD)((wcslen(dir) + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
         free(dir);
         
         if (result != ERROR_SUCCESS) return false;
         
         // Notify the system about the environment change
-        SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-            (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+            (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
         return true;
     }
     
     // Allocate buffer for current path + new dir + semicolon
-    DWORD buf_size = path_size + (DWORD)strlen(dir) + 2; // +2 for ';' and '\0'
-    char* new_path = (char*)malloc(buf_size);
+    DWORD buf_size = path_size + (DWORD)((wcslen(dir) + 2) * sizeof(wchar_t)); // +2 for ';' and '\0'
+    wchar_t* new_path = (wchar_t*)malloc(buf_size);
     if (!new_path) {
         RegCloseKey(hKey);
         free(dir);
@@ -2413,11 +2425,11 @@ static bool add_app_to_path(void) {
     
     // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
     DWORD actual_size = path_size;
-    result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
     if (result == ERROR_MORE_DATA) {
         // PATH grew between calls, reallocate and retry
-        buf_size = actual_size + (DWORD)strlen(dir) + 2;
-        char* realloc_path = (char*)realloc(new_path, buf_size);
+        buf_size = actual_size + (DWORD)((wcslen(dir) + 2) * sizeof(wchar_t));
+        wchar_t* realloc_path = (wchar_t*)realloc(new_path, buf_size);
         if (!realloc_path) {
             RegCloseKey(hKey);
             free(new_path);
@@ -2425,7 +2437,7 @@ static bool add_app_to_path(void) {
             return false;
         }
         new_path = realloc_path;
-        result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+        result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
     }
     if (result != ERROR_SUCCESS) {
         RegCloseKey(hKey);
@@ -2434,16 +2446,18 @@ static bool add_app_to_path(void) {
         return false;
     }
     // Ensure null-terminated (actual_size is bytes including null in REG_EXPAND_SZ)
-    if (actual_size > 0 && actual_size <= buf_size) {
-        new_path[actual_size - 1] = '\0'; // REG_EXPAND_SZ includes null terminator in count
-    } else {
-        new_path[0] = '\0';
+    if (actual_size >= buf_size || actual_size % sizeof(wchar_t) != 0) {
+        RegCloseKey(hKey);
+        free(new_path);
+        free(dir);
+        return false;
     }
+    new_path[actual_size / sizeof(wchar_t)] = '\0';
         
         // Check if dir is already in PATH (case-insensitive)
         // Remove trailing spaces and semicolons for clean comparison
-        size_t dir_len = strlen(dir);
-        char* p = new_path;
+        size_t dir_len = wcslen(dir);
+        wchar_t* p = new_path;
         bool already_in_path = false;
         while (*p && !already_in_path) {
             // Skip leading spaces
@@ -2451,8 +2465,8 @@ static bool add_app_to_path(void) {
             if (*p == '\0') break;
             
             // Find next semicolon or end
-            char* next = strchr(p, ';');
-            size_t seg_len = next ? (size_t)(next - p) : strlen(p);
+            wchar_t* next = wcschr(p, ';');
+            size_t seg_len = next ? (size_t)(next - p) : wcslen(p);
             
             // Trim trailing spaces
             while (seg_len > 0 && p[seg_len - 1] == ' ') seg_len--;
@@ -2477,17 +2491,17 @@ static bool add_app_to_path(void) {
         }
         
         // Append semicolon if existing path doesn't end with one
-        size_t existing_len = strlen(new_path);
+        size_t existing_len = wcslen(new_path);
         if (existing_len > 0 && new_path[existing_len - 1] != ';') {
-            strcat(new_path, ";");
+            wcscat(new_path, L";");
         }
     
     // Append new directory
-    strcat(new_path, dir);
+    wcscat(new_path, dir);
     
     // Write back to registry
-    result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
-        (LPBYTE)new_path, (DWORD)(strlen(new_path) + 1));
+    result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+        (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
     
     RegCloseKey(hKey);
     free(new_path);
@@ -2496,20 +2510,20 @@ static bool add_app_to_path(void) {
     if (result != ERROR_SUCCESS) return false;
     
     // Notify the system about the environment change
-    SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-        (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
     
     return true;
 }
 
 // Remove nosleep directory from user PATH in registry
 static bool remove_app_from_path(void) {
-    char* dir = get_exe_dir();
+    wchar_t* dir = get_exe_dir();
     if (!dir) return false;
     
     HKEY hKey;
-    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
-        "Environment", 0, KEY_READ | KEY_WRITE, &hKey);
+    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Environment", 0, KEY_READ | KEY_WRITE, &hKey);
     if (result != ERROR_SUCCESS) {
         free(dir);
         return result == ERROR_FILE_NOT_FOUND;
@@ -2517,7 +2531,7 @@ static bool remove_app_from_path(void) {
     
     // Read current PATH
     DWORD path_size = 0;
-    result = RegQueryValueEx(hKey, "Path", NULL, NULL, NULL, &path_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, NULL, &path_size);
     if (result == ERROR_FILE_NOT_FOUND || (result == ERROR_SUCCESS && path_size == 0)) {
         RegCloseKey(hKey);
         free(dir);
@@ -2529,7 +2543,7 @@ static bool remove_app_from_path(void) {
         return false;
     }
     
-    char* current_path = (char*)malloc(path_size + 1);
+    wchar_t* current_path = (wchar_t*)malloc(path_size + sizeof(wchar_t));
     if (!current_path) {
         RegCloseKey(hKey);
         free(dir);
@@ -2539,11 +2553,11 @@ static bool remove_app_from_path(void) {
     // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
     DWORD actual_size = path_size;
     DWORD buf_size = path_size;
-    result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
     if (result == ERROR_MORE_DATA) {
         // PATH grew between calls, reallocate and retry
         buf_size = actual_size;
-        char* realloc_path = (char*)realloc(current_path, buf_size + 1);
+        wchar_t* realloc_path = (wchar_t*)realloc(current_path, buf_size + sizeof(wchar_t));
         if (!realloc_path) {
             free(current_path);
             RegCloseKey(hKey);
@@ -2551,7 +2565,7 @@ static bool remove_app_from_path(void) {
             return false;
         }
         current_path = realloc_path;
-        result = RegQueryValueEx(hKey, "Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+        result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
     }
     if (result == ERROR_FILE_NOT_FOUND) {
         free(current_path);
@@ -2566,19 +2580,21 @@ static bool remove_app_from_path(void) {
         return false;
     }
     // Ensure null-terminated (REG_EXPAND_SZ includes null terminator in count)
-    if (actual_size > 0 && actual_size <= buf_size) {
-        current_path[actual_size - 1] = '\0';
-    } else {
-        current_path[0] = '\0';
+    if (actual_size > buf_size || actual_size % sizeof(wchar_t) != 0) {
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
     }
+    current_path[actual_size / sizeof(wchar_t)] = '\0';
     
-    size_t dir_len = strlen(dir);
+    size_t dir_len = wcslen(dir);
     bool found = false;
     
     // Build new path by removing all occurrences of dir (handle duplicates)
-    // Use strlen(current_path) since the actual data might be larger than path_size from first query
-    size_t new_size = strlen(current_path) + 1;
-    char* new_path = (char*)malloc(new_size);
+    // Use wcslen(current_path) since the actual data might be larger than path_size from first query
+    size_t new_size = wcslen(current_path) + 1;
+    wchar_t* new_path = (wchar_t*)malloc(new_size * sizeof(wchar_t));
     if (!new_path) {
         free(current_path);
         RegCloseKey(hKey);
@@ -2587,15 +2603,15 @@ static bool remove_app_from_path(void) {
     }
     new_path[0] = '\0';
     
-    char* p = current_path;
+    wchar_t* p = current_path;
     while (*p) {
         // Find next semicolon or end (without modifying p yet)
-        char* seg_start = p;
-        char* next = strchr(p, ';');
-        size_t seg_len = next ? (size_t)(next - p) : strlen(p);
+        wchar_t* seg_start = p;
+        wchar_t* next = wcschr(p, ';');
+        size_t seg_len = next ? (size_t)(next - p) : wcslen(p);
         
         // Trim leading spaces for comparison only
-        char* compare_start = p;
+        wchar_t* compare_start = p;
         while (*compare_start == ' ' && compare_start < p + seg_len) compare_start++;
         size_t remaining = seg_len - (size_t)(compare_start - p);
         
@@ -2609,9 +2625,9 @@ static bool remove_app_from_path(void) {
         if (!is_match) {
             // Keep this segment with original formatting
             if (new_path[0] != '\0') {
-                strcat(new_path, ";");
+                wcscat(new_path, L";");
             }
-            strncat(new_path, seg_start, seg_len);
+            wcsncat(new_path, seg_start, seg_len);
         } else {
             found = true;
         }
@@ -2633,8 +2649,8 @@ static bool remove_app_from_path(void) {
     }
     
     // Write back to registry
-    result = RegSetValueEx(hKey, "Path", 0, REG_EXPAND_SZ,
-        (LPBYTE)new_path, (DWORD)(strlen(new_path) + 1));
+    result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+        (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
     
     RegCloseKey(hKey);
     free(new_path);
@@ -2644,8 +2660,8 @@ static bool remove_app_from_path(void) {
     if (result != ERROR_SUCCESS) return false;
     
     // Notify the system about the environment change
-    SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-        (LPARAM)"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
     
     return true;
 }
