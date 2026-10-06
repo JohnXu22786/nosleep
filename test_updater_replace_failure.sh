@@ -70,7 +70,10 @@ def run(failure=None, collision=None):
         if match:
             files.pop(match[1], None)
             continue
-        if line.startswith('exit /b') or line.startswith('start '): break
+        if line.startswith('start '):
+            status = 0  # Simulate a successful relay before cleanup.
+            continue
+        if line.startswith('exit /b'): break
     return files
 
 for failure in ('copy', 'backup', 'install'):
