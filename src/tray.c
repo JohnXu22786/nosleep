@@ -2733,15 +2733,15 @@ static bool apply_path_preference(bool add_to_path) {
     return add_to_path ? add_app_to_path() : remove_app_from_path();
 }
 
-// Check if nosleep directory is currently in the user PATH
+// Check if nosleep is registered to run at startup
 static bool is_startup_enabled(void) {
     HKEY hKey;
-    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         0, KEY_READ, &hKey);
     if (result != ERROR_SUCCESS) return false;
 
-    char* exe_path = get_exe_path();
+    wchar_t* exe_path = get_exe_path_w();
     if (!exe_path) {
         RegCloseKey(hKey);
         return false;
@@ -2749,23 +2749,28 @@ static bool is_startup_enabled(void) {
 
     // Build expected registry value: "exe_path" --startup
     // Need to account for possible quotes around exe path
-    size_t exe_len = strlen(exe_path);
+    size_t exe_len = wcslen(exe_path);
     size_t expected_len = exe_len + 13;
-    char* expected = (char*)malloc(expected_len);
+    wchar_t* expected = (wchar_t*)malloc(expected_len * sizeof(wchar_t));
     if (!expected) {
         free(exe_path);
         RegCloseKey(hKey);
         return false;
     }
-    snprintf(expected, expected_len, "\"%s\" --startup", exe_path);
+    swprintf(expected, expected_len, L"\"%ls\" --startup", exe_path);
 
-    char reg_value[MAX_PATH + 16] = {0};
+    wchar_t reg_value[MAX_PATH + 16] = {0};
     DWORD value_size = sizeof(reg_value);
-    result = RegQueryValueEx(hKey, "nosleep", NULL, NULL,
+    DWORD value_type = 0;
+    result = RegQueryValueExW(hKey, L"nosleep", NULL, &value_type,
                              (LPBYTE)reg_value, &value_size);
     RegCloseKey(hKey);
 
-    bool enabled = (result == ERROR_SUCCESS && strcmp(reg_value, expected) == 0);
+    bool enabled = (result == ERROR_SUCCESS && value_type == REG_SZ &&
+        value_size >= sizeof(wchar_t) && value_size <= sizeof(reg_value) &&
+        value_size % sizeof(wchar_t) == 0 &&
+        reg_value[value_size / sizeof(wchar_t) - 1] == L'\0' &&
+        wcscmp(reg_value, expected) == 0);
     free(exe_path);
     free(expected);
     return enabled;
@@ -2773,12 +2778,12 @@ static bool is_startup_enabled(void) {
 
 static bool set_startup_registry(bool enable) {
     HKEY hKey;
-    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER,
-        "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
         0, KEY_WRITE, &hKey);
     if (enable && result == ERROR_FILE_NOT_FOUND) {
-        result = RegCreateKeyEx(HKEY_CURRENT_USER,
-            "Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+        result = RegCreateKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Run",
             0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
     }
     if (result != ERROR_SUCCESS) {
@@ -2786,27 +2791,27 @@ static bool set_startup_registry(bool enable) {
     }
 
     if (enable) {
-        char* exe_path = get_exe_path();
+        wchar_t* exe_path = get_exe_path_w();
         if (!exe_path) {
             RegCloseKey(hKey);
             return false;
         }
 
         // Store as: "exe_path" --startup
-        size_t value_len = strlen(exe_path) + 13;
-        char* value = (char*)malloc(value_len);
+        size_t value_len = wcslen(exe_path) + 13;
+        wchar_t* value = (wchar_t*)malloc(value_len * sizeof(wchar_t));
         if (!value) {
             free(exe_path);
             RegCloseKey(hKey);
             return false;
         }
-        snprintf(value, value_len, "\"%s\" --startup", exe_path);
-        result = RegSetValueEx(hKey, "nosleep", 0, REG_SZ,
-                               (LPBYTE)value, (DWORD)(strlen(value) + 1));
+        swprintf(value, value_len, L"\"%ls\" --startup", exe_path);
+        result = RegSetValueExW(hKey, L"nosleep", 0, REG_SZ,
+                               (LPBYTE)value, (DWORD)((wcslen(value) + 1) * sizeof(wchar_t)));
         free(value);
         free(exe_path);
     } else {
-        result = RegDeleteValue(hKey, "nosleep");
+        result = RegDeleteValueW(hKey, L"nosleep");
     }
 
     RegCloseKey(hKey);
