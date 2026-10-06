@@ -19,6 +19,7 @@ prelude = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <limits.h>
 typedef uint32_t DWORD;
 typedef long LONG;
 typedef unsigned char *LPBYTE;
@@ -37,6 +38,23 @@ typedef intptr_t LPARAM;
 #define HWND_BROADCAST 0
 #define WM_SETTINGCHANGE 0
 #define SMTO_ABORTIFHUNG 0
+#define TRUE 1
+#define CSTR_EQUAL 2
+// Model the Windows API for the fixture's exact Unicode and ASCII-case inputs.
+int CompareStringOrdinal(const wchar_t *a, int a_len, const wchar_t *b,
+                         int b_len, int ignore_case) {
+    if (a_len != b_len) return 1;
+    for (int i = 0; i < a_len; ++i) {
+        wchar_t ca = a[i];
+        wchar_t cb = b[i];
+        if (ignore_case) {
+            if (ca >= L'A' && ca <= L'Z') ca += L'a' - L'A';
+            if (cb >= L'A' && cb <= L'Z') cb += L'a' - L'A';
+        }
+        if (ca != cb) return ca < cb ? 1 : 3;
+    }
+    return CSTR_EQUAL;
+}
 static const wchar_t *exe = L"C:\\安装\\😀\\nosleep.exe";
 static wchar_t registry[2048];
 static DWORD registry_bytes;
