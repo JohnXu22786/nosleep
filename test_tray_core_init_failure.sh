@@ -174,6 +174,10 @@ static unsigned int icon_update_count;
 static int mock_nosleep_run_result;
 static DWORD last_single_wait_ms;
 static unsigned int single_wait_calls;
+static bool change_preference_during_stop;
+static SessionFinishedAction next_preference;
+static unsigned int expiry_notifications;
+static LPTHREAD_START_ROUTINE last_action_started;
 
 static void* run_start_failure_worker(void* context) {
     mock_thread_id = 42;
@@ -280,6 +284,7 @@ static HANDLE CreateThread(void* attributes, size_t stack_size,
         return &replacement_worker_handle;
     }
 
+    last_action_started = start;
     ++action_threads_started;
     action_handle.thread_id = 77;
     if (thread_id) *thread_id = action_handle.thread_id;
@@ -301,6 +306,10 @@ static void tray_stop_countdown(NoSleepTray* tray) {
 }
 static void tray_update_stop_menu_item(NoSleepTray* tray) { (void)tray; }
 static void tray_update_icon(NoSleepTray* tray) {
+    if (change_preference_during_stop && !ATOMIC_LOAD_BOOL(&tray->is_running)) {
+        tray->session_finished_action = next_preference;
+        change_preference_during_stop = false;
+    }
     if (icon_update_count < sizeof(icon_running_states) / sizeof(icon_running_states[0])) {
         icon_running_states[icon_update_count] = ATOMIC_LOAD_BOOL(&tray->is_running);
     }
@@ -312,6 +321,7 @@ static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     (void)tray;
     (void)message;
     (void)critical;
+    if (event_type == NOTIFY_EVENT_TIMER_EXPIRED) ++expiry_notifications;
     if (strcmp(title, "Error") == 0) ++error_notifications;
     if (event_type == NOTIFY_EVENT_ERROR &&
         strcmp(title, "Sleep prevention failed") == 0) {
@@ -836,6 +846,42 @@ static int check_worker_thread_creation_failure_resets_icon(void) {
     return failures;
 }
 
+static int check_expiry_preference_change(SessionFinishedAction initial,
+                                           SessionFinishedAction changed) {
+    NoSleepTray tray = {0};
+    MockHandle events[3] = {{0}};
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.core_init_succeeded = true;
+    tray.session_finished_action = initial;
+    tray.stop_event = &events[0];
+    tray.timer_thread = &events[1];
+    tray.timer_thread_id = 42;
+    tray.sleep_stop_event = &events[2];
+    tray.shutdown_stop_event = &events[2];
+    mock_tick64 = 120000;
+    action_threads_started = expiry_notifications = 0;
+    last_action_started = NULL;
+    next_preference = changed;
+    change_preference_during_stop = true;
+
+    run_duration_timer(&tray);
+    unsigned int expected_actions = initial != SESSION_FINISHED_NONE;
+    LPTHREAD_START_ROUTINE expected_action = initial == SESSION_FINISHED_SLEEP
+        ? delayed_sleep_thread : delayed_shutdown_thread;
+    int failed = action_threads_started != expected_actions || expiry_notifications != 1 ||
+        (expected_actions && last_action_started != expected_action) ||
+        change_preference_during_stop || tray.session_finished_action != changed;
+    if (failed) {
+        fprintf(stderr, "FAIL: expiry preference %d -> %d: actions=%u notices=%u\n",
+                initial, changed, action_threads_started, expiry_notifications);
+    }
+    change_preference_during_stop = false;
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    return failed;
+}
+
 static int check_normal_expiry(SessionFinishedAction action, const char* label) {
     NoSleepTray tray;
     MockHandle events[3] = {{0}};
@@ -923,6 +969,13 @@ static int check_expiry_waits_for_core_initialization(SessionFinishedAction acti
 
 int main(void) {
     int failures = 0;
+    for (SessionFinishedAction initial = SESSION_FINISHED_NONE;
+         initial <= SESSION_FINISHED_SHUTDOWN; ++initial) {
+        for (SessionFinishedAction changed = SESSION_FINISHED_NONE;
+             changed <= SESSION_FINISHED_SHUTDOWN; ++changed) {
+            failures += check_expiry_preference_change(initial, changed);
+        }
+    }
     failures += check_direct_failure(SESSION_FINISHED_SLEEP, "sleep core failure");
     failures += check_direct_failure(SESSION_FINISHED_SHUTDOWN, "shutdown core failure");
     failures += check_successful_initialization_marks_ready();
