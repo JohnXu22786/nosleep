@@ -3434,6 +3434,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     break;
                 }
 
+                case IDCANCEL: // Escape from IsDialogMessage
                 case IDC_SETTINGS_CANCEL:
                     DestroyWindow(hwnd);
                     break;
@@ -3939,6 +3940,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                     break;
                 }
 
+                case IDCANCEL: // Escape from IsDialogMessage
                 case IDC_NOTIFY_GROUP_EDIT_CANCEL:
                     DestroyWindow(hwnd);
                     break;
@@ -4128,6 +4130,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     if (pResult) *pResult = 1;
                     DestroyWindow(hwnd);
                     return TRUE;
+                case IDCANCEL: // Escape from IsDialogMessage
                 case IDC_ABOUT_OK:
                     if (pResult) *pResult = 0;
                     DestroyWindow(hwnd);
