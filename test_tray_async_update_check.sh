@@ -81,6 +81,7 @@ functions = "\n\n".join(
         "tray_update_check_begin",
         "tray_update_check_end",
         "tray_update_check_worker",
+        "tray_prompt_available_update",
         "tray_process_update_check_result",
         "tray_check_for_updates",
         "tray_handle_update_check_complete",
@@ -119,6 +120,10 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define NOTIFY_EVENT_UPDATE_CHECK_FAILED 1
 #define NOTIFY_EVENT_UPDATE_CHECK_COMPLETED 2
 #define NOTIFY_EVENT_UPDATE_AVAILABLE 3
+#define IDM_REVIEW_UPDATE 1017
+#define MF_BYCOMMAND 0x0000
+#define MF_GRAYED 0x0001
+#define MF_ENABLED 0x0000
 
 typedef struct {
     char latest_version[64];
@@ -132,7 +137,9 @@ typedef struct TrayUpdateCheckTask TrayUpdateCheckTask;
 
 struct NoSleepTray {
     HWND hwnd;
+    void *hmenu;
     TrayUpdateCheckTask *update_check_task;
+    UpdateInfo available_update;
 };
 
 static DWORD current_thread_id = 1;
@@ -286,6 +293,11 @@ static bool updater_download_and_install(UpdateInfo *info, const wchar_t *path, 
     (void)hwnd;
     ++download_count;
     return false;
+}
+
+static UINT EnableMenuItem(void *menu, UINT item, UINT flags) {
+    (void)menu; (void)item; (void)flags;
+    return 0;
 }
 
 static int MessageBox(HWND hwnd, const char *message, const char *title, unsigned int flags) {
