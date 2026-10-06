@@ -152,6 +152,12 @@ static LRESULT SendMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     }
 }
 
+// This fixture exercises list selection; button availability is a UI callback.
+static void update_notification_group_actions(HWND parent, NoSleepTray* tray) {
+    (void)parent;
+    (void)tray;
+}
+
 static void seed_list(int count, int selected_row) {
     list_count = count;
     list_selection = selected_row;
