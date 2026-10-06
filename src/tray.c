@@ -3088,6 +3088,9 @@ static bool should_check_for_updates(void) {
     uli_now.HighPart = ft_now.dwHighDateTime;
     ULONGLONG now = uli_now.QuadPart;
 
+    // A clock rollback must not wrap the unsigned elapsed time.
+    if (last_check > now) return false;
+
     ULONGLONG interval_100ns;
     if (interval == 1) {
         interval_100ns = (ULONGLONG)24 * 60 * 60 * 10000000LL;
