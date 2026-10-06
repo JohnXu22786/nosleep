@@ -9,7 +9,7 @@ from pathlib import Path
 
 source = Path(sys.argv[1]).read_text()
 start = source.index('    // Get the EXE name from current path')
-end = source.index('// --- Helper functions ---', start)
+end = source.index('bool updater_download_and_install(UpdateInfo* info, const wchar_t*', start)
 flow = source[start:end]
 harness = r'''
 #include <assert.h>
