@@ -2909,13 +2909,18 @@ bool tray_save_settings_cli(int session_finished_action,
     if (check_updates_startup < -1 || check_updates_startup > 1) return false;
     if (add_to_path < -1 || add_to_path > 1) return false;
 
-    HKEY hKey;
-    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
-        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-    if (result != ERROR_SUCCESS) return false;
-
+    HKEY hKey = NULL;
     bool success = true;
-    if (session_finished_action >= 0) {
+    if (session_finished_action >= 0 || notification_mode >= 0 ||
+        auto_check_interval >= 0 || check_updates_startup >= 0 || add_to_path >= 0) {
+        LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+            0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+        if (result != ERROR_SUCCESS) {
+            hKey = NULL;
+            success = false;
+        }
+    }
+    if (hKey && session_finished_action >= 0) {
         DWORD val = (DWORD)session_finished_action;
         if (RegSetValueEx(hKey, "session_finished_action", 0, REG_DWORD,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
@@ -2925,21 +2930,21 @@ bool tray_save_settings_cli(int session_finished_action,
     if (auto_start >= 0 && !set_startup_registry(auto_start != 0)) {
         success = false;
     }
-    if (notification_mode >= 0) {
+    if (hKey && notification_mode >= 0) {
         DWORD val = (DWORD)notification_mode;
         if (RegSetValueEx(hKey, "notification_mode", 0, REG_DWORD,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
             success = false;
         }
     }
-    if (auto_check_interval >= 0) {
+    if (hKey && auto_check_interval >= 0) {
         DWORD val = (DWORD)auto_check_interval;
         if (RegSetValueEx(hKey, "auto_check_interval", 0, REG_DWORD,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
             success = false;
         }
     }
-    if (check_updates_startup >= 0) {
+    if (hKey && check_updates_startup >= 0) {
         DWORD val = (DWORD)(check_updates_startup != 0 ? 1 : 0);
         if (RegSetValueEx(hKey, "check_updates_on_startup", 0, REG_DWORD,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
@@ -2948,7 +2953,7 @@ bool tray_save_settings_cli(int session_finished_action,
     }
     if (add_to_path >= 0) {
         DWORD val = (DWORD)(add_to_path != 0 ? 1 : 0);
-        if (RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD,
+        if (hKey && RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD,
                           (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
             success = false;
         }
@@ -2957,7 +2962,7 @@ bool tray_save_settings_cli(int session_finished_action,
         }
     }
 
-    RegCloseKey(hKey);
+    if (hKey) RegCloseKey(hKey);
     return success;
 }
 
