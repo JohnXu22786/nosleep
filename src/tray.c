@@ -1432,7 +1432,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         ULONGLONG elapsed_ms = get_elapsed_milliseconds(tray->start_tick64);
         
         if (elapsed_ms >= duration_ms) {
-            if (tray->session_finished_action != SESSION_FINISHED_NONE) {
+            SessionFinishedAction finished_action = tray->session_finished_action;
+            if (finished_action != SESSION_FINISHED_NONE) {
                 // Do not honor a follow-up action until the NoSleep core is known to exist.
                 for (;;) {
                     AcquireSRWLockExclusive(&tray->delayed_action_lock);
@@ -1464,7 +1465,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     elapsed_ms, duration_ms);
             
             // Check what action to take when session finishes
-            bool suppress_notification = (tray->session_finished_action != SESSION_FINISHED_NONE);
+            bool suppress_notification = (finished_action != SESSION_FINISHED_NONE);
             if (!tray_stop_nosleep_for_session(
                     tray, timer_thread_id, true, suppress_notification)) {
                 return 0;
@@ -1484,7 +1485,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                 sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
             }
             
-            switch (tray->session_finished_action) {
+            switch (finished_action) {
                 case SESSION_FINISHED_SLEEP: {
                     DEBUG_LOG("tray_duration_timer: session_finished_action=SLEEP, starting delayed sleep thread");
 
