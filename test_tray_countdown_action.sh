@@ -94,7 +94,7 @@ shutdown_thread = extract_function("delayed_shutdown_thread")
 assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SLEEP\)", sleep_thread), (
     "the delayed sleep thread must identify its scheduled action"
 )
-assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SHUTDOWN\)", shutdown_thread), (
+assert re.search(r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;[\s\S]*?tray_start_countdown\(tray,\s*action\)", shutdown_thread), (
     "the delayed shutdown thread must identify its scheduled action"
 )
 
@@ -105,7 +105,8 @@ countdown_display = update.split("// Handle delayed sleep countdown display", 1)
 )[0]
 assert re.search(
     r"tray_format_countdown_tooltip\(tip,\s*sizeof\(tip\),\s*"
-    r"tray->countdown_action\s*==\s*SESSION_FINISHED_SHUTDOWN,\s*"
+    r"\(tray->countdown_action\s*==\s*SESSION_FINISHED_SHUTDOWN\s*\|\|\s*"
+    r"tray->countdown_action\s*==\s*SESSION_FINISHED_SHUTDOWN_GRACEFUL\),\s*"
     r"countdown_seconds\)",
     countdown_display,
 ), "the countdown tooltip must use the action captured for this countdown"
@@ -209,7 +210,8 @@ typedef void *HANDLE;
 typedef enum {
     SESSION_FINISHED_NONE = 0,
     SESSION_FINISHED_SHUTDOWN,
-    SESSION_FINISHED_SLEEP
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
 } SessionFinishedAction;
 
 typedef enum {

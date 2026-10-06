@@ -101,6 +101,7 @@ prefix = r"""
 #define SESSION_FINISHED_NONE 0
 #define SESSION_FINISHED_SHUTDOWN 1
 #define SESSION_FINISHED_SLEEP 2
+#define SESSION_FINISHED_SHUTDOWN_GRACEFUL 3
 #define NOTIFY_ALL 0
 #define NOTIFY_CRITICAL_ONLY 1
 #define NOTIFY_NONE 2
@@ -169,8 +170,8 @@ static void test_missing_values(void) {
 
     wchar_t *enum_argv[] = {L"nosleep", L"--session-finished"};
     expect_error(2, enum_argv, CLI_PARSE_ERROR_MISSING_VALUE,
-                 L"--session-finished", NULL, L"one of: none, shutdown, sleep",
-                 L"Option \"--session-finished\" requires a value. Expected one of: none, shutdown, sleep.\n");
+                 L"--session-finished", NULL, L"one of: none, shutdown, shutdown-graceful, sleep",
+                 L"Option \"--session-finished\" requires a value. Expected one of: none, shutdown, shutdown-graceful, sleep.\n");
 }
 
 static void test_unknown_option(void) {
@@ -202,8 +203,8 @@ static void test_invalid_enum_value(void) {
 static void test_unicode_value_is_preserved(void) {
     wchar_t *argv[] = {L"nosleep", L"--session-finished", L"睡眠"};
     expect_error(3, argv, CLI_PARSE_ERROR_INVALID_ENUM,
-                 L"--session-finished", L"睡眠", L"none, shutdown, sleep",
-                 L"Invalid value \"睡眠\" for option \"--session-finished\"; expected one of: none, shutdown, sleep.\n");
+                 L"--session-finished", L"睡眠", L"none, shutdown, shutdown-graceful, sleep",
+                 L"Invalid value \"睡眠\" for option \"--session-finished\"; expected one of: none, shutdown, shutdown-graceful, sleep.\n");
 }
 
 static CLIOptions parse_options(int argc, wchar_t *argv[]) {

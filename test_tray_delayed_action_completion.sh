@@ -103,6 +103,7 @@ typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
     bool stopping;
     bool sleep_action_claimed;
+    SessionFinishedAction shutdown_action;
     bool shutdown_action_claimed;
     int countdown_action;
     bool delayed_sleep_countdown_active;
@@ -129,7 +130,7 @@ static bool stop_at_dispatch;
 static bool stop_before_claim;
 static NoSleepTray *boundary_tray;
 static void boundary_stop(NoSleepTray *tray);
-enum { SESSION_FINISHED_SLEEP = 1, SESSION_FINISHED_SHUTDOWN = 2 };
+enum { SESSION_FINISHED_SLEEP = 1, SESSION_FINISHED_SHUTDOWN = 2, SESSION_FINISHED_SHUTDOWN_GRACEFUL = 3 };
 void SetEvent(HANDLE event) { signaled_stop_event = event; }
 
 
@@ -140,7 +141,8 @@ void AcquireSRWLockExclusive(SRWLOCK *lock) {
 void ReleaseSRWLockExclusive(SRWLOCK *lock) {
     --delayed_action_lock_depth;
     pthread_mutex_unlock(lock);
-    if (stop_at_dispatch && boundary_tray) {
+    if (stop_at_dispatch && boundary_tray &&
+        (boundary_tray->sleep_action_claimed || boundary_tray->shutdown_action_claimed)) {
         stop_at_dispatch = false;
         pthread_mutex_lock(lock);
         boundary_stop(boundary_tray);
@@ -185,8 +187,9 @@ void trigger_system_sleep(NoSleepTray *tray) {
     ++sleep_action_calls;
     sleep_action_called_without_lock = delayed_action_lock_depth == 0;
 }
-void trigger_system_shutdown(NoSleepTray *tray) {
+void trigger_system_shutdown(NoSleepTray *tray, SessionFinishedAction action) {
     (void)tray;
+    (void)action;
     ++shutdown_action_calls;
     shutdown_action_called_without_lock = delayed_action_lock_depth == 0;
 }
@@ -222,6 +225,7 @@ static int test_sleep_completion(void) {
 static int test_shutdown_completion(void) {
     NoSleepTray tray = {0};
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.shutdown_action = SESSION_FINISHED_SHUTDOWN;
     tray.shutdown_timer = &shutdown_handle_token;
     tray.shutdown_stop_event = &tray;
 
@@ -266,6 +270,7 @@ static int test_sleep_cancellation_reaps_handle(void) {
 static int test_shutdown_cancellation_reaps_handle(void) {
     NoSleepTray tray = {0};
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    tray.shutdown_action = SESSION_FINISHED_SHUTDOWN;
     tray.shutdown_timer = &shutdown_handle_token;
     tray.shutdown_stop_event = &tray;
     signaled_stop_event = tray.shutdown_stop_event;
@@ -287,7 +292,10 @@ static int test_dispatch_boundary(bool shutdown, bool cancel_first) {
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
     tray.sleep_stop_event = &tray.sleep_stop_event;
     tray.shutdown_stop_event = &tray.shutdown_stop_event;
-    if (shutdown) tray.shutdown_timer = &shutdown_handle_token;
+    if (shutdown) {
+        tray.shutdown_action = SESSION_FINISHED_SHUTDOWN;
+        tray.shutdown_timer = &shutdown_handle_token;
+    }
     else tray.sleep_timer = &sleep_handle_token;
     int calls_before = shutdown ? shutdown_action_calls : sleep_action_calls;
     boundary_tray = &tray;

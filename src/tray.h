@@ -60,7 +60,8 @@ typedef struct TrayUpdateCheckTask TrayUpdateCheckTask;
 typedef enum {
     SESSION_FINISHED_NONE = 0,
     SESSION_FINISHED_SHUTDOWN,
-    SESSION_FINISHED_SLEEP
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
 } SessionFinishedAction;
 
 // Menu command IDs
@@ -75,6 +76,7 @@ typedef enum {
 #define IDM_SESSION_FINISHED_NONE 1009
 #define IDM_SESSION_FINISHED_SHUTDOWN 1010
 #define IDM_SESSION_FINISHED_SLEEP 1011
+#define IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL 1016
 #define IDM_ABOUT                 1012
 #define IDM_SETTINGS             1014
 #define IDM_CHECK_UPDATES        1015
@@ -123,6 +125,7 @@ typedef struct NoSleepTray {
     SessionFinishedAction session_finished_action; // Action to take when session finishes
     bool sleep_after_timeout;   // Whether to sleep after timeout expires (deprecated, use session_finished_action)
     bool sleep_action_claimed;  // Dispatch won cancellation - protected by delayed_action_lock
+    SessionFinishedAction shutdown_action; // Captured action for pending shutdown
     bool shutdown_action_claimed; // Dispatch won cancellation - protected by delayed_action_lock
     HANDLE sleep_timer;         // Timer handle for delayed sleep
     HANDLE sleep_stop_event;    // Event to signal stop delayed sleep

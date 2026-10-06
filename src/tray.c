@@ -99,7 +99,7 @@ static void tray_handle_update_check_complete(NoSleepTray* tray,
                                                TrayUpdateCheckTask* task);
 static bool tray_wait_for_update_check(NoSleepTray* tray);
 static void trigger_system_sleep(NoSleepTray* tray);
-static void trigger_system_shutdown(NoSleepTray* tray);
+static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction action);
 static bool is_startup_enabled(void);
 static bool set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
@@ -1045,7 +1045,10 @@ static void tray_create_menu(NoSleepTray* tray) {
     if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None")) {
         goto fail;
     }
-    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown")) {
+    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown (force)")) {
+        goto fail;
+    }
+    if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL, "Shutdown (graceful)")) {
         goto fail;
     }
     if (!AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep")) {
@@ -1059,7 +1062,10 @@ static void tray_create_menu(NoSleepTray* tray) {
             snprintf(finished_text, sizeof(finished_text), "When finished (None)");
             break;
         case SESSION_FINISHED_SHUTDOWN:
-            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown: force)");
+            break;
+        case SESSION_FINISHED_SHUTDOWN_GRACEFUL:
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown: graceful)");
             break;
         case SESSION_FINISHED_SLEEP:
             snprintf(finished_text, sizeof(finished_text), "When finished (Sleep)");
@@ -1324,12 +1330,13 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     bool was_delayed_action_pending = sleep_pending || shutdown_pending;
     SessionFinishedAction countdown_action = tray->countdown_action;
     bool saved_action_matches_pending =
-        (countdown_action == SESSION_FINISHED_SHUTDOWN && shutdown_timer) ||
+        ((countdown_action == SESSION_FINISHED_SHUTDOWN ||
+          countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) && shutdown_timer) ||
         (countdown_action == SESSION_FINISHED_SLEEP && sleep_timer);
     if (!saved_action_matches_pending) {
         // The pending timer identifies the action when the saved countdown type is stale.
         if (shutdown_timer) {
-            countdown_action = SESSION_FINISHED_SHUTDOWN;
+            countdown_action = tray->shutdown_action;
         } else if (sleep_timer) {
             countdown_action = SESSION_FINISHED_SLEEP;
         }
@@ -1420,7 +1427,8 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         } else if (was_countdown_active || was_delayed_action_pending) {
             // Countdown or delayed action was cancelled
             DEBUG_LOG("tray_stop_nosleep: showing countdown cancellation notification");
-            if (countdown_action == SESSION_FINISHED_SHUTDOWN) {
+            if (countdown_action == SESSION_FINISHED_SHUTDOWN ||
+                countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) {
                 tray_show_notification(tray, NOTIFY_EVENT_COUNTDOWN_CANCEL,
                     "Shutdown cancelled", "System shutdown has been cancelled", true);
             } else {
@@ -1632,6 +1640,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     break;
                 }
 
+                case SESSION_FINISHED_SHUTDOWN_GRACEFUL:
                 case SESSION_FINISHED_SHUTDOWN: {
                     DEBUG_LOG("tray_duration_timer: session_finished_action=SHUTDOWN, starting delayed shutdown thread");
 
@@ -1653,6 +1662,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         !shutdown_core_init_failed && !shutdown_nosleep_run_failed &&
                         shutdown_core_init_succeeded) {
                         ResetEvent(tray->shutdown_stop_event);
+                        tray->shutdown_action = finished_action;
                         tray->shutdown_action_claimed = false;
                         tray->shutdown_timer = CreateThread(
                             NULL, 0, delayed_shutdown_thread, tray, 0, NULL
@@ -1827,14 +1837,14 @@ static void trigger_system_sleep(NoSleepTray* tray) {
         "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
 }
 
-static void trigger_system_shutdown(NoSleepTray* tray) {
+static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction action) {
     DEBUG_LOG("trigger_system_shutdown: shutting down system");
 
     // Reset execution state to allow Windows to shutdown normally
     SetThreadExecutionState(ES_CONTINUOUS);
     DEBUG_LOG("trigger_system_shutdown: execution state reset");
 
-    // First try ExitWindowsEx with EWX_SHUTDOWN | EWX_FORCE
+    // Only the explicit force action closes applications forcibly.
     // Need to adjust privileges first
     HANDLE hToken;
     TOKEN_PRIVILEGES tkp;
@@ -1854,7 +1864,8 @@ static void trigger_system_shutdown(NoSleepTray* tray) {
     }
     
     // Try ExitWindowsEx
-    BOOL result = ExitWindowsEx(EWX_SHUTDOWN | EWX_FORCE, 0);
+    BOOL result = ExitWindowsEx(EWX_SHUTDOWN |
+                                (action == SESSION_FINISHED_SHUTDOWN ? EWX_FORCE : 0), 0);
     
     if (result) {
         DEBUG_LOG("trigger_system_shutdown: successfully initiated shutdown");
@@ -1867,7 +1878,8 @@ static void trigger_system_shutdown(NoSleepTray* tray) {
     DEBUG_LOG("trigger_system_shutdown: trying alternative method via InitiateSystemShutdown");
     
     // Try InitiateSystemShutdown
-    result = InitiateSystemShutdown(NULL, NULL, 0, TRUE, FALSE);
+    result = InitiateSystemShutdown(NULL, NULL, 0,
+                                    action == SESSION_FINISHED_SHUTDOWN, FALSE);
     
     if (result) {
         DEBUG_LOG("trigger_system_shutdown: InitiateSystemShutdown succeeded");
@@ -1949,7 +1961,10 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     DEBUG_LOG("delayed_shutdown_thread: waiting 60 seconds before shutdown");
     
     // Start countdown display
-    tray_start_countdown(tray, SESSION_FINISHED_SHUTDOWN);
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    SessionFinishedAction action = tray->shutdown_action;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    tray_start_countdown(tray, action);
 
     ULONGLONG start_tick64 = GetTickCount64();
     ULONGLONG delay_ms = 60 * 1000;
@@ -1979,7 +1994,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             tray->shutdown_action_claimed = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
-            trigger_system_shutdown(tray);
+            trigger_system_shutdown(tray, action);
 
             // Reap this completed worker before Stop can claim the handle.
             tray_reap_delayed_action_handle(tray, &tray->shutdown_timer);
@@ -2026,7 +2041,7 @@ void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action) {
         char message[128];
         snprintf(message, sizeof(message),
                  "System will %s in 60 seconds, but the countdown display could not be started.",
-                 action == SESSION_FINISHED_SHUTDOWN ? "shut down" : "sleep");
+                 (action == SESSION_FINISHED_SHUTDOWN || action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) ? "shut down" : "sleep");
         tray_show_notification(tray, NOTIFY_EVENT_ERROR,
                                "Countdown Display Unavailable", message, true);
     } else {
@@ -2186,7 +2201,8 @@ void tray_update_icon(NoSleepTray* tray) {
         // Update tooltip with remaining seconds
         char tip[128];
         tray_format_countdown_tooltip(tip, sizeof(tip),
-                                      tray->countdown_action == SESSION_FINISHED_SHUTDOWN,
+                                      (tray->countdown_action == SESSION_FINISHED_SHUTDOWN ||
+                                       tray->countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL),
                                       countdown_seconds);
         strcpy(tray->nid.szTip, tip);
         
@@ -2307,7 +2323,8 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     const char* stop_text = NULL;
     if (delayed_sleep_countdown_active) {
         // Check if it's shutdown or sleep countdown
-        if (tray->countdown_action == SESSION_FINISHED_SHUTDOWN) {
+        if (tray->countdown_action == SESSION_FINISHED_SHUTDOWN ||
+            tray->countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) {
             stop_text = "Cancel shutdown";
         } else {
             stop_text = "Cancel sleep";
@@ -2344,6 +2361,8 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
                   MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SHUTDOWN, 
                   MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED));
+    CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL,
+                  MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL ? MF_CHECKED : MF_UNCHECKED));
     CheckMenuItem(hSubMenu, IDM_SESSION_FINISHED_SLEEP, 
                   MF_BYCOMMAND | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED));
     
@@ -2354,7 +2373,10 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
             snprintf(finished_text, sizeof(finished_text), "When finished (None)");
             break;
         case SESSION_FINISHED_SHUTDOWN:
-            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown: force)");
+            break;
+        case SESSION_FINISHED_SHUTDOWN_GRACEFUL:
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown: graceful)");
             break;
         case SESSION_FINISHED_SLEEP:
             snprintf(finished_text, sizeof(finished_text), "When finished (Sleep)");
@@ -2869,7 +2891,8 @@ void tray_load_settings(NoSleepTray* tray) {
     tray->add_to_path = (val != 0);
 
     settings_read_dword(hKey, "session_finished_action", &val, (DWORD)SESSION_FINISHED_NONE);
-    tray->session_finished_action = (SessionFinishedAction)val;
+    tray->session_finished_action = val <= SESSION_FINISHED_SHUTDOWN_GRACEFUL
+        ? (SessionFinishedAction)val : SESSION_FINISHED_NONE;
 
     if (hKey) RegCloseKey(hKey);
 }
@@ -2957,7 +2980,8 @@ bool tray_save_settings_cli(int session_finished_action,
     if (session_finished_action >= 0 &&
         session_finished_action != SESSION_FINISHED_NONE &&
         session_finished_action != SESSION_FINISHED_SHUTDOWN &&
-        session_finished_action != SESSION_FINISHED_SLEEP) {
+        session_finished_action != SESSION_FINISHED_SLEEP &&
+        session_finished_action != SESSION_FINISHED_SHUTDOWN_GRACEFUL) {
         return false;
     }
     if (notification_mode >= 0 &&
@@ -4552,6 +4576,12 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_SESSION_FINISHED_SHUTDOWN:
                     tray->session_finished_action = SESSION_FINISHED_SHUTDOWN;
+                    tray->sleep_after_timeout = false;
+                    tray_update_session_finished_menu(tray);
+                    tray_save_settings_with_warning(hwnd, tray);
+                    break;
+                case IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL:
+                    tray->session_finished_action = SESSION_FINISHED_SHUTDOWN_GRACEFUL;
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
                     tray_save_settings_with_warning(hwnd, tray);

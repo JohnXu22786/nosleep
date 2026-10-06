@@ -87,7 +87,8 @@ typedef struct { int unused; } MockHandle;
 typedef enum {
     SESSION_FINISHED_NONE,
     SESSION_FINISHED_SHUTDOWN,
-    SESSION_FINISHED_SLEEP
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
 } SessionFinishedAction;
 
 #define INFINITE 0xffffffffUL
@@ -124,6 +125,7 @@ typedef struct NoSleepTray {
     DWORD timer_thread_id;
     DWORD nosleep_thread_id;
     bool sleep_action_claimed;
+    SessionFinishedAction shutdown_action;
     bool shutdown_action_claimed;
     HANDLE sleep_timer;
     HANDLE sleep_stop_event;
@@ -203,6 +205,7 @@ static int expect_cancellation_notice(const char *scenario,
                                       const char *expected_message) {
     NoSleepTray tray = {0};
     tray.session_finished_action = scheduled_action;
+    tray.shutdown_action = scheduled_action;
     tray.countdown_action = saved_countdown_action;
     tray.delayed_sleep_countdown_active = countdown_display_active;
     tray.duration_expired = duration_expired;

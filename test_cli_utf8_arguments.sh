@@ -51,6 +51,7 @@ prefix = r"""
 #define SESSION_FINISHED_NONE 0
 #define SESSION_FINISHED_SHUTDOWN 1
 #define SESSION_FINISHED_SLEEP 2
+#define SESSION_FINISHED_SHUTDOWN_GRACEFUL 3
 #define NOTIFY_ALL 0
 #define NOTIFY_CRITICAL_ONLY 1
 #define NOTIFY_NONE 2
@@ -168,7 +169,7 @@ static void expect_oversized_enum_rejected(const wchar_t *option,
                       ? L"all, critical, none"
                       : wcscmp(option, L"--auto-check-interval") == 0
                             ? L"never, daily, weekly"
-                            : L"none, shutdown, sleep") == 0);
+                            : L"none, shutdown, shutdown-graceful, sleep") == 0);
 }
 
 int main(void) {
