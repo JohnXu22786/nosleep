@@ -161,7 +161,8 @@ When running in tray mode (default or with `--tray`), the application places an 
 * **Toast notifications appear** when timer expires or errors occur
 * **"When finished" options** (configurable behavior after timer expires):
   - None: Just stop preventing sleep (default)
-  - Shutdown: Shut down the computer
+  - Shutdown (force): Shut down the computer, forcibly closing applications (existing `shutdown` CLI option)
+  - Shutdown (graceful): Allow applications to prompt to save unsaved work; applications may delay or cancel shutdown (`--session-finished shutdown-graceful`)
   - Sleep: Put the computer to sleep
 * **Exit the application** via the tray menu
 

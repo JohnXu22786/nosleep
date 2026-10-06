@@ -84,7 +84,7 @@ static const char* const HELP_TEXT =
     "\n"
     "Configure Options (persistent settings, saved to registry):\n"
     "  --session-finished MODE   Action after timer expires\n"
-    "                            (none, shutdown, sleep)\n"
+    "                            (none, shutdown, shutdown-graceful, sleep)\n"
     "  --notification-mode MODE  Notification mode\n"
     "                            (all, critical, none)\n"
     "  --auto-check-interval I   Update check interval\n"
@@ -108,7 +108,8 @@ static const char* const HELP_TEXT =
     "  nosleep --duration 30 --prevent-display\n"
     "  nosleep -d 60 -i 10 -v\n"
     "  nosleep --tray\n"
-    "  nosleep --session-finished shutdown --configure\n"
+    "  nosleep --session-finished shutdown-graceful --configure\n"
+    "  shutdown forces applications closed; shutdown-graceful allows save prompts.\n"
     "  nosleep --auto-start --notification-mode critical --configure\n"
     "  nosleep --add-to-path --configure\n"
     "  nosleep --version\n"
@@ -507,24 +508,26 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
         else if (strcmp(arg, "--session-finished") == 0) {
             if (i + 1 >= argc) {
                 return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
-                                      L"one of: none, shutdown, sleep");
+                                      L"one of: none, shutdown, shutdown-graceful, sleep");
             }
             char value[256];
             const wchar_t* value_wide = argv[++i];
             if (WideCharToMultiByte(CP_UTF8, 0, value_wide, -1, value,
                                     sizeof(value), NULL, NULL) == 0) {
                 return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
-                                      L"none, shutdown, sleep");
+                                      L"none, shutdown, shutdown-graceful, sleep");
             }
             if (strcmp(value, "none") == 0) {
                 opts->session_finished = SESSION_FINISHED_NONE;
             } else if (strcmp(value, "shutdown") == 0) {
                 opts->session_finished = SESSION_FINISHED_SHUTDOWN;
+            } else if (strcmp(value, "shutdown-graceful") == 0) {
+                opts->session_finished = SESSION_FINISHED_SHUTDOWN_GRACEFUL;
             } else if (strcmp(value, "sleep") == 0) {
                 opts->session_finished = SESSION_FINISHED_SLEEP;
             } else {
                 return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_ENUM, option, value_wide,
-                                      L"none, shutdown, sleep");
+                                      L"none, shutdown, shutdown-graceful, sleep");
             }
         }
         else if (strcmp(arg, "--notification-mode") == 0) {
