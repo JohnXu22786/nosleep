@@ -916,12 +916,20 @@ static bool download_file(const char* url, const char* output_path,
         return false;
     }
 
+    // Bound temporary disk use even for missing or misleading Content-Length.
+    const size_t max_download_bytes = 64u * 1024u * 1024u;
     DWORD content_length = 0;
     DWORD content_length_size = sizeof(content_length);
     if (WinHttpQueryHeaders(hRequest,
             WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
-            NULL, &content_length, &content_length_size, NULL) && total_bytes) {
-        *total_bytes = content_length;
+            NULL, &content_length, &content_length_size, NULL)) {
+        if (content_length > max_download_bytes) {
+            close_download_request(download_task, hRequest);
+            if (hConnect) WinHttpCloseHandle(hConnect);
+            WinHttpCloseHandle(hSession);
+            return false;
+        }
+        if (total_bytes) *total_bytes = content_length;
     }
 
     if (download_was_canceled(cancel_event)) {
@@ -955,7 +963,7 @@ static bool download_file(const char* url, const char* output_path,
     
     bool copy_ok = updater_copy_stream(updater_read_winhttp, hRequest,
                                        updater_write_file, hFile,
-                                       buffer, buffer_size,
+                                       buffer, buffer_size, max_download_bytes,
                                        report_progress, progress_context);
     
     free(buffer);
