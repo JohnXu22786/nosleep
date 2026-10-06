@@ -3442,6 +3442,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
 static void create_general_tab(HWND hwnd_tab, NoSleepTray* tray);
 static void create_notifications_tab(HWND hwnd_tab, NoSleepTray* tray);
 static void refresh_notification_group_list(HWND hwnd_tab, NoSleepTray* tray);
+static void update_notification_group_actions(HWND hwnd_tab, NoSleepTray* tray);
 
 // Global for passing group edit info
 static struct {
@@ -3629,6 +3630,12 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 case IDCANCEL: // Escape from IsDialogMessage
                 case IDC_SETTINGS_CANCEL:
                     DestroyWindow(hwnd);
+                    break;
+
+                case IDC_NOTIFY_GROUP_LIST:
+                    if (HIWORD(wParam) == LBN_SELCHANGE) {
+                        update_notification_group_actions(hNotifyTab, settings_tray);
+                    }
                     break;
 
                 case IDC_NOTIFY_ADD_GROUP:
@@ -3854,10 +3861,29 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
     refresh_notification_group_list(hwnd_parent, tray);
 }
 
+// Reflect the selected group's available actions without replacing action guards.
+static void update_notification_group_actions(HWND hwnd_parent, NoSleepTray* tray) {
+    HWND hList = GetDlgItem(hwnd_parent, IDC_NOTIFY_GROUP_LIST);
+    int selection = hList ? (int)SendMessage(hList, LB_GETCURSEL, 0, 0) : LB_ERR;
+    int group_index = selection == LB_ERR
+        ? LB_ERR
+        : (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)selection, 0);
+    bool valid = tray && group_index >= 0 && group_index < tray->notify_groups.count;
+
+    EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_CONFIGURE_GROUP), valid);
+    EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_DEL_GROUP),
+        valid && !tray->notify_groups.groups[group_index].is_default);
+    EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_SET_ACTIVE),
+        valid && group_index != tray->notify_groups.active_index);
+}
+
 // Refresh the notification group listbox
 static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray) {
     HWND hList = GetDlgItem(hwnd_parent, IDC_NOTIFY_GROUP_LIST);
-    if (!hList || !tray) return;
+    if (!hList || !tray) {
+        update_notification_group_actions(hwnd_parent, tray);
+        return;
+    }
 
     int previous_count = (int)SendMessage(hList, LB_GETCOUNT, 0, 0);
     int previous_row = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
@@ -3889,6 +3915,7 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
             SendMessage(hList, LB_SETCURSEL, (WPARAM)selection, 0);
         }
     }
+    update_notification_group_actions(hwnd_parent, tray);
 }
 
 void tray_show_settings_dialog(NoSleepTray* tray) {
