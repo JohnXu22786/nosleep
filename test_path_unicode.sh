@@ -10,7 +10,7 @@ import tempfile
 root = Path(sys.argv[1])
 tray = (root / 'src/tray.c').read_text()
 # Compile the production PATH block, not a copied implementation.
-block = tray[tray.index('static char* get_exe_path(void) {'):tray.index('static bool apply_path_preference(bool add_to_path) {')]
+block = tray[tray.index('static wchar_t* get_exe_path_w(void) {'):tray.index('static bool apply_path_preference(bool add_to_path) {')]
 prelude = r'''
 #include <assert.h>
 #include <stdbool.h>
