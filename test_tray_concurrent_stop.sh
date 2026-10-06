@@ -332,6 +332,13 @@ static void tray_update_icon(NoSleepTray *tray) {
     pthread_mutex_unlock(&harness_lock);
 }
 
+// Update-check UI state is outside this worker-retention fixture's scope.
+static void tray_update_check_end(void) {}
+static void tray_set_update_check_visible(NoSleepTray *tray, bool checking) {
+    (void)tray;
+    (void)checking;
+}
+
 static void tray_destroy_icons(NoSleepTray *tray) {
     (void)tray;
 }

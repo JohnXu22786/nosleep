@@ -185,6 +185,12 @@ static void tray_handle_update_check_complete(NoSleepTray *tray,
 static bool tray_wait_for_update_check(NoSleepTray *tray);
 static bool update_check_in_progress;
 
+// UI updates are outside this fixture's asynchronous worker/lifetime scope.
+static void tray_set_update_check_visible(NoSleepTray *tray, bool checking) {
+    (void)tray;
+    (void)checking;
+}
+
 ''' + task_struct.group(0) + r'''
 
 static HANDLE CreateThread(void *attributes, size_t stack_size, ThreadStart start,
