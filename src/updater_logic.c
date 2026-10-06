@@ -138,6 +138,13 @@ static bool is_valid_version(const char* version) {
     return *version == '\0';
 }
 
+static bool is_valid_release_notes_url(const char* url, size_t length) {
+    static const char prefix[] = "https://github.com/JohnXu22786/nosleep/releases/tag/";
+    size_t prefix_length = sizeof(prefix) - 1;
+    return length > prefix_length && strncmp(url, prefix, prefix_length) == 0 &&
+           is_valid_version(url + prefix_length);
+}
+
 static int compare_prerelease(const char* v1, size_t v1_len,
                               const char* v2, size_t v2_len) {
     const char* end1 = v1 + v1_len;
@@ -266,6 +273,16 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
     if (ver[0] == 'v' || ver[0] == 'V') ver++;
     strncpy(info->latest_version, ver, sizeof(info->latest_version) - 1);
     info->latest_version[sizeof(info->latest_version) - 1] = '\0';
+
+    // Release notes are optional and must stay on this repository's release pages.
+    cJSON* html_url = cJSON_GetObjectItemCaseSensitive(root, "html_url");
+    if (cJSON_IsString(html_url) && html_url->valuestring) {
+        size_t url_len = strlen(html_url->valuestring);
+        if (url_len < sizeof(info->release_notes_url) &&
+            is_valid_release_notes_url(html_url->valuestring, url_len)) {
+            memcpy(info->release_notes_url, html_url->valuestring, url_len + 1);
+        }
+    }
 
     // Parse "assets" array for browser_download_url
     // Look for .exe file in the assets
