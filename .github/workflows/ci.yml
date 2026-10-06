@@ -32,6 +32,9 @@ jobs:
       - name: Test notification group editor save handling
         run: ./test_tray_notify_group_editor_modal.sh
 
+      - name: Test notification group editor client area
+        run: ./test_tray_notify_group_client_area.sh
+
       - name: Test notification group editor bulk toggles
         run: ./test_tray_notify_group_bulk_toggle.sh
 
