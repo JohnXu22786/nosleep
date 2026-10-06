@@ -3857,10 +3857,11 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                 190, dlg_height - 40, 80, 28, hwnd, (HMENU)IDC_NOTIFY_GROUP_EDIT_CANCEL, hInst, NULL);
 
             // Resize window to fit content
-            RECT rc;
-            GetWindowRect(hwnd, &rc);
-            int new_width = 460;
-            SetWindowPos(hwnd, NULL, 0, 0, new_width, dlg_height, SWP_NOMOVE | SWP_NOZORDER);
+            RECT rc = {0, 0, 460, dlg_height};
+            AdjustWindowRectEx(&rc, GetWindowLongPtr(hwnd, GWL_STYLE),
+                GetMenu(hwnd) != NULL, GetWindowLongPtr(hwnd, GWL_EXSTYLE));
+            SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
+                SWP_NOMOVE | SWP_NOZORDER);
 
             // Apply font
             HFONT editFont = create_dialog_font(14);
