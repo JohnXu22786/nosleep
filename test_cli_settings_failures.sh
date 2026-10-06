@@ -327,16 +327,16 @@ static bool add_app_to_path(void) {
     return add_path_result;
 }
 
-static int str_icmp_n(const wchar_t *a, const wchar_t *b, size_t n) {
+static bool path_segment_equal(const wchar_t *a, const wchar_t *b, size_t n) {
     for (size_t i = 0; i < n; ++i) {
         wchar_t ca = a[i];
         wchar_t cb = b[i];
         if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
         if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-        if (ca != cb) return (unsigned int)ca - (unsigned int)cb;
-        if (ca == '\0') return 0;
+        if (ca != cb) return false;
+        if (ca == '\0') return true;
     }
-    return 0;
+    return true;
 }
 
 uintptr_t SendMessageTimeout(HWND hwnd, DWORD message, uintptr_t wparam,
