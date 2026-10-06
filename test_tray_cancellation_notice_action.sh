@@ -122,6 +122,8 @@ typedef struct NoSleepTray {
     HANDLE nosleep_thread;
     DWORD timer_thread_id;
     DWORD nosleep_thread_id;
+    bool sleep_action_claimed;
+    bool shutdown_action_claimed;
     HANDLE sleep_timer;
     HANDLE sleep_stop_event;
     HANDLE shutdown_timer;
