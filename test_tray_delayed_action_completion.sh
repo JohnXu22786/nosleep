@@ -170,6 +170,11 @@ bool CloseHandle(HANDLE handle) {
     }
     return true;
 }
+// Notification delivery is outside this handle-cleanup fixture.
+void tray_announce_delayed_action(NoSleepTray *tray, bool shutdown) {
+    (void)tray;
+    (void)shutdown;
+}
 void tray_start_countdown(NoSleepTray *tray, int action) {
     (void)tray;
     (void)action;
