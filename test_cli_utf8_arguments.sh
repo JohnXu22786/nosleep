@@ -169,7 +169,7 @@ static void expect_oversized_enum_rejected(const wchar_t *option,
                       ? L"all, critical, none"
                       : wcscmp(option, L"--auto-check-interval") == 0
                             ? L"never, daily, weekly"
-                            : L"none, shutdown, sleep") == 0);
+                            : L"none, shutdown, shutdown-graceful, sleep") == 0);
 }
 
 int main(void) {
