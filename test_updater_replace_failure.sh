@@ -14,7 +14,7 @@ end = source.index('    free(escaped_current_exe_path);', start)
 block = source[start:end]
 with tempfile.TemporaryDirectory() as directory:
     c = Path(directory) / 'script.c'
-    c.write_text('#include <stdio.h>\nint main(void) {\n' +
+    c.write_text('#include <stdio.h>\nstatic unsigned long GetCurrentProcessId(void) { return 4242; }\nint main(void) {\n' +
         'char *escaped_exe_name="nosleep.exe", *escaped_current_exe_path="C:\\\\app\\\\nosleep.exe", '
         '*escaped_downloaded_path="C:\\\\temp\\\\download.exe", *escaped_arguments_path="args", '
         '*escaped_internal_marker="relay", *downloaded_path_error_line="";\n' +
