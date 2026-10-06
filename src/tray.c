@@ -760,39 +760,42 @@ static HICON create_numbered_icon(int number) {
     // Complete GDI drawing before accessing DIB pixels directly.
     GdiFlush();
     
-    // For each pixel, set alpha based on luminance (max component) where text is drawn
-    // This preserves anti-aliasing edges by using alpha blending
+    // Capture glyph coverage before adding a one-pixel dark outline.
+    BYTE coverage[32 * 32];
     for (int i = 0; i < width * height; i++) {
         DWORD color = pixels[i];
         BYTE r = (color >> 16) & 0xFF;
         BYTE g = (color >> 8) & 0xFF;
         BYTE b = color & 0xFF;
-        BYTE luminance = (BYTE)((r + g + b) / 3); // Simple average for grayscale
-        if (luminance > 0) {
-            // Text pixel (white with anti-aliasing). Set alpha to luminance.
-            // Keep original RGB (may be gray for anti-aliased edges) and set alpha.
-            BYTE alpha = luminance;
-            pixels[i] = ((DWORD)alpha << 24) | (color & 0x00FFFFFF); // Preserve RGB with alpha
+        coverage[i] = (BYTE)((r + g + b) / 3);
+    }
+
+    // Extend alpha around the white glyph without filling the background.
+    // RGB stays premultiplied: the added coverage contributes only black.
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int i = y * width + x;
+            BYTE alpha = coverage[i];
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        BYTE neighbor = coverage[ny * width + nx];
+                        if (neighbor > alpha) alpha = neighbor;
+                    }
+                }
+            }
+            pixels[i] = ((DWORD)alpha << 24) | ((DWORD)coverage[i] * 0x00010101);
+            if (alpha > 0) {
+                SetPixelV(hdcMask, x, y, RGB(0, 0, 0));
+            }
         }
-        // else alpha remains 0 (transparent)
     }
-    
-    // Update mask bitmap: draw text as black (opaque) on white (transparent) background
-    HFONT oldFontMask = NULL;
-    if (hFont) {
-        oldFontMask = (HFONT)SelectObject(hdcMask, hFont);
-        SetTextColor(hdcMask, RGB(0, 0, 0)); // Black (opaque in mask)
-        SetBkMode(hdcMask, TRANSPARENT);
-        SetTextAlign(hdcMask, TA_LEFT | TA_TOP); // Match color bitmap alignment
-        TextOutW(hdcMask, textX, textY, text, (int)wcslen(text));
-    }
-    
+
     // Clean up GDI objects
     if (oldFont) {
         SelectObject(hdcMem, oldFont);
-    }
-    if (oldFontMask) {
-        SelectObject(hdcMask, oldFontMask);
     }
     if (hFont) {
         DeleteObject(hFont);
