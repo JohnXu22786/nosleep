@@ -1043,7 +1043,7 @@ static bool create_update_batch_script(const char* current_exe_path,
     // Build the batch script
     // The script:
     // 1. Waits for nosleep to exit by polling tasklist
-    // 2. Copies the downloaded file over the current EXE (renaming it)
+    // 2. Stages the download beside the EXE and retains a backup until replacement succeeds
     // 3. Starts the new EXE with the original command-line arguments
     // 4. Deletes itself
     
@@ -1089,17 +1089,31 @@ static bool create_update_batch_script(const char* current_exe_path,
         "goto WAITLOOP\r\n"
         ":REPLACE\r\n"
         "echo Replacing executable...\r\n"
-        "copy /Y \"%s\" \"%s\" > nul\r\n"
-        "if errorlevel 1 (\r\n"
-        "    echo Failed to update. The file may be in use.\r\n"
-        "    echo.\r\n"
-        "    echo The downloaded file is at:\r\n"
+        "if exist \"%s.update\" goto FAILED\r\n"
+        "if exist \"%s.backup\" goto FAILED\r\n"
+        "copy /Y \"%s\" \"%s.update\" > nul\r\n"
+        "if errorlevel 1 goto CLEAN_FAILED\r\n"
+        "move /Y \"%s\" \"%s.backup\" > nul\r\n"
+        "if errorlevel 1 goto CLEAN_FAILED\r\n"
+        "move /Y \"%s.update\" \"%s\" > nul\r\n"
+        "if errorlevel 1 goto ROLLBACK\r\n"
+        "del \"%s.backup\" > nul 2>&1\r\n"
+        "goto START\r\n"
+        ":ROLLBACK\r\n"
+        "move /Y \"%s.backup\" \"%s\" > nul\r\n"
+        "if errorlevel 1 echo Restore failed. The original executable is retained with a .backup suffix.\r\n"
+        ":CLEAN_FAILED\r\n"
+        "del \"%s.update\" > nul 2>&1\r\n"
+        ":FAILED\r\n"
+        "echo Failed to update. Check free space and file permissions.\r\n"
+        "echo.\r\n"
+        "echo The downloaded file is at:\r\n"
         "%s"
-        "    echo.\r\n"
-        "    del \"%s\" > nul 2>&1\r\n"
-        "    pause\r\n"
-        "    exit /b 1\r\n"
-        ")\r\n"
+        "echo.\r\n"
+        "del \"%s\" > nul 2>&1\r\n"
+        "pause\r\n"
+        "exit /b 1\r\n"
+        ":START\r\n"
         "echo Update complete! Starting nosleep...\r\n"
         "start /wait \"\" \"%s\" %s \"%s\"\r\n"
         "echo Cleaning up...\r\n"
@@ -1108,8 +1122,18 @@ static bool create_update_batch_script(const char* current_exe_path,
         "del \"%%~f0\" > nul 2>&1\r\n",
         escaped_exe_name,            // for tasklist filter
         escaped_exe_name,            // for find
-        escaped_downloaded_path,     // source file to copy from
+        escaped_current_exe_path,    // reject a pre-existing staging file
+        escaped_current_exe_path,    // reject a pre-existing backup
+        escaped_downloaded_path,     // source file to stage
+        escaped_current_exe_path,    // stage on the destination volume
+        escaped_current_exe_path,    // preserve the installed executable
+        escaped_current_exe_path,    // backup on the same volume
+        escaped_current_exe_path,    // staged executable to install
         escaped_current_exe_path,    // destination (original EXE path)
+        escaped_current_exe_path,    // remove backup after successful replacement
+        escaped_current_exe_path,    // restore original on installation failure
+        escaped_current_exe_path,    // original EXE path for rollback
+        escaped_current_exe_path,    // remove failed staging file
         downloaded_path_error_line,  // info message about temp file
         escaped_arguments_path,      // remove original arguments after copy failure
         escaped_current_exe_path,    // executable to start the argument-file relay
