@@ -3640,8 +3640,24 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
                 case IDC_NOTIFY_ADD_GROUP:
                 {
+                    int previous_count = settings_tray->notify_groups.count;
                     show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, -1);
                     refresh_notification_group_list(hNotifyTab, settings_tray);
+                    // A saved new group is appended; cancel and failed saves leave count unchanged.
+                    if (settings_tray->notify_groups.count > previous_count) {
+                        HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
+                        if (hList) {
+                            int rows = (int)SendMessage(hList, LB_GETCOUNT, 0, 0);
+                            for (int row = 0; row < rows; row++) {
+                                int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)row, 0);
+                                if (group_idx == previous_count) {
+                                    SendMessage(hList, LB_SETCURSEL, (WPARAM)row, 0);
+                                    break;
+                                }
+                            }
+                        }
+                        update_notification_group_actions(hNotifyTab, settings_tray);
+                    }
                     break;
                 }
 
