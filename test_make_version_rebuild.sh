@@ -14,6 +14,7 @@ BUILD_LOG="$TMP_DIR/build.log"
 mkdir -p "$PROJECT_DIR/src" "$FAKE_BIN"
 cp "$ROOT_DIR/Makefile" "$PROJECT_DIR/Makefile"
 cp "$ROOT_DIR/src/resources.rc" "$PROJECT_DIR/src/resources.rc"
+cp "$ROOT_DIR"/src/*.h "$PROJECT_DIR/src/"
 
 for source in core tray main notify_groups updater updater_logic updater_response_read updater_pe cJSON; do
     : > "$PROJECT_DIR/src/$source.c"
@@ -103,4 +104,24 @@ if ! grep -Fq 'FILEVERSION     2,3,4,0' "$PROJECT_DIR/obj/resources_built.rc" ||
     exit 1
 fi
 
-echo "PASS: changing VERSION rebuilds all objects and resource output with the new version"
+# Ensure the edit is newer even on filesystems with coarse timestamp resolution.
+sleep 1
+touch "$PROJECT_DIR/src/resources.h"
+run_make 2.3.4
+
+gcc_calls="$(grep -c '^gcc ' "$BUILD_LOG" || true)"
+windres_calls="$(grep -c '^windres ' "$BUILD_LOG" || true)"
+if [[ "$gcc_calls" != "30" || "$windres_calls" != "3" ]]; then
+    echo "FAIL: changing resources.h must rebuild objects, resources, and the executable; got $gcc_calls gcc and $windres_calls windres calls total"
+    exit 1
+fi
+
+run_make 2.3.4
+gcc_calls="$(grep -c '^gcc ' "$BUILD_LOG" || true)"
+windres_calls="$(grep -c '^windres ' "$BUILD_LOG" || true)"
+if [[ "$gcc_calls" != "30" || "$windres_calls" != "3" ]]; then
+    echo "FAIL: an unchanged build after the header rebuild must do no work"
+    exit 1
+fi
+
+echo "PASS: version and header changes rebuild objects and resources; unchanged builds do no work"
