@@ -73,6 +73,7 @@ windows_stubs = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 
 typedef unsigned int DWORD;
 typedef long LONG;
@@ -131,7 +132,7 @@ static const char *failed_value_name;
 static bool add_path_result;
 static const BYTE *path_data;
 static DWORD path_data_size;
-static char written_path[1024];
+static wchar_t written_path[1024];
 static DWORD written_path_type;
 static DWORD stored_add_to_path;
 static int registry_write_count;
@@ -257,6 +258,29 @@ LONG RegCloseKey(HKEY key) {
     return ERROR_SUCCESS;
 }
 
+
+LONG RegOpenKeyExW(HKEY root, const wchar_t *path, DWORD reserved, DWORD access, HKEY *key) {
+    (void)path;
+    return RegOpenKeyEx(root, "Environment", reserved, access, key);
+}
+LONG RegCreateKeyExW(HKEY root, const wchar_t *path, DWORD reserved, void *class_name,
+                     DWORD options, DWORD access, void *security, HKEY *key, DWORD *disposition) {
+    (void)path;
+    return RegCreateKeyEx(root, "Environment", reserved, class_name, options, access,
+                          security, key, disposition);
+}
+LONG RegQueryValueExW(HKEY key, const wchar_t *name, DWORD *reserved, DWORD *type,
+                      BYTE *value, DWORD *size) {
+    (void)name;
+    return RegQueryValueEx(key, "Path", reserved, type, value, size);
+}
+LONG RegSetValueExW(HKEY key, const wchar_t *name, DWORD reserved, DWORD type,
+                    const BYTE *value, DWORD size) {
+    (void)name;
+    return RegSetValueEx(key, "Path", reserved, type, value, size);
+}
+#define SendMessageTimeoutW SendMessageTimeout
+
 static char *get_exe_path(void) {
     const char *path = "C:\\NoSleep\\nosleep.exe";
     char *copy = (char *)malloc(strlen(path) + 1);
@@ -264,10 +288,10 @@ static char *get_exe_path(void) {
     return copy;
 }
 
-static char *get_exe_dir(void) {
-    const char *dir = "C:\\NoSleep";
-    char *copy = (char *)malloc(strlen(dir) + 1);
-    if (copy) strcpy(copy, dir);
+static wchar_t *get_exe_dir(void) {
+    const wchar_t *dir = L"C:\\NoSleep";
+    wchar_t *copy = (wchar_t *)malloc((wcslen(dir) + 1) * sizeof(wchar_t));
+    if (copy) wcscpy(copy, dir);
     return copy;
 }
 
@@ -276,13 +300,13 @@ static bool add_app_to_path(void) {
     return add_path_result;
 }
 
-static int str_icmp_n(const char *a, const char *b, size_t n) {
+static int str_icmp_n(const wchar_t *a, const wchar_t *b, size_t n) {
     for (size_t i = 0; i < n; ++i) {
-        char ca = a[i];
-        char cb = b[i];
+        wchar_t ca = a[i];
+        wchar_t cb = b[i];
         if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
         if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (ca != cb) return (unsigned int)ca - (unsigned int)cb;
         if (ca == '\0') return 0;
     }
     return 0;
@@ -395,20 +419,20 @@ int main(void) {
            "adding PATH must succeed when the Environment key is absent");
     expect(environment_create_count > 0,
            "adding PATH must create the absent Environment key");
-    expect(strcmp(written_path, "C:\\NoSleep") == 0,
+    expect(wcscmp(written_path, L"C:\\NoSleep") == 0,
            "adding PATH must write the executable directory to the new key");
     expect(written_path_type == REG_EXPAND_SZ,
            "the new Path value must use REG_EXPAND_SZ");
 
     reset_mocks();
-    static const char existing_path_for_add[] = "C:\\Windows\\System32;C:\\Tools";
+    static const wchar_t existing_path_for_add[] = L"C:\\Windows\\System32;C:\\Tools";
     path_query_result = ERROR_SUCCESS;
     path_data = (const BYTE *)existing_path_for_add;
     path_data_size = sizeof(existing_path_for_add);
     expect(add_app_to_path_regression(),
            "adding PATH must succeed when existing entries are present");
-    expect(strcmp(written_path,
-                  "C:\\Windows\\System32;C:\\Tools;C:\\NoSleep") == 0,
+    expect(wcscmp(written_path,
+                  L"C:\\Windows\\System32;C:\\Tools;C:\\NoSleep") == 0,
            "adding PATH must preserve existing entries and append the executable directory");
 
     expect_write_failure("session_finished_action", SESSION_FINISHED_SLEEP, -1, -1, -1, -1, -1);
@@ -499,7 +523,7 @@ int main(void) {
            "the in-memory disabled preference must retry PATH removal after failure");
 
     reset_mocks();
-    static const char existing_path[] = "C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
+    static const wchar_t existing_path[] = L"C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
     path_query_result = ERROR_SUCCESS;
     path_data = (const BYTE *)existing_path;
     path_data_size = sizeof(existing_path);
@@ -509,7 +533,7 @@ int main(void) {
            "failure to write the updated PATH must be reported");
 
     reset_mocks();
-    static const char path_removed_during_read[] = "C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
+    static const wchar_t path_removed_during_read[] = L"C:\\Windows\\System32;C:\\NoSleep;C:\\Temp";
     path_query_result = ERROR_SUCCESS;
     path_data_query_result = ERROR_FILE_NOT_FOUND;
     path_data = (const BYTE *)path_removed_during_read;
