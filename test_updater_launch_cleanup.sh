@@ -25,6 +25,7 @@ harness = r'''
 #define SEE_MASK_NOCLOSEPROCESS 1
 #define SEE_MASK_NOASYNC 2
 #define SW_HIDE 0
+#define SW_SHOWNORMAL 1
 typedef struct { size_t cbSize; int fMask; const char *lpFile; int nShow; } SHELLEXECUTEINFO;
 static int failure;
 static char error[512];
