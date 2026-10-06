@@ -141,7 +141,8 @@ void AcquireSRWLockExclusive(SRWLOCK *lock) {
 void ReleaseSRWLockExclusive(SRWLOCK *lock) {
     --delayed_action_lock_depth;
     pthread_mutex_unlock(lock);
-    if (stop_at_dispatch && boundary_tray) {
+    if (stop_at_dispatch && boundary_tray &&
+        (boundary_tray->sleep_action_claimed || boundary_tray->shutdown_action_claimed)) {
         stop_at_dispatch = false;
         pthread_mutex_lock(lock);
         boundary_stop(boundary_tray);
@@ -291,7 +292,10 @@ static int test_dispatch_boundary(bool shutdown, bool cancel_first) {
     pthread_mutex_init(&tray.delayed_action_lock, NULL);
     tray.sleep_stop_event = &tray.sleep_stop_event;
     tray.shutdown_stop_event = &tray.shutdown_stop_event;
-    if (shutdown) tray.shutdown_timer = &shutdown_handle_token;
+    if (shutdown) {
+        tray.shutdown_action = SESSION_FINISHED_SHUTDOWN;
+        tray.shutdown_timer = &shutdown_handle_token;
+    }
     else tray.sleep_timer = &sleep_handle_token;
     int calls_before = shutdown ? shutdown_action_calls : sleep_action_calls;
     boundary_tray = &tray;
