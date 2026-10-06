@@ -139,13 +139,34 @@ bool notify_groups_name_is_blank(const char* name) {
     return true;
 }
 
+bool notify_groups_name_is_duplicate(const NotifyGroupManager* mgr, const char* name, int exclude_index) {
+    if (!mgr || !name) return false;
+
+    char stored_name[MAX_GROUP_NAME];
+    strncpy(stored_name, name, MAX_GROUP_NAME - 1);
+    stored_name[MAX_GROUP_NAME - 1] = '\0';
+
+    // Allow event edits for unchanged names, including legacy duplicates.
+    if (exclude_index >= 0 && exclude_index < mgr->count &&
+        strcmp(mgr->groups[exclude_index].name, stored_name) == 0) {
+        return false;
+    }
+
+    for (int i = 0; i < mgr->count; i++) {
+        if (i != exclude_index && strcmp(mgr->groups[i].name, stored_name) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int event_mask) {
     if (!mgr || !name || mgr->count >= MAX_NOTIFY_GROUPS) {
         return -1;
     }
     
     // Reject names that contain no non-whitespace characters
-    if (notify_groups_name_is_blank(name)) {
+    if (notify_groups_name_is_blank(name) || notify_groups_name_is_duplicate(mgr, name, -1)) {
         return -1;
     }
     
@@ -181,7 +202,7 @@ bool notify_groups_remove(NotifyGroupManager* mgr, int index) {
 
 bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, unsigned int event_mask) {
     if (!mgr || !name || index < 0 || index >= mgr->count) return false;
-    if (notify_groups_name_is_blank(name)) return false;
+    if (notify_groups_name_is_blank(name) || notify_groups_name_is_duplicate(mgr, name, index)) return false;
     
     strncpy(mgr->groups[index].name, name, MAX_GROUP_NAME - 1);
     mgr->groups[index].name[MAX_GROUP_NAME - 1] = '\0';

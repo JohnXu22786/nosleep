@@ -400,9 +400,9 @@ static int test_group_names_reject_whitespace_only(void) {
         return 1;
     }
 
-    if (!notify_groups_update(&manager, 1, valid_name, 0x8u) ||
-        strcmp(manager.groups[1].name, valid_name) != 0 ||
-        manager.groups[1].event_mask != 0x8u) {
+    if (!notify_groups_update(&manager, added_index, valid_name, 0x8u) ||
+        strcmp(manager.groups[added_index].name, valid_name) != 0 ||
+        manager.groups[added_index].event_mask != 0x8u) {
         fprintf(stderr, "FAIL: valid nonblank group name could not update a group\n");
         return 1;
     }
