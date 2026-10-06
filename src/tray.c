@@ -502,6 +502,9 @@ static HICON icon_to_grayscale(HICON hColorIcon) {
     // Draw color icon to memory DC
     DrawIconEx(hdcMem, 0, 0, hColorIcon, width, height, 0, NULL, DI_NORMAL);
     
+    // Complete GDI drawing before accessing DIB pixels directly.
+    GdiFlush();
+    
     // Convert to grayscale by iterating pixels
     DWORD* pixels = (DWORD*)pBits;
     for (int i = 0; i < width * height; i++) {
@@ -754,6 +757,9 @@ static HICON create_numbered_icon(int number) {
     
     // Draw text centered on color bitmap (white text on transparent background)
     TextOutW(hdcMem, textX, textY, text, (int)wcslen(text));
+    
+    // Complete GDI drawing before accessing DIB pixels directly.
+    GdiFlush();
     
     // For each pixel, set alpha based on luminance (max component) where text is drawn
     // This preserves anti-aliasing edges by using alpha blending
