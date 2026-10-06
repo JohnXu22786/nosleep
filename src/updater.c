@@ -1088,7 +1088,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         "set /a wait_attempts=0\r\n"
         ":WAITLOOP\r\n"
         "timeout /t 2 /nobreak > nul\r\n"
-        "tasklist /FI \"PID eq %lu\" 2>nul | find /I \"%s\" > nul\r\n"
+        "tasklist /FI \"PID eq %lu\" /FO CSV /NH 2>nul | find /I \"%s\" > nul\r\n"
         "if errorlevel 1 goto REPLACE\r\n"
         "set /a wait_attempts=wait_attempts+1\r\n"
         "if %%wait_attempts%% GEQ 30 goto FAILED\r\n"
