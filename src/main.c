@@ -679,6 +679,7 @@ static int run_tray_mode(const CLIOptions* opts) {
     
     if (opts->session_finished >= 0) {
         tray->session_finished_action = (SessionFinishedAction)opts->session_finished;
+        tray_update_session_finished_menu(tray);
     }
     // If duration is specified, auto-start (0 = indefinite, >0 = minutes)
     if (opts->duration >= 0) {
