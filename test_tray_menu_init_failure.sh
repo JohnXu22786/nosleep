@@ -115,6 +115,11 @@ typedef struct NoSleepTray {
     NOTIFYICONDATA nid;
     SessionFinishedAction session_finished_action;
     int notification_mode;
+    bool startup_cli_overrides_set;
+    int notification_mode_cli_override;
+    int auto_check_interval_cli_override;
+    int check_updates_startup_cli_override;
+    int auto_check_interval;
     bool start_on_startup;
     bool add_to_path;
     bool check_updates_on_startup;
@@ -220,6 +225,9 @@ static void tray_load_settings(NoSleepTray *tray) { (void)tray; ++settings_load_
 static bool apply_path_preference(bool add_to_path) { (void)add_to_path; return true; }
 static void notify_groups_init(NotifyGroupManager *groups, int mode) {
     (void)groups; (void)mode;
+}
+static bool notify_groups_set_active(NotifyGroupManager *groups, int mode) {
+    (void)groups; (void)mode; return true;
 }
 static void tray_show_notification(NoSleepTray *tray, int event_type,
                                    const char *title, const char *message,

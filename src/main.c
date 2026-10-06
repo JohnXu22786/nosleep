@@ -625,6 +625,12 @@ static int run_tray_mode(const CLIOptions* opts) {
         return 1;
     }
     
+    // Supply startup overrides before initialization consumes these settings.
+    tray->startup_cli_overrides_set = true;
+    tray->notification_mode_cli_override = opts->notification_mode;
+    tray->auto_check_interval_cli_override = opts->auto_check_interval;
+    tray->check_updates_startup_cli_override = opts->check_updates_startup;
+
     if (!tray_init(tray)) {
         MessageBox(NULL, "Failed to initialize tray", "nosleep - Error", MB_OK | MB_ICONERROR);
         tray_destroy(tray);
@@ -649,17 +655,6 @@ static int run_tray_mode(const CLIOptions* opts) {
     
     if (opts->session_finished >= 0) {
         tray->session_finished_action = (SessionFinishedAction)opts->session_finished;
-    }
-    if (opts->notification_mode >= 0) {
-        tray->notification_mode = opts->notification_mode;
-        // Keep the legacy CLI option by selecting its corresponding built-in group.
-        notify_groups_set_active(&tray->notify_groups, opts->notification_mode);
-    }
-    if (opts->auto_check_interval >= 0) {
-        tray->auto_check_interval = opts->auto_check_interval;
-    }
-    if (opts->check_updates_startup >= 0) {
-        tray->check_updates_on_startup = (opts->check_updates_startup != 0);
     }
     // If duration is specified, auto-start (0 = indefinite, >0 = minutes)
     if (opts->duration >= 0) {
