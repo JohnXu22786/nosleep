@@ -17,6 +17,7 @@ harness = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #define MAX_PATH 260
 #define MB_OK 0
 #define MB_ICONERROR 0
@@ -26,10 +27,14 @@ harness = r'''
 #define SEE_MASK_NOASYNC 2
 #define SW_HIDE 0
 #define SW_SHOWNORMAL 1
-typedef struct { size_t cbSize; int fMask; const char *lpFile; int nShow; } SHELLEXECUTEINFO;
+typedef struct { size_t cbSize; int fMask; const wchar_t *lpFile; int nShow; } SHELLEXECUTEINFOW;
 static int failure;
 static char error[512];
-static bool DeleteFileA(const char *path) { return remove(path) == 0; }
+static bool DeleteFileW(const wchar_t *path) {
+    char narrow[MAX_PATH];
+    if (wcstombs(narrow, path, sizeof(narrow)) == (size_t)-1) return false;
+    return remove(narrow) == 0;
+}
 static int MessageBox(void *parent, const char *message, const char *title, int flags) {
     (void)parent; (void)flags;
     if (strcmp(title, "Update Failed") == 0) snprintf(error, sizeof(error), "%s", message);
@@ -41,19 +46,19 @@ static char *get_exe_name_from_path(const char *path) {
     char *name = malloc(12); assert(name); strcpy(name, "nosleep.exe"); return name;
 }
 static void touch(const char *path) { FILE *f = fopen(path, "wb"); assert(f); fclose(f); }
-static bool create_update_batch_script(const char *exe, const char *download, const char *name,
-        char *script, size_t script_size, char *arguments, size_t arguments_size) {
+static bool create_update_batch_script(const char *exe, const wchar_t *download, const char *name,
+        wchar_t *script, size_t script_size, wchar_t *arguments, size_t arguments_size) {
     (void)exe; (void)download; (void)name;
     if (failure == 2) return false;
-    snprintf(script, script_size, "update.bat");
-    snprintf(arguments, arguments_size, "args.txt");
-    touch(script); touch(arguments); return true;
+    wcsncpy(script, L"update.bat", script_size);
+    wcsncpy(arguments, L"args.txt", arguments_size);
+    touch("update.bat"); touch("args.txt"); return true;
 }
-static bool ShellExecuteEx(SHELLEXECUTEINFO *info) { (void)info; return failure != 3; }
+static bool ShellExecuteExW(SHELLEXECUTEINFOW *info) { (void)info; return failure != 3; }
 static bool run(void) {
     void *hwnd_parent = NULL;
     const char *current_exe_path = "nosleep.exe";
-    char *temp_path = malloc(13); assert(temp_path); strcpy(temp_path, "download.exe");
+    wchar_t *temp_path = malloc(13 * sizeof(wchar_t)); assert(temp_path); wcscpy(temp_path, L"download.exe");
 '''
 checks = r'''
 static bool exists(const char *path) { FILE *f = fopen(path, "rb"); if (!f) return false; fclose(f); return true; }

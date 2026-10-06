@@ -6,12 +6,12 @@
 #include "updater_command_line.h"
 #include "updater_redirect.h"
 #include "updater_response_read.h"
-#include "updater_temp_path.h"
 #include "updater_url_policy.h"
 #include "updater_pe.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <wchar.h>
 #include <shellapi.h>
 #include <winhttp.h>
 #include <commctrl.h>
@@ -29,20 +29,20 @@ static DWORD follow_redirects(HINTERNET hSession, HINTERNET* hRequest,
                                DownloadTask* download_task);
 static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t* path, 
                             bool* success, const char** error_msg);
-static bool download_file(const char* url, const char* output_path,
+static bool download_file(const char* url, const wchar_t* output_path,
                           UpdaterStreamProgress report_progress, void* progress_context,
                           HANDLE cancel_event, DWORD* total_bytes,
                           DownloadTask* download_task);
 static bool create_update_batch_script(const char* current_exe_path, 
-                                        const char* downloaded_path,
+                                        const wchar_t* downloaded_path,
                                         const char* exe_name,
-                                        char* script_path, size_t script_path_size,
-                                        char* arguments_path, size_t arguments_path_size);
+                                        wchar_t* script_path, size_t script_path_size,
+                                        wchar_t* arguments_path, size_t arguments_path_size);
 static char* get_exe_name_from_path(const char* path);
-static char* get_temp_path_for(const char* prefix);
+static wchar_t* get_temp_path_for(const char* prefix);
 static bool updater_pe_read_file_at(void* context, uint64_t offset,
                                     void* buffer, size_t length);
-static bool updater_validate_downloaded_executable(const char* path);
+static bool updater_validate_downloaded_executable(const wchar_t* path);
 
 #define WM_UPDATER_DOWNLOAD_PROGRESS (WM_APP + 1)
 #define ID_UPDATER_DOWNLOAD_CANCEL 1001
@@ -61,7 +61,7 @@ typedef struct {
 struct DownloadTask {
     DownloadDialog* dialog;
     const char* url;
-    const char* output_path;
+    const wchar_t* output_path;
     DWORD total_bytes;
     PVOID volatile active_request;
     bool succeeded;
@@ -92,11 +92,11 @@ static bool updater_write_file(void* context, const void* buffer, size_t bytes_t
     return success != FALSE;
 }
 
-static bool updater_write_path(const char* path, const void* contents, size_t length,
+static bool updater_write_path(const wchar_t* path, const void* contents, size_t length,
                                DWORD creation_disposition) {
     if (!path || (!contents && length > 0) || length > MAXDWORD) return false;
 
-    HANDLE file = CreateFileA(path, GENERIC_WRITE, 0, NULL, creation_disposition,
+    HANDLE file = CreateFileW(path, GENERIC_WRITE, 0, NULL, creation_disposition,
                               FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return false;
 
@@ -107,7 +107,7 @@ static bool updater_write_path(const char* path, const void* contents, size_t le
     }
     CloseHandle(file);
     if (!write_ok || bytes_written != (DWORD)length) {
-        DeleteFileA(path);
+        DeleteFileW(path);
         return false;
     }
     return true;
@@ -126,10 +126,10 @@ static bool updater_pe_read_file_at(void* context, uint64_t offset,
            bytes_read == (DWORD)length;
 }
 
-static bool updater_validate_downloaded_executable(const char* path) {
+static bool updater_validate_downloaded_executable(const wchar_t* path) {
     if (!path) return false;
 
-    HANDLE file = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
+    HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL,
                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) return false;
 
@@ -419,19 +419,12 @@ static char* updater_path_to_utf8(const wchar_t* path) {
     return utf8;
 }
 
-// Temporary paths still use the application's ANSI filesystem APIs.
-static char* updater_ansi_path_to_utf8(const char* path) {
-    wchar_t wide[MAX_PATH];
-    if (!MultiByteToWideChar(CP_ACP, 0, path, -1, wide, MAX_PATH)) return NULL;
-    return updater_path_to_utf8(wide);
-}
-
 // Download a new version and perform the update
 static bool updater_download_and_install_utf8(UpdateInfo* info, const char* current_exe_path, HWND hwnd_parent) {
     if (!info || !current_exe_path) return false;
     
     // Get temp path for downloaded file
-    char* temp_path = get_temp_path_for("nosleep_update");
+    wchar_t* temp_path = get_temp_path_for("nosleep_update");
     if (!temp_path) return false;
     
     DownloadDialog dialog = {0};
@@ -539,7 +532,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     
     if (!download_ok) {
         if (dialog.cancellation_requested) {
-            DeleteFileA(temp_path);
+            DeleteFileW(temp_path);
             free(temp_path);
             return false;
         }
@@ -556,7 +549,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     if (!updater_validate_downloaded_executable(temp_path)) {
         MessageBox(hwnd_parent, "Downloaded file is not a valid Windows executable.\nPlease try again.",
             "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
-        DeleteFile(temp_path);
+        DeleteFileW(temp_path);
         free(temp_path);
         return false;
     }
@@ -564,18 +557,18 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     // Get the EXE name from current path
     char* exe_name = get_exe_name_from_path(current_exe_path);
     if (!exe_name) {
-        DeleteFileA(temp_path);
+        DeleteFileW(temp_path);
         free(temp_path);
         return false;
     }
     
     // Create update batch script in temp directory
-    char script_path[MAX_PATH];
-    char arguments_path[MAX_PATH];
+    wchar_t script_path[MAX_PATH];
+    wchar_t arguments_path[MAX_PATH];
     if (!create_update_batch_script(current_exe_path, temp_path, exe_name, 
-                                    script_path, sizeof(script_path),
-                                    arguments_path, sizeof(arguments_path))) {
-        DeleteFileA(temp_path);
+                                    script_path, MAX_PATH,
+                                    arguments_path, MAX_PATH)) {
+        DeleteFileW(temp_path);
         free(exe_name);
         free(temp_path);
         MessageBox(hwnd_parent, "Failed to create update script.", 
@@ -591,16 +584,16 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
         MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
     
     // Keep recovery instructions and the failure prompt visible after this app exits.
-    SHELLEXECUTEINFO sei = {0};
-    sei.cbSize = sizeof(SHELLEXECUTEINFO);
+    SHELLEXECUTEINFOW sei = {0};
+    sei.cbSize = sizeof(SHELLEXECUTEINFOW);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
     sei.lpFile = script_path;
     sei.nShow = SW_SHOWNORMAL;
     
-    if (!ShellExecuteEx(&sei)) {
-        DeleteFileA(script_path);
-        DeleteFileA(arguments_path);
-        DeleteFileA(temp_path);
+    if (!ShellExecuteExW(&sei)) {
+        DeleteFileW(script_path);
+        DeleteFileW(arguments_path);
+        DeleteFileW(temp_path);
         free(exe_name);
         free(temp_path);
         MessageBox(hwnd_parent, "Failed to launch update process.\nPlease try the update again.",
@@ -637,12 +630,12 @@ static char* get_exe_name_from_path(const char* path) {
     return _strdup(path);
 }
 
-static char* get_temp_path_for(const char* prefix) {
-    char temp_dir[MAX_PATH];
-    DWORD len = GetTempPath(MAX_PATH, temp_dir);
+static wchar_t* get_temp_path_for(const char* prefix) {
+    wchar_t temp_dir[MAX_PATH];
+    DWORD len = GetTempPathW(MAX_PATH, temp_dir);
     if (len == 0 || len >= MAX_PATH) return NULL;
     
-    char* path = (char*)malloc(MAX_PATH);
+    wchar_t* path = (wchar_t*)malloc(MAX_PATH * sizeof(wchar_t));
     if (!path) return NULL;
     
     // Ensure unique name
@@ -650,9 +643,15 @@ static char* get_temp_path_for(const char* prefix) {
     snprintf(unique_name, sizeof(unique_name), "%s_%lu_%lu.exe", 
              prefix, GetCurrentProcessId(), GetTickCount());
     
-    if (!updater_build_temp_path(path, MAX_PATH, temp_dir, unique_name)) {
+    size_t name_length = strlen(unique_name);
+    if ((size_t)len + name_length >= MAX_PATH) {
         free(path);
         return NULL;
+    }
+    wmemcpy(path, temp_dir, len);
+    // The generated filename is ASCII; only the directory comes from Windows.
+    for (size_t i = 0; i <= name_length; i++) {
+        path[len + i] = (wchar_t)(unsigned char)unique_name[i];
     }
     return path;
 }
@@ -896,7 +895,7 @@ static char* http_get_json(HWND hwnd_parent, const wchar_t* host, const wchar_t*
 }
 
 // Download a file from URL to local path
-static bool download_file(const char* url, const char* output_path,
+static bool download_file(const char* url, const wchar_t* output_path,
                           UpdaterStreamProgress report_progress, void* progress_context,
                           HANDLE cancel_event, DWORD* total_bytes,
                           DownloadTask* download_task) {
@@ -1024,7 +1023,7 @@ static bool download_file(const char* url, const char* output_path,
     }
     
     // Open output file
-    HANDLE hFile = CreateFile(output_path, GENERIC_WRITE, 0, NULL,
+    HANDLE hFile = CreateFileW(output_path, GENERIC_WRITE, 0, NULL,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
         close_download_request(download_task, hRequest);
@@ -1041,7 +1040,7 @@ static bool download_file(const char* url, const char* output_path,
         close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
-        DeleteFileA(output_path);
+        DeleteFileW(output_path);
         return false;
     }
     
@@ -1057,7 +1056,7 @@ static bool download_file(const char* url, const char* output_path,
     WinHttpCloseHandle(hSession);
 
     bool canceled = download_was_canceled(cancel_event);
-    if (!copy_ok || canceled) DeleteFileA(output_path);
+    if (!copy_ok || canceled) DeleteFileW(output_path);
     return copy_ok && !canceled;
 }
 
@@ -1067,44 +1066,44 @@ static bool download_file(const char* url, const char* output_path,
 // 3. Starts the new EXE
 // 4. Deletes itself
 static bool create_update_batch_script(const char* current_exe_path, 
-                                        const char* downloaded_path,
+                                        const wchar_t* downloaded_path,
                                         const char* exe_name,
-                                        char* script_path, size_t script_path_size,
-                                        char* arguments_path, size_t arguments_path_size) {
+                                        wchar_t* script_path, size_t script_path_size,
+                                        wchar_t* arguments_path, size_t arguments_path_size) {
     if (!current_exe_path || !downloaded_path || !exe_name || !script_path ||
         script_path_size == 0 || !arguments_path || arguments_path_size == 0) return false;
 
     // Reserve a unique temp file name for the arguments and matching batch script.
-    char temp_dir[MAX_PATH];
-    DWORD len = GetTempPath(MAX_PATH, temp_dir);
+    wchar_t temp_dir[MAX_PATH];
+    DWORD len = GetTempPathW(MAX_PATH, temp_dir);
     if (len == 0 || len >= MAX_PATH) return false;
 
     if (arguments_path_size < MAX_PATH ||
-        !GetTempFileNameA(temp_dir, "nsl", 0, arguments_path)) {
+        !GetTempFileNameW(temp_dir, L"nsl", 0, arguments_path)) {
         return false;
     }
-    size_t arguments_path_length = strlen(arguments_path);
-    const size_t temp_extension_length = sizeof(".tmp") - 1;
+    size_t arguments_path_length = wcslen(arguments_path);
+    const size_t temp_extension_length = sizeof(L".tmp") / sizeof(wchar_t) - 1;
     if (arguments_path_length < temp_extension_length ||
         script_path_size <= arguments_path_length) {
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
-    memcpy(script_path, arguments_path, arguments_path_length + 1);
-    memcpy(script_path + arguments_path_length - temp_extension_length, ".bat",
-           sizeof(".bat"));
+    wmemcpy(script_path, arguments_path, arguments_path_length + 1);
+    wmemcpy(script_path + arguments_path_length - temp_extension_length, L".bat",
+            sizeof(L".bat") / sizeof(wchar_t));
 
     int original_argc = 0;
     wchar_t** original_argv = CommandLineToArgvW(GetCommandLineW(), &original_argc);
     if (!original_argv || original_argc < 1) {
         if (original_argv) LocalFree(original_argv);
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
     wchar_t* original_arguments = updater_build_windows_command_line(original_argc, original_argv);
     LocalFree(original_argv);
     if (!original_arguments) {
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
 
@@ -1112,7 +1111,7 @@ static bool create_update_batch_script(const char* current_exe_path,
     if (original_arguments_length >= UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS ||
         original_arguments_length > (size_t)MAXDWORD / sizeof(wchar_t)) {
         free(original_arguments);
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
     bool arguments_written = updater_write_path(arguments_path, original_arguments,
@@ -1120,7 +1119,7 @@ static bool create_update_batch_script(const char* current_exe_path,
                                                 CREATE_ALWAYS);
     free(original_arguments);
     if (!arguments_written) {
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
 
@@ -1132,8 +1131,8 @@ static bool create_update_batch_script(const char* current_exe_path,
     // 4. Deletes itself
     
     char* escaped_current_exe_path = updater_escape_batch_path(current_exe_path);
-    char* downloaded_utf8 = updater_ansi_path_to_utf8(downloaded_path);
-    char* arguments_utf8 = updater_ansi_path_to_utf8(arguments_path);
+    char* downloaded_utf8 = updater_path_to_utf8(downloaded_path);
+    char* arguments_utf8 = updater_path_to_utf8(arguments_path);
     char* escaped_downloaded_path = downloaded_utf8 ? updater_escape_batch_path(downloaded_utf8) : NULL;
     char* escaped_exe_name = updater_escape_batch_path(exe_name);
     char* escaped_arguments_path = arguments_utf8 ? updater_escape_batch_path(arguments_utf8) : NULL;
@@ -1148,7 +1147,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         free(escaped_exe_name);
         free(escaped_arguments_path);
         free(escaped_internal_marker);
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
 
@@ -1160,7 +1159,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         free(escaped_exe_name);
         free(escaped_arguments_path);
         free(escaped_internal_marker);
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
 
@@ -1243,13 +1242,13 @@ static bool create_update_batch_script(const char* current_exe_path,
     free(downloaded_path_error_line);
     
     if (written <= 0 || (size_t)written >= sizeof(script_content)) {
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
     
     // Write script file
     if (!updater_write_path(script_path, script_content, strlen(script_content), CREATE_NEW)) {
-        DeleteFileA(arguments_path);
+        DeleteFileW(arguments_path);
         return false;
     }
     
