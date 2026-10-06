@@ -188,8 +188,8 @@ static void test_invalid_numeric_value(void) {
 
     wchar_t *interval_argv[] = {L"nosleep", L"--interval", L"0"};
     expect_error(3, interval_argv, CLI_PARSE_ERROR_INVALID_VALUE,
-                 L"--interval", L"0", L"a positive integer number of seconds",
-                 L"Invalid value \"0\" for option \"--interval\"; expected a positive integer number of seconds.\n");
+                 L"--interval", L"0", L"an integer number of seconds from 1 to 2147483",
+                 L"Invalid value \"0\" for option \"--interval\"; expected an integer number of seconds from 1 to 2147483.\n");
 }
 
 static void test_invalid_enum_value(void) {
