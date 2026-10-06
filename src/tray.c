@@ -397,6 +397,20 @@ bool tray_init(NoSleepTray* tray) {
     // Migrate the old mode only if no groups were loaded from the registry.
     notify_groups_init(&tray->notify_groups, tray->notification_mode);
 
+    // Resolve runtime CLI settings after loading preferences, before startup effects.
+    if (tray->startup_cli_overrides_set) {
+        if (tray->notification_mode_cli_override >= 0) {
+            tray->notification_mode = tray->notification_mode_cli_override;
+            notify_groups_set_active(&tray->notify_groups, tray->notification_mode);
+        }
+        if (tray->auto_check_interval_cli_override >= 0) {
+            tray->auto_check_interval = tray->auto_check_interval_cli_override;
+        }
+        if (tray->check_updates_startup_cli_override >= 0) {
+            tray->check_updates_on_startup = (tray->check_updates_startup_cli_override != 0);
+        }
+    }
+
     // Show the startup notification only after the active notification group is known.
     tray_show_notification(tray, NOTIFY_EVENT_APP_START,
         "nosleep started", "System tray icon created", false);

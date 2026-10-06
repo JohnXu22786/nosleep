@@ -143,6 +143,11 @@ typedef struct NoSleepTray {
     UINT_PTR update_timer_id;   // Timer ID for periodic update checks
     TrayUpdateCheckTask* update_check_task; // Active updater request, if any
     int notification_mode;      // 0=all, 1=critical only, 2=none (legacy, use notify_groups instead)
+    // Startup CLI values use -1 for an unspecified option; ignored unless set.
+    bool startup_cli_overrides_set;
+    int notification_mode_cli_override;
+    int auto_check_interval_cli_override;
+    int check_updates_startup_cli_override;
     bool add_to_path;           // Whether to add nosleep directory to environment PATH
     NotifyGroupManager notify_groups; // Notification group manager for per-event filtering
 } NoSleepTray;
