@@ -65,19 +65,6 @@ static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
     return path_len >= 4 && strncmp(path + path_len - 4, ".exe", 4) == 0;
 }
 
-static bool is_valid_release_notes_url(const char* url, size_t length) {
-    static const char prefix[] = "https://github.com/JohnXu22786/nosleep/releases/tag/";
-    size_t prefix_length = sizeof(prefix) - 1;
-    if (length <= prefix_length || strncmp(url, prefix, prefix_length) != 0) return false;
-
-    for (size_t i = prefix_length; i < length; i++) {
-        unsigned char character = (unsigned char)url[i];
-        if (character <= 0x20 || character >= 0x7f || character == '\\' ||
-            character == '"' || character == '<' || character == '>') return false;
-    }
-    return true;
-}
-
 static bool is_numeric_identifier(const char* identifier, size_t length) {
     if (length == 0) return false;
     for (size_t i = 0; i < length; i++) {
@@ -149,6 +136,13 @@ static bool is_valid_version(const char* version) {
     }
 
     return *version == '\0';
+}
+
+static bool is_valid_release_notes_url(const char* url, size_t length) {
+    static const char prefix[] = "https://github.com/JohnXu22786/nosleep/releases/tag/";
+    size_t prefix_length = sizeof(prefix) - 1;
+    return length > prefix_length && strncmp(url, prefix, prefix_length) == 0 &&
+           is_valid_version(url + prefix_length);
 }
 
 static int compare_prerelease(const char* v1, size_t v1_len,
