@@ -1045,7 +1045,7 @@ static bool create_update_batch_script(const char* current_exe_path,
 
     // Build the batch script
     // The script:
-    // 1. Waits for nosleep to exit by polling tasklist
+    // 1. Waits up to 60 seconds for this nosleep process to exit
     // 2. Stages the download beside the EXE and retains a backup until replacement succeeds
     // 3. Starts the new EXE with the original command-line arguments
     // 4. Deletes itself
@@ -1085,10 +1085,13 @@ static bool create_update_batch_script(const char* current_exe_path,
         "setlocal DisableDelayedExpansion\r\n"
         "title Updating nosleep...\r\n"
         "echo Waiting for nosleep to close...\r\n"
+        "set /a wait_attempts=0\r\n"
         ":WAITLOOP\r\n"
         "timeout /t 2 /nobreak > nul\r\n"
-        "tasklist /FI \"IMAGENAME eq %s\" 2>nul | find /I \"%s\" > nul\r\n"
+        "tasklist /FI \"PID eq %lu\" 2>nul | find /I \"%s\" > nul\r\n"
         "if errorlevel 1 goto REPLACE\r\n"
+        "set /a wait_attempts=wait_attempts+1\r\n"
+        "if %%wait_attempts%% GEQ 30 goto FAILED\r\n"
         "goto WAITLOOP\r\n"
         ":REPLACE\r\n"
         "echo Replacing executable...\r\n"
@@ -1123,7 +1126,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         "del \"%s\" > nul 2>&1\r\n"
         "del \"%s\" > nul 2>&1\r\n"
         "del \"%%~f0\" > nul 2>&1\r\n",
-        escaped_exe_name,            // for tasklist filter
+        (unsigned long)GetCurrentProcessId(), // wait only for the updating process
         escaped_exe_name,            // for find
         escaped_current_exe_path,    // reject a pre-existing staging file
         escaped_current_exe_path,    // reject a pre-existing backup
