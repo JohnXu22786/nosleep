@@ -2461,6 +2461,12 @@ static bool add_app_to_path(void) {
     if (result == ERROR_FILE_NOT_FOUND) path_type = REG_EXPAND_SZ;
 
     if (path_size == 0) {
+        // REG_EXPAND_SZ cannot escape literal percent signs in an install path.
+        if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
+            RegCloseKey(hKey);
+            free(dir);
+            return false;
+        }
         // PATH is empty or doesn't exist, just set it to our directory
         result = RegSetValueExW(hKey, L"Path", 0, path_type,
             (LPBYTE)dir, (DWORD)((wcslen(dir) + 1) * sizeof(wchar_t)));
@@ -2502,6 +2508,14 @@ static bool add_app_to_path(void) {
         result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)new_path, &actual_size);
     }
     if (result != ERROR_SUCCESS) {
+        RegCloseKey(hKey);
+        free(new_path);
+        free(dir);
+        return false;
+    }
+    // Use the type from the final read; it may have changed since the size query.
+    // Refuse an unsafe addition rather than expanding or rewriting existing PATH.
+    if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
         RegCloseKey(hKey);
         free(new_path);
         free(dir);
