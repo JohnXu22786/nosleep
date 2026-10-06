@@ -191,7 +191,7 @@ bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, 
 }
 
 bool notify_groups_save(NotifyGroupManager* mgr) {
-    if (!mgr) return false;
+    if (!mgr || mgr->load_incomplete) return false;
     
     HKEY hParent;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_PARENT_REG_KEY,
@@ -314,6 +314,7 @@ bool notify_groups_save(NotifyGroupManager* mgr) {
 
 void notify_groups_load(NotifyGroupManager* mgr) {
     if (!mgr) return;
+    mgr->load_incomplete = false;
     
     const char* registry_root = NOTIFY_GROUPS_REG_KEY;
     HKEY hKeyRoot;
@@ -323,7 +324,10 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         registry_root = NOTIFY_GROUPS_BACKUP_REG_KEY;
         result = RegOpenKeyEx(HKEY_CURRENT_USER, registry_root, 0, KEY_READ, &hKeyRoot);
     }
-    if (result != ERROR_SUCCESS) return;
+    if (result != ERROR_SUCCESS) {
+        mgr->load_incomplete = result != ERROR_FILE_NOT_FOUND;
+        return;
+    }
     
     // Read active index
     DWORD val = 0;
@@ -344,7 +348,11 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         HKEY hKeyGroup;
         result = RegOpenKeyEx(HKEY_CURRENT_USER, subkey, 0, KEY_READ, &hKeyGroup);
         if (result == ERROR_FILE_NOT_FOUND) continue;
-        if (result != ERROR_SUCCESS) break;
+        if (result != ERROR_SUCCESS) {
+            // Keep readable groups available, but never replace unread data.
+            mgr->load_incomplete = true;
+            continue;
+        }
         
         // Read name with proper error checking
         char name[MAX_GROUP_NAME] = "";

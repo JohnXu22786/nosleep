@@ -309,7 +309,7 @@ static int test_missing_group_name_is_skipped_and_loading_continues(void) {
     return 0;
 }
 
-static int test_group_open_failure_stops_after_loaded_groups(void) {
+static int test_group_open_failure_loads_later_groups_without_saving(void) {
     reset_registry();
     stored_groups_available = true;
     stored_group_count = 3;
@@ -322,9 +322,11 @@ static int test_group_open_failure_stops_after_loaded_groups(void) {
     NotifyGroupManager manager = {0};
     notify_groups_load(&manager);
 
-    if (manager.count != 1 || manager.active_index != 0 ||
-        strcmp(manager.groups[0].name, "Group A") != 0) {
-        fprintf(stderr, "FAIL: loader crossed a group-open failure or left an invalid active index\n");
+    if (manager.count != 2 || manager.active_index != 1 ||
+        strcmp(manager.groups[0].name, "Group A") != 0 ||
+        strcmp(manager.groups[1].name, "Group C") != 0 ||
+        notify_groups_save(&manager) || active_index_writes != 0) {
+        fprintf(stderr, "FAIL: partial load lost a readable group, selection, or allowed saving\n");
         return 1;
     }
     return 0;
@@ -337,7 +339,7 @@ int main(void) {
     failures += test_saved_active_group_survives_corrupt_prior_slot();
     failures += test_missing_group_key_is_skipped_and_active_index_is_remapped();
     failures += test_missing_group_name_is_skipped_and_loading_continues();
-    failures += test_group_open_failure_stops_after_loaded_groups();
+    failures += test_group_open_failure_loads_later_groups_without_saving();
     if (failures != 0) return 1;
     puts("PASS: notification-group migration preserves saved groups and migrates legacy settings");
     return 0;

@@ -50,6 +50,7 @@ typedef struct {
     NotifyGroup groups[MAX_NOTIFY_GROUPS];
     int count;                      // Number of groups
     int active_index;               // Index of the currently active group
+    bool load_incomplete;           // Registry access failed; block replacement saves
 } NotifyGroupManager;
 
 // Initialize the notification group manager
@@ -77,7 +78,7 @@ bool notify_groups_remove(NotifyGroupManager* mgr, int index);
 // Update a group's name and event mask
 bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, unsigned int event_mask);
 
-// Save all groups to registry; returns false if any registry operation fails
+// Save all groups to registry; returns false on incomplete load or registry failure
 bool notify_groups_save(NotifyGroupManager* mgr);
 
 // Load groups from registry
