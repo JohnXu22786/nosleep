@@ -142,6 +142,7 @@ typedef struct NoSleepTray {
 #define NIM_ADD 1u
 #define NIM_SETVERSION 4u
 #define MF_STRING 0x0000u
+#define MF_GRAYED 0x0001u
 #define MF_POPUP 0x0010u
 #define MF_SEPARATOR 0x0800u
 #define MF_CHECKED 0x0008u
@@ -159,6 +160,7 @@ typedef struct NoSleepTray {
 #define IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL 1016u
 #define IDM_SETTINGS 1014u
 #define IDM_CHECK_UPDATES 1015u
+#define IDM_REVIEW_UPDATE 1017u
 #define IDM_ABOUT 1012u
 
 static unsigned int menu_create_calls;

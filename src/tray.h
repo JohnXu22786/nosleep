@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include "notify_groups.h"
 #include "tray_countdown_icon.h"
+#include "updater_logic.h"
 
 // Atomic operation macros for thread-safe flag access
 #ifdef __GNUC__
@@ -80,6 +81,7 @@ typedef enum {
 #define IDM_ABOUT                 1012
 #define IDM_SETTINGS             1014
 #define IDM_CHECK_UPDATES        1015
+#define IDM_REVIEW_UPDATE        1017
 
 // Notification mode
 #define NOTIFY_ALL 0
@@ -145,6 +147,7 @@ typedef struct NoSleepTray {
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
     UINT_PTR update_timer_id;   // Timer ID for periodic update checks
     TrayUpdateCheckTask* update_check_task; // Active updater request, if any
+    UpdateInfo available_update; // Owned value snapshot; accessed only on the tray thread
     int notification_mode;      // 0=all, 1=critical only, 2=none (legacy, use notify_groups instead)
     // Startup CLI values use -1 for an unspecified option; ignored unless set.
     bool startup_cli_overrides_set;
