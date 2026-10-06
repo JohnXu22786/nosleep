@@ -115,6 +115,7 @@ typedef struct NoSleepTray {
     bool is_running;
     bool duration_expired;
     bool stopping;
+    bool session_action_cancelled;
     bool core_init_failed;
     bool nosleep_run_failed;
     HANDLE stop_event;
