@@ -82,6 +82,7 @@ typedef BYTE *LPBYTE;
 typedef void *HKEY;
 typedef void *HWND;
 typedef intptr_t LPARAM;
+typedef int SessionFinishedAction;
 
 typedef struct {
     bool prevent_display;
@@ -121,6 +122,8 @@ typedef struct {
 #define MB_ICONWARNING 1
 
 static LONG settings_create_result;
+static bool saved_update_settings;
+static int settings_query_count;
 static LONG startup_create_result;
 static LONG startup_open_result;
 static LONG environment_open_result;
@@ -159,6 +162,8 @@ static int MessageBox(HWND hwnd, const char *text, const char *title, DWORD flag
 
 static void reset_mocks(void) {
     settings_create_result = ERROR_SUCCESS;
+    saved_update_settings = false;
+    settings_query_count = 0;
     startup_create_result = ERROR_SUCCESS;
     startup_open_result = ERROR_SUCCESS;
     environment_open_result = ERROR_SUCCESS;
@@ -235,7 +240,19 @@ LONG RegDeleteValue(HKEY key, const char *name) {
 
 LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
                      BYTE *value, DWORD *size) {
-    (void)key; (void)reserved; (void)type;
+    (void)reserved; (void)type;
+    if (key == (HKEY)2) {
+        ++settings_query_count;
+        if (saved_update_settings &&
+            (strcmp(name, "check_updates_on_startup") == 0 ||
+             strcmp(name, "auto_check_interval") == 0)) {
+            DWORD data = strcmp(name, "auto_check_interval") == 0 ? 2 : 0;
+            memcpy(value, &data, sizeof(data));
+            *size = sizeof(data);
+            return ERROR_SUCCESS;
+        }
+        return ERROR_FILE_NOT_FOUND;
+    }
     if (strcmp(name, "Path") != 0) return ERROR_FILE_NOT_FOUND;
     if (!value) {
         if (path_query_result != ERROR_SUCCESS) return path_query_result;
@@ -346,6 +363,32 @@ static void expect_write_failure(const char *name, int session_finished_action,
 }
 
 int main(void) {
+    reset_mocks();
+    settings_create_result = ERROR_ACCESS_DENIED;
+    NoSleepTray loaded_tray = {0};
+    tray_load_settings(&loaded_tray);
+    expect(loaded_tray.check_updates_on_startup && loaded_tray.auto_check_interval == 1,
+           "an unavailable settings key must retain startup and daily update checks");
+    expect(!loaded_tray.prevent_display && !loaded_tray.away_mode && !loaded_tray.verbose &&
+           loaded_tray.notification_mode == NOTIFY_ALL && !loaded_tray.add_to_path &&
+           loaded_tray.session_finished_action == SESSION_FINISHED_NONE,
+           "an unavailable settings key must apply all remaining settings defaults");
+    expect(settings_query_count == 0 && registry_close_count == 0,
+           "load failure must not query or close an invalid settings handle");
+
+    reset_mocks();
+    tray_load_settings(&loaded_tray);
+    expect(loaded_tray.check_updates_on_startup && loaded_tray.auto_check_interval == 1 &&
+           settings_query_count == 8 && registry_close_count == 1,
+           "missing settings values must retain defaults and close the opened key");
+
+    reset_mocks();
+    saved_update_settings = true;
+    tray_load_settings(&loaded_tray);
+    expect(!loaded_tray.check_updates_on_startup && loaded_tray.auto_check_interval == 2 &&
+           registry_close_count == 1,
+           "successfully loaded update preferences must override defaults");
+
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     NoSleepTray settings_tray = {0};
@@ -586,6 +629,10 @@ source = (
     + extract_function("tray_set_startup_enabled")
     + "\n"
     + extract_function("tray_set_add_to_path")
+    + "\n"
+    + extract_function("settings_read_dword")
+    + "\n"
+    + extract_function("tray_load_settings")
     + "\n"
     + extract_function("tray_save_settings")
     + "\n"
