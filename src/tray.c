@@ -2716,8 +2716,9 @@ static bool remove_app_from_path(void) {
     }
     new_path[0] = '\0';
     
+    bool kept_segment = false;
     wchar_t* p = current_path;
-    while (*p) {
+    for (;;) {
         // Find next semicolon or end (without modifying p yet)
         wchar_t* seg_start = p;
         wchar_t* next = wcschr(p, ';');
@@ -2737,10 +2738,11 @@ static bool remove_app_from_path(void) {
         
         if (!is_match) {
             // Keep this segment with original formatting
-            if (new_path[0] != '\0') {
+            if (kept_segment) {
                 wcscat(new_path, L";");
             }
             wcsncat(new_path, seg_start, seg_len);
+            kept_segment = true;
         } else {
             found = true;
         }
