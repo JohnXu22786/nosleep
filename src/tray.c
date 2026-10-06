@@ -2391,16 +2391,19 @@ static bool add_app_to_path(void) {
     
     // Read current PATH
     DWORD path_size = 0;
-    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, NULL, &path_size);
+    DWORD path_type = REG_EXPAND_SZ;
+    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, NULL, &path_size);
     if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
         RegCloseKey(hKey);
         free(dir);
         return false;
     }
     
+    if (result == ERROR_FILE_NOT_FOUND) path_type = REG_EXPAND_SZ;
+
     if (path_size == 0) {
         // PATH is empty or doesn't exist, just set it to our directory
-        result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+        result = RegSetValueExW(hKey, L"Path", 0, path_type,
             (LPBYTE)dir, (DWORD)((wcslen(dir) + 1) * sizeof(wchar_t)));
         RegCloseKey(hKey);
         free(dir);
@@ -2425,7 +2428,7 @@ static bool add_app_to_path(void) {
     
     // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
     DWORD actual_size = path_size;
-    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)new_path, &actual_size);
     if (result == ERROR_MORE_DATA) {
         // PATH grew between calls, reallocate and retry
         buf_size = actual_size + (DWORD)((wcslen(dir) + 2) * sizeof(wchar_t));
@@ -2437,7 +2440,7 @@ static bool add_app_to_path(void) {
             return false;
         }
         new_path = realloc_path;
-        result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)new_path, &actual_size);
+        result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)new_path, &actual_size);
     }
     if (result != ERROR_SUCCESS) {
         RegCloseKey(hKey);
@@ -2445,7 +2448,7 @@ static bool add_app_to_path(void) {
         free(dir);
         return false;
     }
-    // Ensure null-terminated (actual_size is bytes including null in REG_EXPAND_SZ)
+    // Ensure null-terminated (actual_size is bytes including null in registry strings)
     if (actual_size >= buf_size || actual_size % sizeof(wchar_t) != 0) {
         RegCloseKey(hKey);
         free(new_path);
@@ -2500,7 +2503,7 @@ static bool add_app_to_path(void) {
     wcscat(new_path, dir);
     
     // Write back to registry
-    result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+    result = RegSetValueExW(hKey, L"Path", 0, path_type,
         (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
     
     RegCloseKey(hKey);
@@ -2531,7 +2534,8 @@ static bool remove_app_from_path(void) {
     
     // Read current PATH
     DWORD path_size = 0;
-    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, NULL, &path_size);
+    DWORD path_type = REG_EXPAND_SZ;
+    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, NULL, &path_size);
     if (result == ERROR_FILE_NOT_FOUND || (result == ERROR_SUCCESS && path_size == 0)) {
         RegCloseKey(hKey);
         free(dir);
@@ -2553,7 +2557,7 @@ static bool remove_app_from_path(void) {
     // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
     DWORD actual_size = path_size;
     DWORD buf_size = path_size;
-    result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)current_path, &actual_size);
     if (result == ERROR_MORE_DATA) {
         // PATH grew between calls, reallocate and retry
         buf_size = actual_size;
@@ -2565,7 +2569,7 @@ static bool remove_app_from_path(void) {
             return false;
         }
         current_path = realloc_path;
-        result = RegQueryValueExW(hKey, L"Path", NULL, NULL, (LPBYTE)current_path, &actual_size);
+        result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)current_path, &actual_size);
     }
     if (result == ERROR_FILE_NOT_FOUND) {
         free(current_path);
@@ -2579,7 +2583,7 @@ static bool remove_app_from_path(void) {
         free(dir);
         return false;
     }
-    // Ensure null-terminated (REG_EXPAND_SZ includes null terminator in count)
+    // Ensure null-terminated (registry strings include null terminator in count)
     if (actual_size > buf_size || actual_size % sizeof(wchar_t) != 0) {
         free(current_path);
         RegCloseKey(hKey);
@@ -2649,7 +2653,7 @@ static bool remove_app_from_path(void) {
     }
     
     // Write back to registry
-    result = RegSetValueExW(hKey, L"Path", 0, REG_EXPAND_SZ,
+    result = RegSetValueExW(hKey, L"Path", 0, path_type,
         (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
     
     RegCloseKey(hKey);
