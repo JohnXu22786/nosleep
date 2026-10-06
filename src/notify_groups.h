@@ -69,6 +69,9 @@ bool notify_groups_should_show(NotifyGroupManager* mgr, NotifyEventId event_id);
 // Check if a group name would be empty or whitespace-only after storage
 bool notify_groups_name_is_blank(const char* name);
 
+// Check stored names, excluding the edited group; unchanged legacy names are allowed
+bool notify_groups_name_is_duplicate(const NotifyGroupManager* mgr, const char* name, int exclude_index);
+
 // Add a new custom group
 int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int event_mask);
 

@@ -4150,6 +4150,14 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                         break;
                     }
 
+                    if (notify_groups_name_is_duplicate(edit_mgr, name, edit_index)) {
+                        MessageBox(hwnd, "A notification group with this name already exists. Please choose a different name.",
+                                   "Duplicate Group Name", MB_OK | MB_ICONWARNING | MB_TOPMOST);
+                        SetFocus(hNameEdit);
+                        SendMessage(hNameEdit, EM_SETSEL, 0, -1);
+                        break;
+                    }
+
                     // Read event mask from checkboxes
                     unsigned int mask = notify_group_event_mask_from_checkboxes(hCheckboxes);
 
