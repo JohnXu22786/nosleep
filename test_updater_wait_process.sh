@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 source = Path(sys.argv[1]).read_text()
-start = source.index('    char script_content[8192];')
+start = source.index('    char script_content[32768];')
 end = source.index('    free(escaped_current_exe_path);', start)
 block = source[start:end]
 with tempfile.TemporaryDirectory() as directory:

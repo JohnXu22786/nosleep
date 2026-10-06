@@ -278,9 +278,9 @@ static bool updater_show_prompt_dialog(HWND hwnd, UpdateInfo *info) {
     return prompt_answer;
 }
 
-static char *get_exe_path(void) { return NULL; }
+static wchar_t *get_exe_path_w(void) { return NULL; }
 
-static bool updater_download_and_install(UpdateInfo *info, const char *path, HWND hwnd) {
+static bool updater_download_and_install(UpdateInfo *info, const wchar_t *path, HWND hwnd) {
     (void)info;
     (void)path;
     (void)hwnd;
