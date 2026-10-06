@@ -1982,8 +1982,8 @@ void tray_stop_countdown(NoSleepTray* tray) {
             ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false",
             ATOMIC_LOAD_BOOL(&tray->countdown_stopping) ? "true" : "false");
     
-    // Prevent re-entrant calls
-    if (ATOMIC_LOAD_BOOL(&tray->countdown_stopping)) {
+    // Claim cleanup before inspecting the shared countdown thread handle.
+    if (ATOMIC_EXCHANGE_BOOL(&tray->countdown_stopping, true)) {
         DEBUG_LOG("tray_stop_countdown: already stopping, returning");
         return;
     }
@@ -1991,11 +1991,9 @@ void tray_stop_countdown(NoSleepTray* tray) {
     if (!tray_countdown_has_work(ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
                                  tray->countdown_timer_thread != NULL)) {
         DEBUG_LOG("tray_stop_countdown: no active countdown or countdown thread, returning");
+        ATOMIC_STORE_BOOL(&tray->countdown_stopping, false);
         return;
     }
-    
-    // Mark that we're stopping
-    ATOMIC_STORE_BOOL(&tray->countdown_stopping, true);
     
     DEBUG_LOG("tray_stop_countdown: setting delayed_sleep_countdown_active=false");
     // Signal countdown thread to stop first

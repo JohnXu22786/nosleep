@@ -103,6 +103,9 @@ jobs:
       - name: Test delayed action handle cleanup
         run: ./test_tray_delayed_action_completion.sh
 
+      - name: Test concurrent countdown cleanup ownership
+        run: bash test_tray_countdown_cleanup.sh
+
       - name: Test tray stop timeout worker retention
         run: ./test_tray_concurrent_stop.sh
 
