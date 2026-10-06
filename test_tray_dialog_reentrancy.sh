@@ -83,7 +83,7 @@ typedef void* HINSTANCE;
 typedef void* HBRUSH;
 typedef void* LPVOID;
 typedef struct { HWND hwnd; } NoSleepTray;
-typedef struct { int unused; } MSG;
+typedef struct { unsigned long wParam; } MSG;
 typedef struct { void* lpfnWndProc; HINSTANCE hInstance; void* hCursor; HBRUSH hbrBackground; const char* lpszClassName; } WNDCLASS;
 #define IDC_ARROW 0
 #define COLOR_BTNFACE 0
@@ -99,7 +99,7 @@ void tray_show_settings_dialog(NoSleepTray*);
 void tray_show_about_dialog(NoSleepTray*);
 static NoSleepTray tray_instance;
 static int creates, pumps, update_checks, depth, phase;
-static bool fail_create;
+static bool fail_create, dialog_alive;
 static int* result_pointer;
 static HINSTANCE GetModuleHandle(void* x) { return x; }
 static void* LoadCursor(void* x, int id) { (void)id; return x; }
@@ -109,13 +109,17 @@ static HWND CreateWindowEx(int e,const char* c,const char* t,int s,int x,int y,i
  (void)e;(void)t;(void)s;(void)x;(void)y;(void)w;(void)h;(void)owner;(void)menu;(void)i;
  if (++creates > 1) { fputs("FAIL: nested open created another dialog and overwrote state\n",stderr); exit(1); }
  if (fail_create) return NULL;
+ dialog_alive = true;
  if (strstr(c,"About")) result_pointer=p;
  // Synchronous WM_CREATE can dispatch another tray action too.
  tray_show_settings_dialog(&tray_instance); tray_show_about_dialog(&tray_instance);
  return (HWND)1;
 }
 static int ShowWindow(HWND h,int s) { (void)h;(void)s; return 1; }
-static int GetMessage(MSG* m, HWND h,int a,int b) { (void)m;(void)h;(void)a;(void)b; return pumps++ == 0; }
+static int IsWindow(HWND h) { return h != NULL && dialog_alive; }
+static int DestroyWindow(HWND h) { (void)h; dialog_alive=false; return 1; }
+static void PostQuitMessage(int code) { (void)code; }
+static int GetMessage(MSG* m, HWND h,int a,int b) { m->wParam=0;(void)h;(void)a;(void)b; return pumps++ == 0; }
 static int IsDialogMessage(HWND h,MSG* m) { (void)h;(void)m;return 0; }
 static int TranslateMessage(MSG* m) { (void)m; return 1; }
 static int DispatchMessage(MSG* m) {
@@ -124,6 +128,7 @@ static int DispatchMessage(MSG* m) {
  tray_show_settings_dialog(&tray_instance); tray_show_about_dialog(&tray_instance);
  // Original About action must still reach its original result storage.
  if (phase == 1 && result_pointer) *result_pointer=1;
+ DestroyWindow((HWND)1);
  --depth; return 0;
 }
 static void tray_check_for_updates(NoSleepTray* t,bool s) { (void)t;(void)s; ++update_checks; }
