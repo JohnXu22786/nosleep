@@ -1571,20 +1571,6 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                 return 0;
             }
             
-            // Calculate elapsed time for notifications from the monotonic tick.
-            ULONGLONG elapsed_seconds = get_elapsed_milliseconds(tray->start_tick64) / 1000;
-            
-            int hours = (int)(elapsed_seconds / 3600);
-            int minutes = (int)((elapsed_seconds % 3600) / 60);
-            int seconds = (int)(elapsed_seconds % 60);
-            
-            char duration_message[256];
-            if (hours > 0) {
-                sprintf(duration_message, "Sleep prevention stopped\nDuration: %dh %dm", hours, minutes);
-            } else {
-                sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
-            }
-            
             switch (finished_action) {
                 case SESSION_FINISHED_SLEEP: {
                     DEBUG_LOG("tray_duration_timer: session_finished_action=SLEEP, starting delayed sleep thread");
@@ -1639,11 +1625,6 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         tray_show_notification(tray, NOTIFY_EVENT_ERROR,
                             "Error", "Failed to start sleep timer", true);
                     } else {
-                        // Show notification about delayed sleep
-                        char sleep_message[512];
-                        sprintf(sleep_message, "%s\nSystem will sleep in 60 seconds...", duration_message);
-                        tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
-                            "Time's up!", sleep_message, true);
                         DEBUG_LOG("tray_duration_timer: delayed sleep thread created successfully");
                         // Countdown display will be started by delayed_sleep_thread
                     }
@@ -1706,11 +1687,6 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         tray_show_notification(tray, NOTIFY_EVENT_ERROR,
                             "Error", "Failed to start shutdown timer", true);
                     } else {
-                        // Show notification about delayed shutdown
-                        char shutdown_message[512];
-                        sprintf(shutdown_message, "%s\nSystem will shut down in 60 seconds...", duration_message);
-                        tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
-                            "Time's up!", shutdown_message, true);
                         DEBUG_LOG("tray_duration_timer: delayed shutdown thread created successfully");
                         // Countdown display will be started by delayed_shutdown_thread
                     }
@@ -1906,11 +1882,41 @@ static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction act
         "Shutdown Failed", "Failed to shut down system. Check permissions.", true);
 }
 
+// Stop joins the delayed worker before reporting cancellation or replacing the
+// session. Publish from that worker so a paused duration timer cannot announce
+// an action after cleanup, and never call Shell_NotifyIcon under the action lock.
+static void tray_announce_delayed_action(NoSleepTray* tray, bool shutdown) {
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool cancelled = tray->session_action_cancelled || tray->starting_nosleep ||
+                     ATOMIC_LOAD_BOOL(&tray->stopping);
+    ULONGLONG start_tick64 = tray->start_tick64;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    if (cancelled) return;
+
+    ULONGLONG elapsed_seconds = get_elapsed_milliseconds(start_tick64) / 1000;
+    int hours = (int)(elapsed_seconds / 3600);
+    int minutes = (int)((elapsed_seconds % 3600) / 60);
+    int seconds = (int)(elapsed_seconds % 60);
+    char duration_message[256];
+    if (hours > 0) {
+        sprintf(duration_message, "Sleep prevention stopped\nDuration: %dh %dm", hours, minutes);
+    } else {
+        sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
+    }
+    char message[512];
+    sprintf(message, "%s\nSystem will %s in 60 seconds...", duration_message,
+            shutdown ? "shut down" : "sleep");
+    tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
+                           "Time's up!", message, true);
+}
+
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
 
     DEBUG_LOG("delayed_sleep_thread: waiting 60 seconds before sleep");
     
+    tray_announce_delayed_action(tray, false);
+
     // Start countdown display
     tray_start_countdown(tray, SESSION_FINISHED_SLEEP);
 
@@ -1970,6 +1976,8 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
 
     DEBUG_LOG("delayed_shutdown_thread: waiting 60 seconds before shutdown");
     
+    tray_announce_delayed_action(tray, true);
+
     // Start countdown display
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     SessionFinishedAction action = tray->shutdown_action;
