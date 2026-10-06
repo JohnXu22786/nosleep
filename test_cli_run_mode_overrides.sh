@@ -158,6 +158,10 @@ typedef struct {
     int refresh_interval_seconds;
     int session_finished_action;
     int notification_mode;
+    bool startup_cli_overrides_set;
+    int notification_mode_cli_override;
+    int auto_check_interval_cli_override;
+    int check_updates_startup_cli_override;
     NotifyGroupManager notify_groups;
     int auto_check_interval;
     bool check_updates_on_startup;
@@ -193,9 +197,6 @@ bool tray_set_add_to_path(NoSleepTray *tray, bool enable) {
     ++path_set_calls;
     tray->add_to_path = enable;
     return true;
-}
-static bool notify_groups_set_active(NotifyGroupManager *manager, int index) {
-    (void)manager; (void)index; return true;
 }
 static int tray_save_settings_cli(int session_finished, int auto_start,
                                   int notification_mode, int auto_check_interval,
