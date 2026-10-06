@@ -3157,6 +3157,11 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
 }
 
+// Older SDK targets omit this message even though newer systems send it.
+#ifndef WM_DPICHANGED
+#define WM_DPICHANGED 0x02E0
+#endif
+
 // Resolve newer DPI APIs at runtime so older Windows versions keep working.
 static UINT custom_dialog_dpi(HWND hwnd) {
     typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
