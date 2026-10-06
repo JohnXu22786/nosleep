@@ -143,6 +143,8 @@ static int registry_close_count;
 static int notify_groups_save_count;
 static bool notify_groups_save_result;
 static int settings_warning_count;
+static int dialog_destroy_count;
+static bool requested_startup;
 static int startup_create_count;
 static int add_path_count;
 static int environment_open_count;
@@ -337,6 +339,25 @@ uintptr_t SendMessageTimeout(HWND hwnd, DWORD message, uintptr_t wparam,
     return 1;
 }
 
+
+#define BM_GETCHECK 1
+#define BST_CHECKED 1
+#define CB_GETCURSEL 2
+static HWND hGeneralTab;
+static HWND hIntervalCombo;
+static NoSleepTray *settings_tray;
+static intptr_t SendDlgItemMessage(HWND hwnd, int id, int message, int wparam, int lparam) {
+    (void)hwnd; (void)message; (void)wparam; (void)lparam;
+    return id == 2003 && requested_startup ? BST_CHECKED : 0;
+}
+static intptr_t SendMessage(HWND hwnd, int message, int wparam, int lparam) {
+    (void)hwnd; (void)message; (void)wparam; (void)lparam;
+    return 0;
+}
+static void tray_apply_auto_check_interval(NoSleepTray *tray, int sel) {
+    tray->auto_check_interval = sel;
+}
+static void DestroyWindow(HWND hwnd) { (void)hwnd; ++dialog_destroy_count; }
 static int failures;
 static void expect(bool condition, const char *message) {
     if (!condition) {
@@ -363,6 +384,26 @@ static void expect_write_failure(const char *name, int session_finished_action,
 }
 
 int main(void) {
+    for (int enable = 0; enable <= 1; ++enable) {
+        reset_mocks();
+        NoSleepTray dialog_tray = { .start_on_startup = !enable };
+        settings_tray = &dialog_tray;
+        requested_startup = enable;
+        dialog_destroy_count = 0;
+        failed_value_name = "nosleep";
+        registry_write_result = ERROR_ACCESS_DENIED;
+        registry_delete_result = ERROR_ACCESS_DENIED;
+        settings_ok(NULL);
+        expect(settings_warning_count == 1, "failed startup changes must show a warning");
+        expect(dialog_destroy_count == 0, "failed startup changes must keep settings open");
+        expect(dialog_tray.start_on_startup == !enable, "failed startup changes preserve actual state");
+        reset_mocks();
+        settings_ok(NULL);
+        expect(dialog_tray.start_on_startup == !!enable, "retry must apply the startup change");
+        expect(dialog_destroy_count == 1 && settings_warning_count == 0,
+               "successful retry must save and close without a warning");
+    }
+
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     NoSleepTray loaded_tray = {0};
@@ -615,6 +656,12 @@ add_app_to_path_test_function = extract_function("add_app_to_path").replace(
     "add_app_to_path", "add_app_to_path_regression", 1
 )
 
+ok_start = tray.index("case IDC_SETTINGS_OK:")
+ok_end = tray.index("case IDC_SETTINGS_CANCEL:", ok_start)
+ok_body = tray[ok_start:ok_end].split("{", 1)[1].rsplit("}", 1)[0]
+control_ids = "\n".join(re.findall(r"^#define IDC_\w+\s+\d+.*$", tray, re.M))
+ok_function = control_ids + "\nstatic void settings_ok(HWND hwnd) { do {\n" + ok_body + "\n} while (0); }\n"
+
 source = (
     windows_stubs
     + "\n"
@@ -640,6 +687,7 @@ source = (
     + "\n"
     + extract_function("tray_save_settings_cli")
     + "\n"
+    + ok_function
     + behavior_main
 )
 

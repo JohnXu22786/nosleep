@@ -3404,6 +3404,12 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     bool auto_start = (SendDlgItemMessage(hGeneralTab, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     if (auto_start != settings_tray->start_on_startup) {
                         tray_set_startup_enabled(settings_tray, auto_start);
+                        if (settings_tray->start_on_startup != auto_start) {
+                            MessageBox(hwnd,
+                                "The startup setting could not be changed. Please try again.",
+                                "nosleep - Startup update failed", MB_OK | MB_ICONWARNING);
+                            break;
+                        }
                     }
                     settings_tray->verbose = (SendDlgItemMessage(hGeneralTab, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     settings_tray->check_updates_on_startup = (SendDlgItemMessage(hGeneralTab, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
