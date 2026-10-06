@@ -1000,11 +1000,16 @@ static void tray_create_menu(NoSleepTray* tray) {
     
     // When finished submenu
     HMENU hSessionFinishedMenu = CreatePopupMenu();
-    if (hSessionFinishedMenu) {
-        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None");
-        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown");
-        AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep");
+    if (!hSessionFinishedMenu) {
+        DEBUG_LOG("tray_create_menu: Failed to create When finished submenu (error %lu)", GetLastError());
+        DestroyMenu(hSubMenu);
+        DestroyMenu(tray->hmenu);
+        tray->hmenu = NULL;
+        return;
     }
+    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_NONE ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_NONE, "None");
+    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SHUTDOWN, "Shutdown");
+    AppendMenu(hSessionFinishedMenu, MF_STRING | (tray->session_finished_action == SESSION_FINISHED_SLEEP ? MF_CHECKED : MF_UNCHECKED), IDM_SESSION_FINISHED_SLEEP, "Sleep");
     
     // Create main menu item text based on current selection
     char finished_text[64];
