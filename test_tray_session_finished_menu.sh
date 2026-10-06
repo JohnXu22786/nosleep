@@ -85,8 +85,8 @@ assert first_root_item and first_root_item.start() == finished_item.start(), (
 assert re.search(r"GetSubMenu\(tray->hmenu,\s*0\)", update), (
     "session-finished checkmarks must use the submenu at main-menu position 0"
 )
-assert len(re.findall(r"CheckMenuItem\(hSubMenu,\s*IDM_SESSION_FINISHED_", update)) == 3, (
-    "the update must refresh all three session-finished checkmarks"
+assert len(re.findall(r"CheckMenuItem\(hSubMenu,\s*IDM_SESSION_FINISHED_", update)) == 4, (
+    "the update must refresh all four session-finished checkmarks"
 )
 assert re.search(r"SetMenuItemInfo\(tray->hmenu,\s*0,\s*TRUE,\s*&mii\)", update), (
     "the selected action caption must update the When finished item at position 0"
