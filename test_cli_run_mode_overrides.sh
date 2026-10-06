@@ -185,6 +185,7 @@ static NoSleepTray test_tray;
 
 static NoSleepTray *tray_create(void) { return &test_tray; }
 static bool tray_init(NoSleepTray *tray) { (void)tray; return true; }
+static void tray_update_session_finished_menu(NoSleepTray *tray) { (void)tray; }
 static void tray_destroy(NoSleepTray *tray) { (void)tray; }
 static void tray_run(NoSleepTray *tray) { (void)tray; ++tray_run_calls; }
 static void tray_start_nosleep(NoSleepTray *tray, int duration) {
