@@ -1143,6 +1143,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             tray->timer_thread_id = GetThreadId(tray->timer_thread);
         } else {
             // Timer thread creation failed, stop nosleep thread and restore state
+            DWORD error = GetLastError();
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             tray_stop_nosleep(tray, false, true); // suppress notification
 
@@ -1151,7 +1152,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             
             char error_msg[256];
-            sprintf(error_msg, "Failed to create timer thread. Error code: %lu", GetLastError());
+            sprintf(error_msg, "Failed to create timer thread. Error code: %lu", error);
             tray_show_notification(tray, NOTIFY_EVENT_ERROR, "Error", error_msg, true);
             return;
         }
