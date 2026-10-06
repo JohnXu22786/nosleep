@@ -1101,6 +1101,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     ATOMIC_STORE_BOOL(&tray->core_init_failed, false);
     ATOMIC_STORE_BOOL(&tray->core_init_succeeded, false);
     ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, false);
+    tray->session_action_cancelled = false;
     tray->timer_thread_id = 0;
     tray->nosleep_thread_id = 0;
     tray->start_tick64 = GetTickCount64();
@@ -1189,6 +1190,11 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     }
     if (is_nosleep_thread) {
         ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
+    }
+
+    // Cancel even when expiry cleanup has not yet published its delayed action.
+    if (expected_thread_id == 0 && !timer_expired) {
+        tray->session_action_cancelled = true;
     }
 
     DWORD current_thread_id = GetCurrentThreadId();
@@ -1501,7 +1507,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     bool stale_session;
                     bool session_starting;
                     AcquireSRWLockExclusive(&tray->delayed_action_lock);
-                    stale_session = (tray->timer_thread_id != timer_thread_id);
+                    stale_session = (tray->timer_thread_id != timer_thread_id) ||
+                                    tray->session_action_cancelled;
                     core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
                     core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
                     nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
@@ -1564,7 +1571,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     bool shutdown_stale_session;
                     bool shutdown_session_starting;
                     AcquireSRWLockExclusive(&tray->delayed_action_lock);
-                    shutdown_stale_session = (tray->timer_thread_id != timer_thread_id);
+                    shutdown_stale_session = (tray->timer_thread_id != timer_thread_id) ||
+                                    tray->session_action_cancelled;
                     shutdown_core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
                     shutdown_core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
                     shutdown_nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
@@ -4412,9 +4420,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                                 ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active) ? "true" : "false",
                                 sleep_timer_active ? "active" : "inactive",
                                 shutdown_timer_active ? "active" : "inactive");
-                        if (tray_has_stop_work(tray)) {
-                            tray_stop_nosleep(tray, false, false); // show notification when manually stopping
-                        }
+                        tray_stop_nosleep(tray, false, false); // show notification when manually stopping
                     }
                     break;
                 case IDM_EXIT:
