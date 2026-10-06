@@ -18,6 +18,7 @@ typedef void *HKEY;
 #define WINAPI
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
+#define ERROR_MORE_DATA 234
 #define REG_OPTION_NON_VOLATILE 0
 #define KEY_WRITE 0
 #define KEY_READ 0
