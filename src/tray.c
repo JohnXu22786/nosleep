@@ -1018,13 +1018,13 @@ static void tray_create_menu(NoSleepTray* tray) {
     char finished_text[64];
     switch (tray->session_finished_action) {
         case SESSION_FINISHED_NONE:
-            snprintf(finished_text, sizeof(finished_text), "When finished(None)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (None)");
             break;
         case SESSION_FINISHED_SHUTDOWN:
-            snprintf(finished_text, sizeof(finished_text), "When finished(Shutdown)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown)");
             break;
         case SESSION_FINISHED_SLEEP:
-            snprintf(finished_text, sizeof(finished_text), "When finished(Sleep)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Sleep)");
             break;
         default:
             snprintf(finished_text, sizeof(finished_text), "When finished");
@@ -2293,13 +2293,13 @@ static void tray_update_session_finished_menu(NoSleepTray* tray) {
     char finished_text[64];
     switch (tray->session_finished_action) {
         case SESSION_FINISHED_NONE:
-            snprintf(finished_text, sizeof(finished_text), "When finished(None)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (None)");
             break;
         case SESSION_FINISHED_SHUTDOWN:
-            snprintf(finished_text, sizeof(finished_text), "When finished(Shutdown)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Shutdown)");
             break;
         case SESSION_FINISHED_SLEEP:
-            snprintf(finished_text, sizeof(finished_text), "When finished(Sleep)");
+            snprintf(finished_text, sizeof(finished_text), "When finished (Sleep)");
             break;
         default:
             snprintf(finished_text, sizeof(finished_text), "When finished");
