@@ -50,6 +50,9 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 static HICON system_icon_default = NULL;
 static HICON system_icon_shield = NULL;
 static bool update_check_in_progress = false;
+// Settings/About procedures share static state; allow only one tray dialog pump.
+// Acquire before CreateWindowEx, which can synchronously dispatch window messages.
+static bool tray_dialog_open = false;
 
 struct TrayUpdateCheckTask {
     HWND hwnd;
@@ -3700,7 +3703,8 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
 }
 
 void tray_show_settings_dialog(NoSleepTray* tray) {
-    if (!tray) return;
+    if (!tray || tray_dialog_open) return;
+    tray_dialog_open = true;
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
 
@@ -3733,6 +3737,7 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
     }
 
     UnregisterClass("NoSleepSettingsDialog", hInstance);
+    tray_dialog_open = false;
 }
 
 // === Notification Group Edit Dialog ===
@@ -4021,7 +4026,8 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
 }
 
 void tray_show_about_dialog(NoSleepTray* tray) {
-    if (!tray) return;
+    if (!tray || tray_dialog_open) return;
+    tray_dialog_open = true;
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
     int result = 0;
@@ -4054,6 +4060,7 @@ void tray_show_about_dialog(NoSleepTray* tray) {
     }
 
     UnregisterClass("NoSleepAboutDialog", hInstance);
+    tray_dialog_open = false;
 
     if (result == 1) {
         tray_check_for_updates(tray, false);
