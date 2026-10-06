@@ -13,6 +13,7 @@ BUILD_LOG="$TMP_DIR/build.log"
 
 mkdir -p "$PROJECT_DIR/src" "$FAKE_BIN"
 cp "$ROOT_DIR/Makefile" "$PROJECT_DIR/Makefile"
+cp "$ROOT_DIR/no-sleeping_9260684.ico" "$PROJECT_DIR/"
 cp "$ROOT_DIR/src/resources.rc" "$PROJECT_DIR/src/resources.rc"
 cp "$ROOT_DIR"/src/*.h "$PROJECT_DIR/src/"
 

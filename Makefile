@@ -34,7 +34,7 @@ $(TARGET): $(OBJECTS) $(RESOURCE_OBJ) | $(BINDIR)
 $(OBJDIR)/%.o: $(SRCDIR)/%.c $(HEADERS) $(VERSION_STAMP) | $(OBJDIR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(RESOURCE_OBJ): $(SRCDIR)/resources.rc $(HEADERS) $(VERSION_STAMP) | $(OBJDIR)
+$(RESOURCE_OBJ): $(SRCDIR)/resources.rc no-sleeping_9260684.ico $(HEADERS) $(VERSION_STAMP) | $(OBJDIR)
 	sed 's/@VERSION_COMMA@/$(VERSION_COMMA)/g; s/@VERSION_STRING@/$(VERSION)/g' $(SRCDIR)/resources.rc > $(OBJDIR)/resources_built.rc
 	$(RC) --include-dir $(SRCDIR) -i $(OBJDIR)/resources_built.rc -o $@
 
