@@ -2305,7 +2305,7 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     const char* stop_text = NULL;
     if (delayed_sleep_countdown_active) {
         // Check if it's shutdown or sleep countdown
-        if (tray->session_finished_action == SESSION_FINISHED_SHUTDOWN) {
+        if (tray->countdown_action == SESSION_FINISHED_SHUTDOWN) {
             stop_text = "Cancel shutdown";
         } else {
             stop_text = "Cancel sleep";
