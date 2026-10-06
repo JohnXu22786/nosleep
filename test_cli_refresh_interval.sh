@@ -19,7 +19,7 @@ assert re.search(
     r"sizeof\(value\),\s*NULL,\s*NULL\)\s*==\s*0\s*\|\|\s*"
     r"!cli_parse_refresh_interval\(value,\s*&opts->interval\)\)\s*\{\s*"
     r"return fail_cli_parse\(error,\s*CLI_PARSE_ERROR_INVALID_VALUE,\s*option,\s*"
-    r"value_wide,\s*L\"a positive integer number of seconds\"\);\s*\}",
+    r"value_wide,\s*L\"an integer number of seconds from 1 to 2147483\"\);\s*\}",
     branch_match.group(0),
 ), "the --interval branch must reject malformed values and retain them for diagnostics"
 assert re.search(
