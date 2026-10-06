@@ -357,6 +357,9 @@ static void test_persistent_flags_require_configure_mode(void) {
     assert(wcscmp(error.option, L"--auto-start") == 0);
 
     assert(!run_options.configure_mode);
+    // The parser rejects this request before tray dispatch. Keep the extracted
+    // tray entry point compiled even though this case must not call it.
+    (void)run_tray_mode;
     assert(tray_run_calls == 0);
     assert(startup_set_calls == 0);
     assert(path_set_calls == 0);
