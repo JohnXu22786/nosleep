@@ -2837,9 +2837,10 @@ static bool set_startup_registry(bool enable) {
 static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD default_value) {
     DWORD size = sizeof(DWORD);
     DWORD data = 0;
-    LONG result = hKey ? RegQueryValueEx(hKey, name, NULL, NULL, (LPBYTE)&data, &size)
+    DWORD type = 0;
+    LONG result = hKey ? RegQueryValueEx(hKey, name, NULL, &type, (LPBYTE)&data, &size)
                        : ERROR_FILE_NOT_FOUND;
-    if (result == ERROR_SUCCESS) {
+    if (result == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(DWORD)) {
         *value = data;
     } else {
         *value = default_value;
