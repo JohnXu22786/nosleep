@@ -70,7 +70,7 @@ static const char* const HELP_TEXT =
     "  -d, --duration MINUTES    Duration in minutes to prevent sleep\n"
     "                            (positive integer, 0 or negative = indefinite)\n"
     "  -i, --interval SECONDS    Interval in seconds to refresh sleep prevention\n"
-    "                            (default: 20)\n"
+    "                            (integer from 1 to 2147483; default: 20)\n"
     "  -p, --prevent-display     Enable display sleep prevention for this run\n"
     "      --no-prevent-display  Disable display sleep prevention for this run\n"
     "  -a, --away-mode           Enable away mode for this run\n"
@@ -468,7 +468,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
         else if (strcmp(arg, "--interval") == 0 || strcmp(arg, "-i") == 0) {
             if (i + 1 >= argc) {
                 return fail_cli_parse(error, CLI_PARSE_ERROR_MISSING_VALUE, option, NULL,
-                                      L"a positive integer number of seconds");
+                                      L"an integer number of seconds from 1 to 2147483");
             }
             char value[256];
             const wchar_t* value_wide = argv[++i];
@@ -476,7 +476,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
                                     sizeof(value), NULL, NULL) == 0 ||
                 !cli_parse_refresh_interval(value, &opts->interval)) {
                 return fail_cli_parse(error, CLI_PARSE_ERROR_INVALID_VALUE, option, value_wide,
-                                      L"a positive integer number of seconds");
+                                      L"an integer number of seconds from 1 to 2147483");
             }
         }
         else if (strcmp(arg, "--prevent-display") == 0 || strcmp(arg, "-p") == 0) {
