@@ -2759,7 +2759,8 @@ static bool set_startup_registry(bool enable) {
 static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD default_value) {
     DWORD size = sizeof(DWORD);
     DWORD data = 0;
-    LONG result = RegQueryValueEx(hKey, name, NULL, NULL, (LPBYTE)&data, &size);
+    LONG result = hKey ? RegQueryValueEx(hKey, name, NULL, NULL, (LPBYTE)&data, &size)
+                       : ERROR_FILE_NOT_FOUND;
     if (result == ERROR_SUCCESS) {
         *value = data;
     } else {
@@ -2772,7 +2773,8 @@ void tray_load_settings(NoSleepTray* tray) {
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL);
-    if (result != ERROR_SUCCESS) return;
+    // Apply the per-setting defaults when the settings key is unavailable.
+    if (result != ERROR_SUCCESS) hKey = NULL;
 
     DWORD val;
     settings_read_dword(hKey, "prevent_display", &val, 0);
@@ -2799,7 +2801,7 @@ void tray_load_settings(NoSleepTray* tray) {
     settings_read_dword(hKey, "session_finished_action", &val, (DWORD)SESSION_FINISHED_NONE);
     tray->session_finished_action = (SessionFinishedAction)val;
 
-    RegCloseKey(hKey);
+    if (hKey) RegCloseKey(hKey);
 }
 
 bool tray_save_settings(NoSleepTray* tray) {
