@@ -43,6 +43,29 @@ mingw32-make clean    # Remove build artifacts
 mingw32-make run      # Compile and run in tray mode
 ```
 
+### Cross-compiling on Ubuntu/Linux
+
+You can build the Windows executable on Ubuntu without a Windows development environment. Install the build dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y make mingw-w64
+```
+
+From the project root, use the same compiler and resource compiler overrides as CI:
+
+```bash
+make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres
+```
+
+The output is `bin/nosleep.exe`, a 64-bit Windows executable. The default version is `0.0.0`; to set a release version, use the same `VERSION` override as the release workflow (without the tag's leading `v`):
+
+```bash
+make CC=x86_64-w64-mingw32-gcc RC=x86_64-w64-mingw32-windres VERSION=1.2.3
+```
+
+Cross-compiling creates the executable but does not verify its Windows runtime behavior. Copy it to a Windows PC to run it; `make run`, `make run-cli`, and `make test` require a Windows runtime.
+
 ### Manual Compilation
 
 If you prefer to compile manually, run these commands from the project root in an MSYS2 MinGW shell with MinGW's `gcc` and `windres` in your PATH. The version below matches the Makefile default; update `VERSION` to change the executable and resource versions together:
