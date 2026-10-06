@@ -1741,32 +1741,10 @@ static void trigger_system_sleep(NoSleepTray* tray) {
         return;
     }
     
-    // First method failed, try alternative method
     DWORD error = GetLastError();
     DEBUG_LOG("trigger_system_sleep: SetSuspendState failed with error %lu", error);
-    DEBUG_LOG("trigger_system_sleep: trying alternative method via rundll32");
-    
-    // Try alternative method using rundll32
-    STARTUPINFO si = {0};
-    PROCESS_INFORMATION pi = {0};
-    si.cb = sizeof(si);
-    
-    // Create command: rundll32.exe powrprof.dll,SetSuspendState 0,0,0
-    char cmd[] = "rundll32.exe powrprof.dll,SetSuspendState 0,0,0";
-    
-    if (CreateProcess(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        DEBUG_LOG("trigger_system_sleep: rundll32 process created (PID: %lu)", pi.dwProcessId);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    } else {
-        DWORD alt_error = GetLastError();
-        DEBUG_LOG("trigger_system_sleep: rundll32 also failed with error %lu", alt_error);
-        DEBUG_LOG("trigger_system_sleep: both sleep methods failed");
-        
-        // Both methods failed, show notification to user
-        tray_show_notification(tray, NOTIFY_EVENT_ACTION_FAILED,
-            "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
-    }
+    tray_show_notification(tray, NOTIFY_EVENT_ACTION_FAILED,
+        "Sleep Failed", "Failed to put system to sleep. Check power settings.", true);
 }
 
 static void trigger_system_shutdown(NoSleepTray* tray) {
