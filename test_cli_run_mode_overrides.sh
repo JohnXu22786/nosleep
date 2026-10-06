@@ -210,9 +210,7 @@ static int tray_save_settings_cli(int session_finished, int auto_start,
     saved_add_to_path = add_to_path;
     return 1;
 }
-static bool AttachConsole(DWORD process_id) {
-    (void)process_id; return false;
-}
+static void prepare_cli_output(void) {}
 static void OutputDebugString(const char *message) { (void)message; }
 static int MessageBox(HWND hwnd, const char *text, const char *title,
                       unsigned int flags) {
