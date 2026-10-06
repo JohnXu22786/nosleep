@@ -51,7 +51,8 @@ typedef enum {
     CLI_PARSE_ERROR_UNKNOWN_OPTION,
     CLI_PARSE_ERROR_MISSING_VALUE,
     CLI_PARSE_ERROR_INVALID_VALUE,
-    CLI_PARSE_ERROR_INVALID_ENUM
+    CLI_PARSE_ERROR_INVALID_ENUM,
+    CLI_PARSE_ERROR_REQUIRES_CONFIGURE
 } CLIParseErrorKind;
 
 typedef struct {
@@ -88,12 +89,14 @@ static const char* const HELP_TEXT =
     "                            (all, critical, none)\n"
     "  --auto-check-interval I   Update check interval\n"
     "                            (never, daily, weekly)\n"
-    "  --auto-start              Enable auto-start with Windows\n"
-    "  --no-auto-start           Disable auto-start with Windows\n"
+    "  --auto-start              Enable auto-start with Windows (requires --configure)\n"
+    "  --no-auto-start           Disable auto-start with Windows (requires --configure)\n"
     "  --check-updates-startup   Enable check for updates on startup\n"
     "  --no-check-updates-startup Disable check for updates on startup\n"
     "  --add-to-path             Add nosleep directory to environment PATH\n"
+    "                            (requires --configure)\n"
     "  --no-add-to-path          Remove nosleep directory from environment PATH\n"
+    "                            (requires --configure)\n"
     "  --configure               Save settings to registry and exit\n"
     "                            (use with above options to persist them)\n"
     "\n"
@@ -175,6 +178,11 @@ static wchar_t* format_cli_parse_error(const CLIParseError* error) {
                 written = swprintf(message, capacity,
                                    L"Invalid value \"%ls\" for option \"%ls\"; expected one of: %ls.\n",
                                    value, option, expected);
+                break;
+            case CLI_PARSE_ERROR_REQUIRES_CONFIGURE:
+                written = swprintf(message, capacity,
+                                   L"Option \"%ls\" requires --configure. Add --configure to save this setting and exit.\n",
+                                   option);
                 break;
             default:
                 break;
@@ -587,7 +595,19 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
             return fail_cli_parse(error, CLI_PARSE_ERROR_UNKNOWN_OPTION, option, NULL, NULL);
         }
     }
-    
+    if (!opts->configure_mode && !opts->show_version) {
+        if (opts->auto_start != CLI_UNSET) {
+            return fail_cli_parse(error, CLI_PARSE_ERROR_REQUIRES_CONFIGURE,
+                                  opts->auto_start == CLI_ENABLE ? L"--auto-start" : L"--no-auto-start",
+                                  NULL, NULL);
+        }
+        if (opts->add_to_path != CLI_UNSET) {
+            return fail_cli_parse(error, CLI_PARSE_ERROR_REQUIRES_CONFIGURE,
+                                  opts->add_to_path == CLI_ENABLE ? L"--add-to-path" : L"--no-add-to-path",
+                                  NULL, NULL);
+        }
+    }
+
     return 0;
 }
 
