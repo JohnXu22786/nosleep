@@ -279,13 +279,15 @@ LONG RegCloseKey(HKEY key) {
 
 
 LONG RegOpenKeyExW(HKEY root, const wchar_t *path, DWORD reserved, DWORD access, HKEY *key) {
-    (void)path;
-    return RegOpenKeyEx(root, "Environment", reserved, access, key);
+    const char *key_path = wcscmp(path, L"Environment") == 0 ? "Environment" :
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    return RegOpenKeyEx(root, key_path, reserved, access, key);
 }
 LONG RegCreateKeyExW(HKEY root, const wchar_t *path, DWORD reserved, void *class_name,
                      DWORD options, DWORD access, void *security, HKEY *key, DWORD *disposition) {
-    (void)path;
-    return RegCreateKeyEx(root, "Environment", reserved, class_name, options, access,
+    const char *key_path = wcscmp(path, L"Environment") == 0 ? "Environment" :
+        "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    return RegCreateKeyEx(root, key_path, reserved, class_name, options, access,
                           security, key, disposition);
 }
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, DWORD *reserved, DWORD *type,
@@ -295,15 +297,19 @@ LONG RegQueryValueExW(HKEY key, const wchar_t *name, DWORD *reserved, DWORD *typ
 }
 LONG RegSetValueExW(HKEY key, const wchar_t *name, DWORD reserved, DWORD type,
                     const BYTE *value, DWORD size) {
+    const char *value_name = wcscmp(name, L"Path") == 0 ? "Path" : "nosleep";
+    return RegSetValueEx(key, value_name, reserved, type, value, size);
+}
+LONG RegDeleteValueW(HKEY key, const wchar_t *name) {
     (void)name;
-    return RegSetValueEx(key, "Path", reserved, type, value, size);
+    return RegDeleteValue(key, "nosleep");
 }
 #define SendMessageTimeoutW SendMessageTimeout
 
-static char *get_exe_path(void) {
-    const char *path = "C:\\NoSleep\\nosleep.exe";
-    char *copy = (char *)malloc(strlen(path) + 1);
-    if (copy) strcpy(copy, path);
+static wchar_t *get_exe_path_w(void) {
+    const wchar_t *path = L"C:\\NoSleep\\nosleep.exe";
+    wchar_t *copy = (wchar_t *)malloc((wcslen(path) + 1) * sizeof(wchar_t));
+    if (copy) wcscpy(copy, path);
     return copy;
 }
 
