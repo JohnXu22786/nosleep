@@ -3483,13 +3483,21 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 case IDC_SETTINGS_OK:
                 {
                     if (!settings_tray) break;
-                    bool path_change_failed = false;
-                    
-                    // Read general tab settings (controls are children of hGeneralTab)
-                    settings_tray->prevent_display = (SendDlgItemMessage(hGeneralTab, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    settings_tray->away_mode = (SendDlgItemMessage(hGeneralTab, IDC_AWAY_MODE, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    // Stage general preferences without changing live state or timers.
+                    NoSleepTray proposed = *settings_tray;
+                    proposed.prevent_display = (SendDlgItemMessage(hGeneralTab, IDC_PREVENT_DISPLAY, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    proposed.away_mode = (SendDlgItemMessage(hGeneralTab, IDC_AWAY_MODE, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    proposed.verbose = (SendDlgItemMessage(hGeneralTab, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    proposed.check_updates_on_startup = (SendDlgItemMessage(hGeneralTab, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    if (hIntervalCombo) {
+                        int sel = (int)SendMessage(hIntervalCombo, CB_GETCURSEL, 0, 0);
+                        if (sel != CB_ERR) proposed.auto_check_interval = sel;
+                    }
+                    proposed.add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
                     bool auto_start = (SendDlgItemMessage(hGeneralTab, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    if (auto_start != settings_tray->start_on_startup) {
+                    bool startup_changed = auto_start != settings_tray->start_on_startup;
+                    if (startup_changed) {
                         tray_set_startup_enabled(settings_tray, auto_start);
                         if (settings_tray->start_on_startup != auto_start) {
                             MessageBox(hwnd,
@@ -3498,21 +3506,23 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                             break;
                         }
                     }
-                    settings_tray->verbose = (SendDlgItemMessage(hGeneralTab, IDC_VERBOSE_LOGGING, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    settings_tray->check_updates_on_startup = (SendDlgItemMessage(hGeneralTab, IDC_CHECK_UPDATES_STARTUP, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    if (hIntervalCombo) {
-                        int sel = (int)SendMessage(hIntervalCombo, CB_GETCURSEL, 0, 0);
-                        tray_apply_auto_check_interval(settings_tray, sel);
-                    }
-                    bool new_add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                    if (new_add_to_path != settings_tray->add_to_path) {
-                        path_change_failed = !tray_set_add_to_path(settings_tray, new_add_to_path);
-                    }
 
-                    if (!tray_save_settings_with_warning(hwnd, settings_tray)) {
+                    if (!tray_save_settings(&proposed)) {
+                        MessageBox(hwnd,
+                            startup_changed
+                                ? "Some settings could not be saved. General preferences were not applied to this session, but some saved values may have changed. The startup setting was changed and Cancel will not undo it."
+                                : "Some settings could not be saved. General preferences were not applied to this session, but some saved values may have changed. Please try again.",
+                            "nosleep - Settings save failed", MB_OK | MB_ICONWARNING);
                         break;
                     }
-                    if (path_change_failed) {
+
+                    settings_tray->prevent_display = proposed.prevent_display;
+                    settings_tray->away_mode = proposed.away_mode;
+                    settings_tray->verbose = proposed.verbose;
+                    settings_tray->check_updates_on_startup = proposed.check_updates_on_startup;
+                    tray_apply_auto_check_interval(settings_tray, proposed.auto_check_interval);
+                    if (proposed.add_to_path != settings_tray->add_to_path &&
+                        !tray_set_add_to_path(settings_tray, proposed.add_to_path)) {
                         MessageBox(hwnd,
                             "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
                             "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
