@@ -32,6 +32,7 @@ typedef intptr_t LPARAM;
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_MORE_DATA 234
 #define REG_OPTION_NON_VOLATILE 0
+#define REG_SZ 1
 #define REG_EXPAND_SZ 2
 #define HWND_BROADCAST 0
 #define WM_SETTINGCHANGE 0
@@ -39,9 +40,11 @@ typedef intptr_t LPARAM;
 static const wchar_t *exe = L"C:\\安装\\😀\\nosleep.exe";
 static wchar_t registry[2048];
 static DWORD registry_bytes;
+static DWORD registry_type = REG_EXPAND_SZ;
 static int ansi_calls;
 static int writes;
 static int grow_on_read;
+static int registry_exists = 1;
 DWORD GetModuleFileNameW(void *module, wchar_t *out, DWORD size) {
     (void)module;
     if (wcslen(exe) >= size) return size;
@@ -72,8 +75,8 @@ LONG RegCreateKeyEx(HKEY root, const char *name, DWORD a, void *c, DWORD d,
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, void *reserved, DWORD *type,
                      LPBYTE out, DWORD *size) {
     (void)key; (void)reserved; assert(wcscmp(name, L"Path") == 0);
-    if (type) *type = REG_EXPAND_SZ;
-    if (!registry_bytes) return ERROR_FILE_NOT_FOUND;
+    if (type) *type = registry_type;
+    if (!registry_exists) return ERROR_FILE_NOT_FOUND;
     if (out && grow_on_read) {
         wcscat(registry, L";C:\\新增");
         registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
@@ -93,10 +96,10 @@ LONG RegQueryValueEx(HKEY key, const char *name, void *reserved, DWORD *type,
 }
 LONG RegSetValueExW(HKEY key, const wchar_t *name, DWORD a, DWORD type,
                    LPBYTE data, DWORD size) {
-    (void)key; (void)a; assert(wcscmp(name, L"Path") == 0); assert(type == REG_EXPAND_SZ);
+    (void)key; (void)a; assert(wcscmp(name, L"Path") == 0); assert(type == registry_type);
     assert(size <= sizeof(registry)); assert(size % sizeof(wchar_t) == 0);
     assert(((wchar_t *)data)[size / sizeof(wchar_t) - 1] == 0);
-    memcpy(registry, data, size); registry_bytes = size; ++writes; return ERROR_SUCCESS;
+    memcpy(registry, data, size); registry_bytes = size; registry_exists = 1; ++writes; return ERROR_SUCCESS;
 }
 LONG RegSetValueEx(HKEY key, const char *name, DWORD a, DWORD type, LPBYTE data, DWORD size) {
     (void)key; (void)name; (void)a; (void)type; (void)data; (void)size;
@@ -122,6 +125,7 @@ int main(void) {
     assert(remove_app_from_path());
     assert(writes == previous_writes + 1);
     registry_bytes = 0;
+    registry_exists = 0;
     assert(add_app_to_path());
     assert(wcscmp(registry, L"C:\\安装\\😀") == 0);
     assert(remove_app_from_path());
@@ -148,6 +152,18 @@ int main(void) {
     assert(!add_app_to_path());
     assert(!remove_app_from_path());
     assert(writes == previous_writes);
+    // A literal %NAME% entry in REG_SZ must retain its non-expanding type.
+    registry_type = REG_SZ;
+    wcscpy(registry, L"%USERPROFILE%\\工具");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    assert(add_app_to_path());
+    assert(wcscmp(registry, L"%USERPROFILE%\\工具;C:\\安装\\😀") == 0);
+    assert(remove_app_from_path());
+    assert(wcscmp(registry, L"%USERPROFILE%\\工具") == 0);
+    // An existing zero-byte REG_SZ is still an existing typed value.
+    registry_bytes = 0;
+    assert(add_app_to_path());
+    assert(remove_app_from_path());
     puts("PASS: Unicode PATH add/remove preserves existing entries and registry byte sizes");
 }
 '''
