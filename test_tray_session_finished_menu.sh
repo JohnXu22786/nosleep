@@ -106,7 +106,7 @@ for command, action in (
     assignment = re.search(
         rf"tray->session_finished_action\s*=\s*{action}\s*;", case["body"]
     )
-    save = re.search(r"tray_save_settings\(tray\)\s*;", case["body"])
+    save = re.search(r"tray_save_settings_with_warning\(hwnd,\s*tray\)\s*;", case["body"])
     assert assignment, f"{command} must select {action}"
     assert save and assignment.start() < save.start(), (
         f"{command} must persist the selected session-finished action"
