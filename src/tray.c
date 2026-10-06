@@ -514,9 +514,10 @@ static HICON icon_to_grayscale(HICON hColorIcon) {
     DWORD* pixels = (DWORD*)pBits;
     for (int i = 0; i < width * height; i++) {
         DWORD pixel = pixels[i];
-        BYTE r = GetRValue(pixel);
-        BYTE g = GetGValue(pixel);
-        BYTE b = GetBValue(pixel);
+        // A 32-bit BI_RGB DIB stores bytes in BGRA order.
+        BYTE r = (pixel >> 16) & 0xFF;
+        BYTE g = (pixel >> 8) & 0xFF;
+        BYTE b = pixel & 0xFF;
         BYTE a = (pixel >> 24) & 0xFF; // Alpha channel
         
         // Calculate grayscale luminance (standard formula)
