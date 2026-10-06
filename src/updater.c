@@ -1126,7 +1126,7 @@ static bool create_update_batch_script(const char* current_exe_path,
     // Build the batch script
     // The script:
     // 1. Waits up to 60 seconds for this nosleep process to exit
-    // 2. Stages the download beside the EXE and retains a backup until replacement succeeds
+    // 2. Stages the download beside the EXE and retains a backup until relaunch succeeds
     // 3. Starts the new EXE with the original command-line arguments
     // 4. Deletes itself
     
@@ -1188,7 +1188,6 @@ static bool create_update_batch_script(const char* current_exe_path,
         "if errorlevel 1 goto CLEAN_FAILED\r\n"
         "move /Y \"%s.update\" \"%s\" > nul\r\n"
         "if errorlevel 1 goto ROLLBACK\r\n"
-        "del \"%s.backup\" > nul 2>&1\r\n"
         "goto START\r\n"
         ":ROLLBACK\r\n"
         "move /Y \"%s.backup\" \"%s\" > nul\r\n"
@@ -1205,12 +1204,22 @@ static bool create_update_batch_script(const char* current_exe_path,
         "pause\r\n"
         "exit /b 1\r\n"
         ":START\r\n"
-        "echo Update complete! Starting nosleep...\r\n"
+        "echo Starting updated nosleep...\r\n"
         "start /wait \"\" \"%s\" %s \"%s\"\r\n"
-        "echo Cleaning up...\r\n"
+        "if not \"%%errorlevel%%\"==\"0\" goto START_FAILED\r\n"
+        "echo Update complete! Cleaning up...\r\n"
+        "del \"%s.backup\" > nul 2>&1\r\n"
         "del \"%s\" > nul 2>&1\r\n"
         "del \"%s\" > nul 2>&1\r\n"
-        "del \"%%~f0\" > nul 2>&1\r\n",
+        "del \"%%~f0\" > nul 2>&1\r\n"
+        "exit /b 0\r\n"
+        ":START_FAILED\r\n"
+        "echo Failed to start the updated application. Restoring the original executable...\r\n"
+        "move /Y \"%s.backup\" \"%s\" > nul\r\n"
+        "if errorlevel 1 echo Restore failed. The original executable is retained with a .backup suffix.\r\n"
+        "echo Recovery files have been retained. Please start nosleep manually.\r\n"
+        "pause\r\n"
+        "exit /b 1\r\n",
         (unsigned long)GetCurrentProcessId(), // wait only for the updating process
         escaped_exe_name,            // for find
         escaped_current_exe_path,    // reject a pre-existing staging file
@@ -1221,7 +1230,6 @@ static bool create_update_batch_script(const char* current_exe_path,
         escaped_current_exe_path,    // backup on the same volume
         escaped_current_exe_path,    // staged executable to install
         escaped_current_exe_path,    // destination (original EXE path)
-        escaped_current_exe_path,    // remove backup after successful replacement
         escaped_current_exe_path,    // restore original on installation failure
         escaped_current_exe_path,    // original EXE path for rollback
         escaped_current_exe_path,    // remove failed staging file
@@ -1230,8 +1238,11 @@ static bool create_update_batch_script(const char* current_exe_path,
         escaped_current_exe_path,    // executable to start the argument-file relay
         escaped_internal_marker,     // select relay mode in the updated executable
         escaped_arguments_path,      // original command-line arguments
-        escaped_arguments_path,      // remove original arguments after the relay exits
-        escaped_downloaded_path      // delete downloaded file
+        escaped_current_exe_path,    // remove backup after successful relaunch
+        escaped_arguments_path,      // remove original arguments after the relay succeeds
+        escaped_downloaded_path,     // delete downloaded file
+        escaped_current_exe_path,    // restore original on relaunch failure
+        escaped_current_exe_path     // original EXE path for rollback
     );
 
     free(escaped_current_exe_path);
