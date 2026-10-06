@@ -68,7 +68,7 @@ static int test_read_error_after_partial_data(void) {
     char buffer[16];
 
     if (updater_copy_stream(fake_read, &reader, fake_write, &writer,
-                            buffer, sizeof(buffer), NULL, NULL)) {
+                            buffer, sizeof(buffer), sizeof(writer.data), NULL, NULL)) {
         fprintf(stderr, "read error after partial data was reported as success\n");
         return 1;
     }
@@ -87,7 +87,7 @@ static int test_clean_eof_after_data(void) {
     char buffer[16];
 
     if (!updater_copy_stream(fake_read, &reader, fake_write, &writer,
-                             buffer, sizeof(buffer), NULL, NULL)) {
+                             buffer, sizeof(buffer), sizeof(writer.data), NULL, NULL)) {
         fprintf(stderr, "clean EOF after data was rejected\n");
         return 1;
     }
@@ -107,7 +107,7 @@ static int test_progress_reports_cumulative_bytes(void) {
     char buffer[8];
 
     if (!updater_copy_stream(fake_read, &reader, fake_write, &writer,
-                             buffer, sizeof(buffer), fake_progress, &progress)) {
+                             buffer, sizeof(buffer), sizeof(writer.data), fake_progress, &progress)) {
         fprintf(stderr, "stream with progress callback was rejected\n");
         return 1;
     }
@@ -132,7 +132,7 @@ static int test_progress_callback_cancels_stream(void) {
     char buffer[8];
 
     if (updater_copy_stream(fake_read, &reader, fake_write, &writer,
-                            buffer, sizeof(buffer), fake_progress, &progress)) {
+                            buffer, sizeof(buffer), sizeof(writer.data), fake_progress, &progress)) {
         fprintf(stderr, "canceled stream was reported as success\n");
         return 1;
     }
@@ -144,13 +144,33 @@ static int test_progress_callback_cancels_stream(void) {
     return 0;
 }
 
+static int test_size_limit(size_t length, size_t chunk, size_t limit,
+                           bool expected_ok, size_t expected_written) {
+    static const char content[] = "123456789";
+    FakeReader reader = {content, length, 0, 0, false, chunk};
+    FakeWriter writer = {{0}, 0};
+    char buffer[16];
+    bool ok = updater_copy_stream(fake_read, &reader, fake_write, &writer,
+                                  buffer, sizeof(buffer), limit, NULL, NULL);
+    if (ok != expected_ok || writer.length != expected_written) {
+        fprintf(stderr, "size limit failed: length=%zu chunk=%zu limit=%zu written=%zu\n",
+                length, chunk, limit, writer.length);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += test_read_error_after_partial_data();
     failures += test_clean_eof_after_data();
     failures += test_progress_reports_cumulative_bytes();
     failures += test_progress_callback_cancels_stream();
+    failures += test_size_limit(8, 4, 8, true, 8);
+    failures += test_size_limit(9, 4, 8, false, 8);
+    failures += test_size_limit(9, 0, 8, false, 0);
+    failures += test_size_limit(1, 0, 0, false, 0);
     printf("updater stream tests: %d passed, %d failed\n",
-           4 - failures, failures);
+           8 - failures, failures);
     return failures == 0 ? 0 : 1;
 }
