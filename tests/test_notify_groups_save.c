@@ -608,18 +608,53 @@ static int test_load_skips_whitespace_only_group_and_maps_active_selection(void)
     return 0;
 }
 
-static int test_load_stops_on_non_missing_group_open_error(void) {
+static int test_partial_load_cannot_overwrite_persisted_groups(void) {
     reset_registry();
     stored_root_exists = true;
     seed_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    seed_stored_group(1, "Unread group", 0x233u, 0);
     seed_stored_group(2, "Later group", 0x155u, 0);
+    has_active_index = true;
+    stored_active_index = 2;
+    StoredRegistryTree original = stored_trees[REGISTRY_TREE_PRIMARY];
     fail_group_open_index = 1;
 
     NotifyGroupManager loaded;
     memset(&loaded, 0, sizeof(loaded));
     notify_groups_load(&loaded);
-    if (loaded.count != 1 || strcmp(loaded.groups[0].name, "All notifications") != 0) {
-        fprintf(stderr, "FAIL: a registry-open error did not stop group enumeration\n");
+    if (notify_groups_save(&loaded) ||
+        memcmp(&original, &stored_trees[REGISTRY_TREE_PRIMARY], sizeof(original)) != 0 ||
+        stored_trees[REGISTRY_TREE_STAGING].exists ||
+        stored_trees[REGISTRY_TREE_BACKUP].exists) {
+        fprintf(stderr, "FAIL: saving an incomplete load changed the original registry tree\n");
+        return 1;
+    }
+    if (loaded.count != 2 || loaded.active_index != 1 ||
+        strcmp(loaded.groups[1].name, "Later group") != 0) {
+        fprintf(stderr, "FAIL: an inaccessible group prevented loading a later readable group\n");
+        return 1;
+    }
+
+    // Access may recover before a subsequent load; only that complete load can save.
+    fail_group_open_index = -1;
+    if (notify_groups_save(&loaded)) {
+        fprintf(stderr, "FAIL: an incomplete manager became saveable without reloading\n");
+        return 1;
+    }
+    notify_groups_load(&loaded);
+    if (loaded.count != 3 || loaded.active_index != 2 || !notify_groups_save(&loaded)) {
+        fprintf(stderr, "FAIL: a complete reload did not restore safe saving\n");
+        return 1;
+    }
+    NotifyGroupManager reloaded;
+    memset(&reloaded, 0, sizeof(reloaded));
+    notify_groups_load(&reloaded);
+    if (reloaded.count != 3 || reloaded.active_index != 2 ||
+        strcmp(reloaded.groups[1].name, "Unread group") != 0 ||
+        reloaded.groups[1].event_mask != 0x233u ||
+        strcmp(reloaded.groups[2].name, "Later group") != 0 ||
+        reloaded.groups[2].event_mask != 0x155u) {
+        fprintf(stderr, "FAIL: recovered load-then-save lost previously unread groups\n");
         return 1;
     }
     return 0;
@@ -639,7 +674,7 @@ int main(void) {
     failures += test_successful_save_round_trips_groups();
     failures += test_load_skips_missing_group_slots_and_preserves_persistence();
     failures += test_load_skips_whitespace_only_group_and_maps_active_selection();
-    failures += test_load_stops_on_non_missing_group_open_error();
+    failures += test_partial_load_cannot_overwrite_persisted_groups();
 
     if (failures != 0) return 1;
     puts("PASS: notification-group saves report registry failures and round-trip successfully");
