@@ -1,6 +1,7 @@
 // nosleep - Prevent Windows from sleeping using SetThreadExecutionState API
 // Main application entry point for Windows GUI application
 #include <stdio.h>
+#include <io.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
@@ -116,6 +117,21 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
                            CLIParseError* error);
 static int run_tray_mode(const CLIOptions* opts);
 static int run_configure_mode(const CLIOptions* opts);
+
+// Preserve inherited CRT streams (including redirected files and pipes).
+static void prepare_cli_output(void) {
+    int stdout_fd = _fileno(stdout);
+    int stderr_fd = _fileno(stderr);
+    bool has_stdout = stdout_fd >= 0 && _get_osfhandle(stdout_fd) != -1;
+    bool has_stderr = stderr_fd >= 0 && _get_osfhandle(stderr_fd) != -1;
+
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        if (has_stdout) SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(stdout_fd));
+        else freopen("CONOUT$", "w", stdout);
+        if (has_stderr) SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(stderr_fd));
+        else freopen("CONOUT$", "w", stderr);
+    }
+}
 
 static int fail_cli_parse(CLIParseError* error, CLIParseErrorKind kind,
                           const wchar_t* option, const wchar_t* value,
@@ -355,10 +371,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (parse_result == 1) {
         // Error parsing arguments - output to console
-        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-            freopen("CONOUT$", "w", stdout);
-            freopen("CONOUT$", "w", stderr);
-        }
+        prepare_cli_output();
         print_cli_parse_error(&parse_error);
         LocalFree(argv);
         return 1;
@@ -368,10 +381,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (parse_result == 2) {
         // Help requested - output to console
-        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-            freopen("CONOUT$", "w", stdout);
-            freopen("CONOUT$", "w", stderr);
-        }
+        prepare_cli_output();
         printf("%s", HELP_TEXT);
         return 0;
     }
@@ -383,10 +393,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     // --version mode: show version and exit
     if (opts.show_version) {
-        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-            freopen("CONOUT$", "w", stdout);
-            freopen("CONOUT$", "w", stderr);
-        }
+        prepare_cli_output();
         printf("nosleep v" CURRENT_VERSION "\n");
         return 0;
     }
@@ -397,10 +404,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (opts.session_finished == CLI_UNSET && opts.auto_start == CLI_UNSET &&
             opts.notification_mode == CLI_UNSET && opts.auto_check_interval == CLI_UNSET &&
             opts.check_updates_startup == CLI_UNSET && opts.add_to_path == CLI_UNSET) {
-            if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-                freopen("CONOUT$", "w", stdout);
-                freopen("CONOUT$", "w", stderr);
-            }
+            prepare_cli_output();
             fprintf(stderr, "nosleep: No settings provided with --configure. Use --help for usage.\n");
             return 1;
         }
@@ -591,10 +595,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
 
 static int run_configure_mode(const CLIOptions* opts) {
     // Attach to parent console for status output
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        freopen("CONOUT$", "w", stdout);
-        freopen("CONOUT$", "w", stderr);
-    }
+    prepare_cli_output();
     
     bool success = tray_save_settings_cli(opts->session_finished, opts->auto_start,
                            opts->notification_mode, opts->auto_check_interval,
