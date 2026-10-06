@@ -73,7 +73,7 @@ def extract_function(name, return_type="void"):
 settings_handler = tray.split("case IDC_SETTINGS_OK:", 1)[1].split(
     "case IDC_SETTINGS_CANCEL:", 1
 )[0]
-assert "tray_apply_auto_check_interval(settings_tray, sel);" in settings_handler, (
+assert "tray_apply_auto_check_interval(settings_tray, proposed.auto_check_interval);" in settings_handler, (
     "saving the selected update interval must apply it to the live timer"
 )
 

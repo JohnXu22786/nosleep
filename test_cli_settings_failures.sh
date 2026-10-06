@@ -350,6 +350,7 @@ uintptr_t SendMessageTimeout(HWND hwnd, DWORD message, uintptr_t wparam,
 #define BM_GETCHECK 1
 #define BST_CHECKED 1
 #define CB_GETCURSEL 2
+#define CB_ERR (-1)
 static HWND hGeneralTab;
 static HWND hIntervalCombo;
 static NoSleepTray *settings_tray;
