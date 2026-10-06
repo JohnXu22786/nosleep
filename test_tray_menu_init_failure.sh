@@ -163,7 +163,8 @@ static unsigned int shell_notify_calls;
 static unsigned int settings_load_calls;
 static unsigned int update_timer_calls;
 static unsigned int fail_menu_call;
-static int menu_handles[2];
+static int menu_handles[3];
+static unsigned int menu_destroyed[3];
 static int window_handle;
 static int module_handle;
 static int cursor_handle;
@@ -202,7 +203,10 @@ static HMENU CreatePopupMenu(void) {
     return &menu_handles[call - 1];
 }
 static int DestroyMenu(HMENU menu) {
-    (void)menu; ++menu_destroy_calls; return 1;
+    for (unsigned int i = 0; i < 3; ++i) {
+        if (menu == &menu_handles[i]) ++menu_destroyed[i];
+    }
+    ++menu_destroy_calls; return 1;
 }
 static int AppendMenu(HMENU menu, UINT flags, UINT_PTR item, const char *text) {
     (void)menu; (void)flags; (void)item; (void)text; return 1;
@@ -246,6 +250,7 @@ static int check_menu_failure(unsigned int fail_at, unsigned int expected_menu_d
     memset(&tray, 0, sizeof(tray));
     menu_create_calls = 0;
     menu_destroy_calls = 0;
+    memset(menu_destroyed, 0, sizeof(menu_destroyed));
     window_destroy_calls = 0;
     class_unregister_calls = 0;
     icon_cleanup_calls = 0;
@@ -261,6 +266,12 @@ static int check_menu_failure(unsigned int fail_at, unsigned int expected_menu_d
     if (menu_destroy_calls != expected_menu_destroys || tray.hmenu != NULL) {
         fprintf(stderr, "FAIL: menu creation failure at call %u left menu cleanup inconsistent\n", fail_at);
         return 1;
+    }
+    for (unsigned int i = 0; i < fail_at - 1; ++i) {
+        if (menu_destroyed[i] != 1) {
+            fprintf(stderr, "FAIL: menu %u was not destroyed exactly once after failure %u\n", i + 1, fail_at);
+            return 1;
+        }
     }
     if (window_destroy_calls != 1 || tray.hwnd != NULL || class_unregister_calls != 1) {
         fprintf(stderr, "FAIL: menu creation failure at call %u left its window class resources alive\n", fail_at);
@@ -280,6 +291,7 @@ static int check_menu_failure(unsigned int fail_at, unsigned int expected_menu_d
 int main(void) {
     if (check_menu_failure(1, 0) != 0) return 1;
     if (check_menu_failure(2, 1) != 0) return 1;
+    if (check_menu_failure(3, 2) != 0) return 1;
     puts("PASS: tray initialization fails and releases resources when required menu creation fails");
     return 0;
 }
