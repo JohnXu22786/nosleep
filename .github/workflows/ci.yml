@@ -44,6 +44,9 @@ jobs:
       - name: Test notification tab command routing
         run: ./test_tray_notify_command_routing.sh
 
+      - name: Test tray dialog reentrancy
+        run: bash test_tray_dialog_reentrancy.sh
+
       - name: Test General tab keyboard navigation
         run: ./test_tray_general_tab_keyboard_navigation.sh
 
