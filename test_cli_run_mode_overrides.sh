@@ -350,11 +350,14 @@ static void test_last_explicit_flag_wins(void) {
 
 static void test_persistent_flags_require_configure_mode(void) {
     wchar_t *run_argv[] = {L"nosleep", L"--auto-start", L"--add-to-path"};
-    CLIOptions run_options = parse(3, run_argv);
+    CLIOptions run_options = default_options();
+    CLIParseError error = {0};
+    assert(parse_arguments(3, run_argv, &run_options, &error) == 1);
+    assert(error.kind == CLI_PARSE_ERROR_REQUIRES_CONFIGURE);
+    assert(wcscmp(error.option, L"--auto-start") == 0);
 
     assert(!run_options.configure_mode);
-    assert(run_tray_mode(&run_options) == 0);
-    assert(tray_run_calls == 1);
+    assert(tray_run_calls == 0);
     assert(startup_set_calls == 0);
     assert(path_set_calls == 0);
     assert(settings_save_calls == 0);
