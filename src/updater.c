@@ -493,6 +493,7 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     // Get the EXE name from current path
     char* exe_name = get_exe_name_from_path(current_exe_path);
     if (!exe_name) {
+        DeleteFileA(temp_path);
         free(temp_path);
         return false;
     }
@@ -503,6 +504,7 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     if (!create_update_batch_script(current_exe_path, temp_path, exe_name, 
                                     script_path, sizeof(script_path),
                                     arguments_path, sizeof(arguments_path))) {
+        DeleteFileA(temp_path);
         free(exe_name);
         free(temp_path);
         MessageBox(hwnd_parent, "Failed to create update script.", 
@@ -527,9 +529,10 @@ bool updater_download_and_install(UpdateInfo* info, const char* current_exe_path
     if (!ShellExecuteEx(&sei)) {
         DeleteFileA(script_path);
         DeleteFileA(arguments_path);
+        DeleteFileA(temp_path);
         free(exe_name);
         free(temp_path);
-        MessageBox(hwnd_parent, "Failed to launch update process.\nPlease run the update manually.",
+        MessageBox(hwnd_parent, "Failed to launch update process.\nPlease try the update again.",
             "Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         return false;
     }
