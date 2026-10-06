@@ -2465,6 +2465,11 @@ static wchar_t* get_exe_dir(void) {
 static bool add_app_to_path(void) {
     wchar_t* dir = get_exe_dir();
     if (!dir) return false;
+    // PATH uses semicolons as delimiters and cannot escape them in a directory.
+    if (wcschr(dir, L';')) {
+        free(dir);
+        return false;
+    }
     
     HKEY hKey;
     LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
