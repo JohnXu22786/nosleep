@@ -123,10 +123,17 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         // Compute approximate end time for display using time() (UTC)
         time_t rawtime;
         time(&rawtime);
+        struct tm* start_tm = gmtime(&rawtime);
+        int start_year = start_tm->tm_year;
+        int start_yday = start_tm->tm_yday;
         rawtime += (time_t)duration_minutes * 60;
         struct tm* end_tm = gmtime(&rawtime);
         char time_str[64];
-        strftime(time_str, sizeof(time_str), "%H:%M:%S", end_tm);
+        const char* time_format = start_year != end_tm->tm_year ||
+                                  start_yday != end_tm->tm_yday
+            ? "%Y-%m-%d %H:%M:%S UTC"
+            : "%H:%M:%S UTC";
+        strftime(time_str, sizeof(time_str), time_format, end_tm);
         nosleep_log_info("Will run for %d minutes (until %s)", duration_minutes, time_str);
     }
     
@@ -158,7 +165,7 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
             if (verbose) {
                 SYSTEMTIME now;
                 GetSystemTime(&now);
-                nosleep_log_verbose("[%02d:%02d:%02d] Active: %dm %ds (#%d)",
+                nosleep_log_verbose("[%02d:%02d:%02d UTC] Active: %dm %ds (#%d)",
                                     now.wHour, now.wMinute, now.wSecond,
                                     minutes, seconds, ns->refresh_count);
             } else {
@@ -246,7 +253,7 @@ static void nosleep_output_debug_log(const SYSTEMTIME* now, const char* format,
     if (message_length < 0) return;
 
     char prefix[64];
-    int prefix_length = snprintf(prefix, sizeof(prefix), "[%02d:%02d:%02d] INFO - ",
+    int prefix_length = snprintf(prefix, sizeof(prefix), "[%02d:%02d:%02d UTC] INFO - ",
                                  now->wHour, now->wMinute, now->wSecond);
     if (prefix_length < 0 || (size_t)prefix_length >= sizeof(prefix)) return;
 
@@ -282,7 +289,7 @@ static void nosleep_log_info_message(const char* format, va_list args,
         nosleep_output_debug_log(&now, format, args);
     }
 
-    printf("[%02d:%02d:%02d] INFO - ", now.wHour, now.wMinute, now.wSecond);
+    printf("[%02d:%02d:%02d UTC] INFO - ", now.wHour, now.wMinute, now.wSecond);
     va_list console_args;
     va_copy(console_args, args);
     vprintf(format, console_args);
@@ -315,7 +322,7 @@ void nosleep_log_warning(const char* format, ...) {
     va_list args;
     va_start(args, format);
     
-    printf("[%02d:%02d:%02d] WARNING - ", now.wHour, now.wMinute, now.wSecond);
+    printf("[%02d:%02d:%02d UTC] WARNING - ", now.wHour, now.wMinute, now.wSecond);
     vprintf(format, args);
     printf("\n");
     
@@ -333,7 +340,7 @@ void nosleep_log_error(const char* format, ...) {
     va_list args;
     va_start(args, format);
     
-    printf("[%02d:%02d:%02d] ERROR - ", now.wHour, now.wMinute, now.wSecond);
+    printf("[%02d:%02d:%02d UTC] ERROR - ", now.wHour, now.wMinute, now.wSecond);
     vprintf(format, args);
     printf("\n");
     
