@@ -1149,7 +1149,7 @@ static void tray_create_menu(NoSleepTray* tray) {
         goto fail;
     }
     hSubMenu = NULL; // The parent menu now owns this submenu.
-    if (!AppendMenu(tray->hmenu, MF_STRING, IDM_STOP, "Stop")) {
+    if (!AppendMenu(tray->hmenu, MF_STRING | MF_GRAYED, IDM_STOP, "Stop")) {
         goto fail;
     }
     if (!AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL)) {
