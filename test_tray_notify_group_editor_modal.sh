@@ -106,8 +106,10 @@ assert re.search(
 assert "notify_groups_save(&updated)" in set_active_case and (
     "settings_tray->notify_groups = updated;" in set_active_case
 ), "Set Active must commit the candidate manager only after a successful save"
-assert settings_proc.count("if (notify_groups_save(&updated))") == 2 and (
-    settings_proc.count("settings_tray->notify_groups = updated;") == 2
+# Count only the original Set Active/Delete actions, not the new restore action.
+legacy_actions = settings_proc[settings_proc.index("case IDC_NOTIFY_SET_ACTIVE:"):]
+assert legacy_actions.count("if (notify_groups_save(&updated))") == 2 and (
+    legacy_actions.count("settings_tray->notify_groups = updated;") == 2
 ), "Set Active and Delete must both gate their in-memory changes on save success"
 assert re.search(
     r'"Changes are saved immediately; Settings Cancel does\\n"\s*'
