@@ -16,7 +16,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name):
     definition = re.search(
-        r"\bstatic\s+(?:void|int)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        r"\bstatic\s+(?:void|bool|int)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
     )
