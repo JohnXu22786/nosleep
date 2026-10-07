@@ -610,7 +610,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     // Keep recovery instructions and the failure prompt visible after this app exits.
     SHELLEXECUTEINFOW sei = {0};
     sei.cbSize = sizeof(SHELLEXECUTEINFOW);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
+    sei.fMask = SEE_MASK_NOASYNC;
     sei.lpFile = script_path;
     sei.nShow = SW_SHOWNORMAL;
     
