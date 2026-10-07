@@ -424,6 +424,10 @@ static void expect_write_failure(const char *name, int session_finished_action,
            "a failed requested settings value write must make CLI save fail");
     expect(registry_close_count == 1,
            "the settings registry handle must close after a failed value write");
+    if (strcmp(name, "add_to_path_preference") == 0) {
+        expect(!stored_path_preference_present,
+               "a failed PATH preference write must not leave a partial configured state");
+    }
 }
 
 int main(void) {
@@ -702,8 +706,8 @@ int main(void) {
     expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 1),
            "failure to add the application to PATH must be reported");
     expect(add_path_count == 1, "the requested PATH add helper must run");
-    expect(!stored_path_preference_present,
-           "a failed PATH preference write must not leave a partial configured state");
+    expect(stored_path_preference_present && stored_path_preference == 1,
+           "a failed PATH addition must retain the explicit opt-in for startup retry");
 
     reset_mocks();
     environment_open_result = ERROR_ACCESS_DENIED;
