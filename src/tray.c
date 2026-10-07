@@ -1948,10 +1948,9 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     
     tray_announce_delayed_action(tray, false);
 
-    // Start countdown display
-    tray_start_countdown(tray, SESSION_FINISHED_SLEEP);
-
     ULONGLONG start_tick64 = GetTickCount64();
+    // Dispatch and display share the same 60-second timing target.
+    tray_start_countdown(tray, SESSION_FINISHED_SLEEP, start_tick64);
     ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
@@ -2013,9 +2012,9 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     SessionFinishedAction action = tray->shutdown_action;
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-    tray_start_countdown(tray, action);
-
     ULONGLONG start_tick64 = GetTickCount64();
+    // Dispatch and display share the same 60-second timing target.
+    tray_start_countdown(tray, action, start_tick64);
     ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
@@ -2066,7 +2065,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     return 0;
 }
 
-void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action) {
+void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action, ULONGLONG start_tick64) {
     DEBUG_LOG("tray_start_countdown: starting 60-second countdown");
     
     // Stop any existing countdown
@@ -2074,8 +2073,12 @@ void tray_start_countdown(NoSleepTray* tray, SessionFinishedAction action) {
     
     // Initialize countdown state
     tray->countdown_action = action;
+    tray->countdown_start_tick64 = start_tick64;
+    ULONGLONG elapsed_ms = get_elapsed_milliseconds(start_tick64);
+    int remaining_seconds = elapsed_ms >= 60000 ? 0 :
+        tray_countdown_display_seconds(60000 - elapsed_ms);
     ATOMIC_STORE_BOOL(&tray->delayed_sleep_countdown_active, true);
-    ATOMIC_STORE_INT(&tray->countdown_seconds, 60);
+    ATOMIC_STORE_INT(&tray->countdown_seconds, remaining_seconds);
     ATOMIC_STORE_BOOL(&tray->countdown_blink_state, true);
     ATOMIC_STORE_BOOL(&tray->countdown_stopping, false);
     ResetEvent(tray->countdown_stop_event);
@@ -2161,7 +2164,7 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
     
     DEBUG_LOG("countdown_thread: started");
     
-    ULONGLONG start_tick64 = GetTickCount64();
+    ULONGLONG start_tick64 = tray->countdown_start_tick64;
     ULONGLONG total_duration_ms = 60 * 1000;
     
     while (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
