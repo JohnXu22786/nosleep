@@ -91,13 +91,23 @@ assert start_countdown.index("tray->countdown_action = action;") < start_countdo
 
 sleep_thread = extract_function("delayed_sleep_thread")
 shutdown_thread = extract_function("delayed_shutdown_thread")
-assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SLEEP,\s*start_tick64\)", sleep_thread), (
-    "the delayed sleep thread must identify its scheduled action"
+countdown_start = extract_function("tray_start_delayed_countdown")
+assert re.search(
+    r"tray_start_delayed_countdown\(tray,\s*SESSION_FINISHED_SLEEP,\s*"
+    r"tray->sleep_stop_event,\s*start_tick64\)",
+    sleep_thread,
+), "the delayed sleep thread must identify its scheduled action and stop event"
+assert re.search(
+    r"tray_start_countdown\(tray,\s*action,\s*start_tick64\)",
+    countdown_start,
+), (
+    "cancellation-safe countdown startup must pass through its scheduled action"
 )
 assert re.search(
     r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;"
     r"[\s\S]*?tray_announce_delayed_action\(tray,\s*action\);"
-    r"[\s\S]*?tray_start_countdown\(tray,\s*action,\s*start_tick64\)"
+    r"[\s\S]*?tray_start_delayed_countdown\(tray,\s*action,\s*"
+    r"tray->shutdown_stop_event,\s*start_tick64\)"
     r"[\s\S]*?trigger_system_shutdown\(tray,\s*action\)",
     shutdown_thread,
 ), "the delayed shutdown thread must reuse one captured action for its notice, countdown, and dispatch"

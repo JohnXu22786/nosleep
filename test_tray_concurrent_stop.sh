@@ -117,6 +117,7 @@ typedef struct NoSleepTray {
     bool stopping;
     DWORD stopping_thread_id;
     bool starting_nosleep;
+    bool delayed_countdown_starting;
     DWORD nosleep_thread_id;
     bool session_action_cancelled;
     bool core_init_failed;
@@ -364,6 +365,9 @@ wait_function = extract_function(
 update_check_wait_function = extract_function(
     "static bool tray_wait_for_update_check(NoSleepTray* tray)"
 )
+countdown_start_wait_function = extract_function(
+    "static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray)"
+)
 destroy_function = extract_function("void tray_destroy(NoSleepTray* tray)")
 stop_function = extract_function(
     "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n"
@@ -522,7 +526,8 @@ int main(void) {
 }
 """
 
-output.write_text(prelude + update_check_wait_function + "\n" + wait_function + "\n" + destroy_function + "\n" +
+output.write_text(prelude + update_check_wait_function + "\n" + wait_function + "\n" +
+                  countdown_start_wait_function + "\n" + destroy_function + "\n" +
                   stop_function + "\n" + wrapper)
 PY
 

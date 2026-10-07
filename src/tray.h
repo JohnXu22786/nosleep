@@ -95,6 +95,7 @@ typedef struct NoSleepTray {
     bool nosleep_run_failed;    // Whether the core worker ended after refresh failures - accessed atomically
     bool session_action_cancelled; // Manual stop blocks expiry action publication - protected by delayed_action_lock
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
+    bool delayed_countdown_starting; // Coordinates countdown startup with cancellation - protected by delayed_action_lock
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
     SRWLOCK tray_icon_lock; // Serializes NOTIFYICONDATA updates and shell calls
     SRWLOCK countdown_icon_cache_lock; // Serializes lazy countdown icon creation and cleanup

@@ -122,6 +122,7 @@ typedef struct NoSleepTray {
     bool is_running, duration_expired, stopping, core_init_failed;
     bool core_init_succeeded, starting_nosleep, nosleep_run_failed;
     bool session_action_cancelled;
+    bool delayed_countdown_starting;
     bool prevent_display_cli_override_set, prevent_display_cli_override;
     bool away_mode_cli_override_set, away_mode_cli_override;
     SRWLOCK delayed_action_lock;
@@ -1012,6 +1013,7 @@ functions = "\n\n".join(
         "static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64)",
         "static bool tray_mode_for_run(bool preference, bool override_set, bool override_value)",
         "static bool tray_wait_for_worker_threads(NoSleepTray* tray)",
+        "static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray)",
         "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n                                          DWORD expected_thread_id,\n                                          bool timer_expired,\n                                          bool suppress_notification)",
         "void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_notification)",
         "void tray_start_nosleep(NoSleepTray* tray, int duration_minutes)",
