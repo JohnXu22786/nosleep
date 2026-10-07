@@ -154,6 +154,7 @@ typedef struct NoSleepTray {
     int auto_check_interval_cli_override;
     int check_updates_startup_cli_override;
     bool add_to_path;           // Whether to add nosleep directory to environment PATH
+    bool add_to_path_preference_set; // Whether the PATH checkbox has an explicit saved preference
     NotifyGroupManager notify_groups; // Notification group manager for per-event filtering
 } NoSleepTray;
 
