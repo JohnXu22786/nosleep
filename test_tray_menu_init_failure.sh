@@ -232,7 +232,7 @@ static int Shell_NotifyIcon(DWORD operation, NOTIFYICONDATA *nid) {
 static bool is_startup_enabled(void) { return false; }
 static void tray_load_settings(NoSleepTray *tray) { (void)tray; ++settings_load_calls; }
 static void tray_update_session_finished_menu(NoSleepTray *tray) { (void)tray; }
-static bool apply_path_preference(bool add_to_path) { (void)add_to_path; return true; }
+static bool apply_saved_path_preference(NoSleepTray *tray) { (void)tray; return true; }
 static void notify_groups_init(NotifyGroupManager *groups, int mode) {
     (void)groups; (void)mode;
 }

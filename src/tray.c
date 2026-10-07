@@ -134,6 +134,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 static bool add_app_to_path(void);
 static bool remove_app_from_path(void);
 static bool apply_path_preference(bool add_to_path);
+static bool apply_saved_path_preference(NoSleepTray* tray);
 static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n);
 static wchar_t* get_exe_dir(void);
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -439,9 +440,9 @@ bool tray_init(NoSleepTray* tray) {
     tray_load_settings(tray);
     tray_update_session_finished_menu(tray);
 
-    // Apply the saved PATH preference on every startup. A failed update is
-    // retried next time because the preference records the desired state.
-    if (!apply_path_preference(tray->add_to_path)) {
+    // Apply only a configured PATH preference. The unset checkbox defaults
+    // to false, which must not remove a matching user-owned PATH entry.
+    if (!apply_saved_path_preference(tray)) {
         DEBUG_PRINT("tray_init: failed to apply PATH preference; it will be retried on next launch\n");
     }
 
@@ -2969,6 +2970,11 @@ static bool apply_path_preference(bool add_to_path) {
     return add_to_path ? add_app_to_path() : remove_app_from_path();
 }
 
+static bool apply_saved_path_preference(NoSleepTray* tray) {
+    if (!tray || !tray->add_to_path_preference_set) return true;
+    return apply_path_preference(tray->add_to_path);
+}
+
 // Check if nosleep is registered to run at startup
 static bool is_startup_enabled(void) {
     HKEY hKey;
@@ -3064,7 +3070,7 @@ static bool set_startup_registry(bool enable) {
 
 #define SETTINGS_REG_KEY "Software\\nosleep\\settings"
 
-static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD default_value) {
+static bool settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD default_value) {
     DWORD size = sizeof(DWORD);
     DWORD data = 0;
     DWORD type = 0;
@@ -3072,8 +3078,10 @@ static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD
                        : ERROR_FILE_NOT_FOUND;
     if (result == ERROR_SUCCESS && type == REG_DWORD && size == sizeof(DWORD)) {
         *value = data;
+        return true;
     } else {
         *value = default_value;
+        return false;
     }
 }
 
@@ -3130,8 +3138,17 @@ void tray_load_settings(NoSleepTray* tray) {
     settings_read_dword(hKey, "notification_mode", &val, (DWORD)NOTIFY_ALL);
     tray->notification_mode = (int)val;
 
-    settings_read_dword(hKey, "add_to_path", &val, 0);
-    tray->add_to_path = (val != 0);
+    tray->add_to_path_preference_set =
+        settings_read_dword(hKey, "add_to_path_preference", &val, 0);
+    if (tray->add_to_path_preference_set) {
+        tray->add_to_path = (val != 0);
+    } else {
+        // Older versions wrote the default false value whenever any settings
+        // were saved. Preserve legacy opt-ins, but treat false as unset.
+        settings_read_dword(hKey, "add_to_path", &val, 0);
+        tray->add_to_path = (val != 0);
+        tray->add_to_path_preference_set = tray->add_to_path;
+    }
 
     settings_read_dword(hKey, "session_finished_action", &val, (DWORD)SESSION_FINISHED_NONE);
     tray->session_finished_action = val <= SESSION_FINISHED_SHUTDOWN_GRACEFUL
@@ -3184,9 +3201,12 @@ bool tray_save_settings(NoSleepTray* tray) {
         success = false;
     }
 
-    val = tray->add_to_path ? 1 : 0;
-    if (RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD, (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
-        success = false;
+    if (tray->add_to_path_preference_set) {
+        val = tray->add_to_path ? 1 : 0;
+        if (RegSetValueEx(hKey, "add_to_path_preference", 0, REG_DWORD,
+                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+            success = false;
+        }
     }
 
     val = (DWORD)tray->session_finished_action;
@@ -3287,8 +3307,8 @@ bool tray_save_settings_cli(int session_finished_action,
     }
     if (add_to_path >= 0) {
         DWORD val = (DWORD)(add_to_path != 0 ? 1 : 0);
-        if (hKey && RegSetValueEx(hKey, "add_to_path", 0, REG_DWORD,
-                          (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
+        if (hKey && RegSetValueEx(hKey, "add_to_path_preference", 0, REG_DWORD,
+                                  (LPBYTE)&val, sizeof(val)) != ERROR_SUCCESS) {
             success = false;
         }
         if (!apply_path_preference(add_to_path != 0)) {
@@ -3371,6 +3391,7 @@ bool tray_set_add_to_path(NoSleepTray* tray, bool enable) {
     // Keep the desired preference even if the PATH update fails so startup
     // can retry applying it.
     tray->add_to_path = enable;
+    tray->add_to_path_preference_set = true;
     return apply_path_preference(enable);
 }
 
@@ -3994,6 +4015,9 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                         if (sel != CB_ERR) proposed.auto_check_interval = sel;
                     }
                     proposed.add_to_path = (SendDlgItemMessage(hGeneralTab, IDC_ADD_TO_PATH, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                    if (proposed.add_to_path != settings_tray->add_to_path) {
+                        proposed.add_to_path_preference_set = true;
+                    }
 
                     bool auto_start = (SendDlgItemMessage(hGeneralTab, IDC_AUTO_START, BM_GETCHECK, 0, 0) == BST_CHECKED);
                     bool startup_changed = auto_start != settings_tray->start_on_startup;

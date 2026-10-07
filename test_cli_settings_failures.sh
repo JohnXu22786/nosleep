@@ -93,6 +93,7 @@ typedef struct {
     uintptr_t update_timer_id;
     int notification_mode;
     bool add_to_path;
+    bool add_to_path_preference_set;
     bool start_on_startup;
     int session_finished_action;
     int notify_groups;
@@ -140,6 +141,9 @@ static DWORD path_data_size;
 static wchar_t written_path[1024];
 static DWORD written_path_type;
 static DWORD stored_add_to_path;
+static bool stored_add_to_path_present;
+static DWORD stored_path_preference;
+static bool stored_path_preference_present;
 static int registry_write_count;
 static int registry_close_count;
 static int notify_groups_save_count;
@@ -147,6 +151,7 @@ static bool notify_groups_save_result;
 static int settings_warning_count;
 static int dialog_destroy_count;
 static bool requested_startup;
+static bool requested_add_to_path;
 static int startup_create_count;
 static int add_path_count;
 static int environment_open_count;
@@ -180,12 +185,16 @@ static void reset_mocks(void) {
     path_data_size = 0;
     written_path[0] = '\0';
     written_path_type = 0;
-    stored_add_to_path = 1;
+    stored_add_to_path = 0;
+    stored_add_to_path_present = false;
+    stored_path_preference = 0;
+    stored_path_preference_present = false;
     registry_write_count = 0;
     registry_close_count = 0;
     notify_groups_save_count = 0;
     notify_groups_save_result = true;
     settings_warning_count = 0;
+    requested_add_to_path = false;
     startup_create_count = 0;
     add_path_result = true;
     add_path_count = 0;
@@ -233,6 +242,12 @@ LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
     if (key == (HKEY)2 && strcmp(name, "add_to_path") == 0 &&
         value && size == sizeof(stored_add_to_path)) {
         memcpy(&stored_add_to_path, value, sizeof(stored_add_to_path));
+        stored_add_to_path_present = true;
+    }
+    if (key == (HKEY)2 && strcmp(name, "add_to_path_preference") == 0 &&
+        value && size == sizeof(stored_path_preference)) {
+        memcpy(&stored_path_preference, value, sizeof(stored_path_preference));
+        stored_path_preference_present = true;
     }
     return ERROR_SUCCESS;
 }
@@ -247,6 +262,19 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
     (void)reserved;
     if (key == (HKEY)2) {
         ++settings_query_count;
+        if (strcmp(name, "add_to_path_preference") == 0 &&
+            stored_path_preference_present) {
+            memcpy(value, &stored_path_preference, sizeof(stored_path_preference));
+            *size = sizeof(stored_path_preference);
+            if (type) *type = REG_DWORD;
+            return ERROR_SUCCESS;
+        }
+        if (strcmp(name, "add_to_path") == 0 && stored_add_to_path_present) {
+            memcpy(value, &stored_add_to_path, sizeof(stored_add_to_path));
+            *size = sizeof(stored_add_to_path);
+            if (type) *type = REG_DWORD;
+            return ERROR_SUCCESS;
+        }
         if (saved_update_settings &&
             (strcmp(name, "check_updates_on_startup") == 0 ||
              strcmp(name, "auto_check_interval") == 0)) {
@@ -358,7 +386,8 @@ static HWND hIntervalCombo;
 static NoSleepTray *settings_tray;
 static intptr_t SendDlgItemMessage(HWND hwnd, int id, int message, int wparam, int lparam) {
     (void)hwnd; (void)message; (void)wparam; (void)lparam;
-    return id == 2003 && requested_startup ? BST_CHECKED : 0;
+    return (id == 2003 && requested_startup) ||
+           (id == 2012 && requested_add_to_path) ? BST_CHECKED : 0;
 }
 static intptr_t SendMessage(HWND hwnd, int message, int wparam, int lparam) {
     (void)hwnd; (void)message; (void)wparam; (void)lparam;
@@ -395,6 +424,10 @@ static void expect_write_failure(const char *name, int session_finished_action,
            "a failed requested settings value write must make CLI save fail");
     expect(registry_close_count == 1,
            "the settings registry handle must close after a failed value write");
+    if (strcmp(name, "add_to_path_preference") == 0) {
+        expect(!stored_path_preference_present,
+               "a failed PATH preference write must not leave a partial configured state");
+    }
 }
 
 int main(void) {
@@ -419,6 +452,19 @@ int main(void) {
     }
 
     reset_mocks();
+    requested_startup = false;
+    requested_add_to_path = true;
+    NoSleepTray path_dialog_tray = {0};
+    settings_tray = &path_dialog_tray;
+    settings_ok(NULL);
+    expect(stored_path_preference_present && stored_path_preference == 1,
+           "checking Add to PATH from its default state must save the opt-in");
+    expect(path_dialog_tray.add_to_path && path_dialog_tray.add_to_path_preference_set,
+           "checking Add to PATH must update the live configured preference");
+    expect(add_path_count == 1,
+           "checking Add to PATH must apply the requested addition");
+
+    reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     NoSleepTray loaded_tray = {0};
     tray_load_settings(&loaded_tray);
@@ -426,6 +472,7 @@ int main(void) {
            "an unavailable settings key must retain startup and daily update checks");
     expect(!loaded_tray.prevent_display && !loaded_tray.away_mode && !loaded_tray.verbose &&
            loaded_tray.notification_mode == NOTIFY_ALL && !loaded_tray.add_to_path &&
+           !loaded_tray.add_to_path_preference_set &&
            loaded_tray.session_finished_action == SESSION_FINISHED_NONE,
            "an unavailable settings key must apply all remaining settings defaults");
     expect(settings_query_count == 0 && registry_close_count == 0,
@@ -434,8 +481,66 @@ int main(void) {
     reset_mocks();
     tray_load_settings(&loaded_tray);
     expect(loaded_tray.check_updates_on_startup && loaded_tray.auto_check_interval == 1 &&
-           settings_query_count == 8 && registry_close_count == 1,
+           settings_query_count == 9 && registry_close_count == 1,
            "missing settings values must retain defaults and close the opened key");
+
+    reset_mocks();
+    static const wchar_t user_path_without_preference[] = L"C:\\NoSleep;C:\\Tools";
+    path_query_result = ERROR_SUCCESS;
+    path_data = (const BYTE *)user_path_without_preference;
+    path_data_size = sizeof(user_path_without_preference);
+    NoSleepTray unset_path_preference = {0};
+    tray_load_settings(&unset_path_preference);
+    expect(!unset_path_preference.add_to_path_preference_set,
+           "an absent PATH preference must remain unconfigured after loading defaults");
+    expect(apply_saved_path_preference(&unset_path_preference),
+           "startup must accept an absent PATH preference without changing PATH");
+    expect(environment_open_count == 0 && written_path[0] == '\0',
+           "an absent PATH preference must preserve the existing user PATH entry");
+
+    reset_mocks();
+    stored_add_to_path_present = true;
+    stored_add_to_path = 0;
+    path_query_result = ERROR_SUCCESS;
+    path_data = (const BYTE *)user_path_without_preference;
+    path_data_size = sizeof(user_path_without_preference);
+    NoSleepTray legacy_disabled_preference = {0};
+    tray_load_settings(&legacy_disabled_preference);
+    expect(!legacy_disabled_preference.add_to_path_preference_set,
+           "a legacy default-false value without an explicit marker must remain unconfigured");
+    expect(apply_saved_path_preference(&legacy_disabled_preference) &&
+           environment_open_count == 0 && written_path[0] == '\0',
+           "a legacy default-false value must not remove a user PATH entry");
+
+    reset_mocks();
+    stored_add_to_path_present = true;
+    stored_add_to_path = 1;
+    NoSleepTray legacy_enabled_preference = {0};
+    tray_load_settings(&legacy_enabled_preference);
+    expect(legacy_enabled_preference.add_to_path &&
+           legacy_enabled_preference.add_to_path_preference_set,
+           "a legacy true PATH preference must remain an explicit opt-in");
+    expect(apply_saved_path_preference(&legacy_enabled_preference) && add_path_count == 1,
+           "startup must continue applying a legacy true PATH preference");
+
+    reset_mocks();
+    static const wchar_t user_path_with_explicit_disable[] = L"C:\\NoSleep;C:\\Tools";
+    stored_add_to_path_present = true;
+    stored_add_to_path = 1;
+    stored_path_preference_present = true;
+    stored_path_preference = 0;
+    path_query_result = ERROR_SUCCESS;
+    path_data = (const BYTE *)user_path_with_explicit_disable;
+    path_data_size = sizeof(user_path_with_explicit_disable);
+    NoSleepTray explicit_disabled_preference = {0};
+    tray_load_settings(&explicit_disabled_preference);
+    expect(!explicit_disabled_preference.add_to_path &&
+           explicit_disabled_preference.add_to_path_preference_set,
+           "an explicitly disabled PATH preference must be recognized after loading");
+    expect(apply_saved_path_preference(&explicit_disabled_preference),
+           "startup must apply an explicitly disabled PATH preference");
+    expect(environment_open_count == 1 && wcscmp(written_path, L"C:\\Tools") == 0,
+           "an explicitly disabled PATH preference must remove the app directory");
 
     reset_mocks();
     saved_update_settings = true;
@@ -446,7 +551,7 @@ int main(void) {
 
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
-    NoSleepTray settings_tray = {0};
+    NoSleepTray settings_tray = { .add_to_path_preference_set = true };
     expect(!tray_save_settings(&settings_tray),
            "failure to create the settings key must be reported by the tray save");
     expect(registry_write_count == 0,
@@ -455,6 +560,16 @@ int main(void) {
            "a failed settings-key creation must not close an invalid handle");
     expect(notify_groups_save_count == 1,
            "notification groups must still be saved independently when the settings key fails");
+
+    reset_mocks();
+    NoSleepTray unset_path_settings = {0};
+    expect(tray_save_settings(&unset_path_settings),
+           "saving unrelated settings must succeed when PATH has never been configured");
+    expect(registry_write_count == 7 && !stored_add_to_path_present &&
+           !stored_path_preference_present,
+           "saving unrelated settings must not persist a default disabled PATH preference");
+
+    settings_tray.add_to_path_preference_set = true;
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
     tray_save_settings_with_warning(NULL, &settings_tray);
@@ -483,11 +598,13 @@ int main(void) {
     expect(tray_save_settings(&settings_tray),
            "successful tray settings persistence must report success");
     expect(registry_write_count == 8,
-           "successful tray settings persistence must write all eight values");
+           "successful tray settings persistence must write all configured values");
     expect(registry_close_count == 1,
            "successful tray settings persistence must close its registry handle");
     expect(notify_groups_save_count == 1,
            "successful tray settings persistence must continue saving notification groups");
+    expect(stored_path_preference_present && stored_path_preference == 0,
+           "saving an explicit disabled PATH preference must persist it");
     reset_mocks();
     tray_save_settings_with_warning(NULL, &settings_tray);
     expect(settings_warning_count == 0,
@@ -537,7 +654,7 @@ int main(void) {
     expect_write_failure("notification_mode", -1, -1, NOTIFY_NONE, -1, -1, -1);
     expect_write_failure("auto_check_interval", -1, -1, -1, 2, -1, -1);
     expect_write_failure("check_updates_on_startup", -1, -1, -1, -1, 0, -1);
-    expect_write_failure("add_to_path", -1, -1, -1, -1, -1, 1);
+    expect_write_failure("add_to_path_preference", -1, -1, -1, -1, -1, 1);
 
     reset_mocks();
     startup_open_result = ERROR_ACCESS_DENIED;
@@ -589,22 +706,27 @@ int main(void) {
     expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 1),
            "failure to add the application to PATH must be reported");
     expect(add_path_count == 1, "the requested PATH add helper must run");
+    expect(stored_path_preference_present && stored_path_preference == 1,
+           "a failed PATH addition must retain the explicit opt-in for startup retry");
 
     reset_mocks();
     environment_open_result = ERROR_ACCESS_DENIED;
     expect(!tray_save_settings_cli(-1, -1, -1, -1, -1, 0),
            "failure to remove the application from PATH must be reported");
     expect(environment_open_count == 1, "the requested PATH remove helper must run");
-    expect(stored_add_to_path == 0,
+    expect(stored_path_preference_present && stored_path_preference == 0,
            "the failed removal must retain the user's disabled preference for retry");
 
-    NoSleepTray saved_disabled_preference = { .add_to_path = stored_add_to_path != 0 };
-    expect(!apply_path_preference(saved_disabled_preference.add_to_path),
+    NoSleepTray saved_disabled_preference = {
+        .add_to_path = stored_path_preference != 0,
+        .add_to_path_preference_set = stored_path_preference_present
+    };
+    expect(!apply_saved_path_preference(&saved_disabled_preference),
            "startup must retry removal when the persisted preference is disabled");
     expect(environment_open_count == 2,
            "a failed CLI removal must not suppress the startup removal retry");
     environment_open_result = ERROR_SUCCESS;
-    expect(apply_path_preference(saved_disabled_preference.add_to_path),
+    expect(apply_saved_path_preference(&saved_disabled_preference),
            "a later startup must retry the disabled PATH preference again");
     expect(environment_open_count == 3,
            "each startup must attempt removal while the saved preference is disabled");
@@ -616,6 +738,8 @@ int main(void) {
            "the tray setter must report a failed PATH removal");
     expect(!tray.add_to_path,
            "the in-memory preference must retain the requested disabled state for retry");
+    expect(tray.add_to_path_preference_set,
+           "changing the PATH setting must mark the preference as explicitly configured");
     environment_open_result = ERROR_SUCCESS;
     expect(apply_path_preference(tray.add_to_path),
            "the in-memory disabled preference must retry PATH removal after failure");
@@ -686,6 +810,8 @@ source = (
     + extract_function("remove_app_from_path")
     + "\n"
     + extract_function("apply_path_preference")
+    + "\n"
+    + extract_function("apply_saved_path_preference")
     + "\n"
     + extract_function("set_startup_registry")
     + "\n"
