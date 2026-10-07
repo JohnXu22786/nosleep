@@ -4465,8 +4465,6 @@ void tray_show_about_dialog(NoSleepTray* tray) {
     tray_dialog_open = true;
 
     HINSTANCE hInstance = GetModuleHandle(NULL);
-    int result = 0;
-
     WNDCLASS wc = {0};
     wc.lpfnWndProc = about_dialog_proc;
     wc.hInstance = hInstance;
@@ -4479,7 +4477,7 @@ void tray_show_about_dialog(NoSleepTray* tray) {
         0, "NoSleepAboutDialog", "About nosleep",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
         CW_USEDEFAULT, CW_USEDEFAULT, 380, 240,
-        tray->hwnd, NULL, hInstance, (LPVOID)&result
+        tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
     if (hwndDlg) {
@@ -4502,10 +4500,6 @@ void tray_show_about_dialog(NoSleepTray* tray) {
 
     UnregisterClass("NoSleepAboutDialog", hInstance);
     tray_dialog_open = false;
-
-    if (result == 1) {
-        tray_check_for_updates(tray, false);
-    }
 }
 
 // About dialog control IDs
@@ -4528,14 +4522,13 @@ static void tray_set_update_check_visible(NoSleepTray* tray, bool checking) {
 }
 
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    static int* pResult = NULL;
+    static NoSleepTray* about_tray = NULL;
 
     switch (msg) {
         case WM_CREATE:
         {
             CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
-            pResult = (int*)cs->lpCreateParams;
-            if (pResult) *pResult = 0;
+            about_tray = (NoSleepTray*)cs->lpCreateParams;
             about_dialog_hwnd = hwnd;
 
             HINSTANCE hInst = GetModuleHandle(NULL);
@@ -4594,12 +4587,10 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             switch (LOWORD(wParam)) {
                 case IDC_ABOUT_CHECK_UPDATES:
                     if (update_check_visible) return TRUE;
-                    if (pResult) *pResult = 1;
-                    DestroyWindow(hwnd);
+                    tray_check_for_updates(about_tray, false);
                     return TRUE;
                 case IDCANCEL: // Escape from IsDialogMessage
                 case IDC_ABOUT_OK:
-                    if (pResult) *pResult = 0;
                     DestroyWindow(hwnd);
                     return TRUE;
             }
@@ -4614,7 +4605,7 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 }
             }
             about_dialog_hwnd = NULL;
-            pResult = NULL;
+            about_tray = NULL;
             break;
 
         case WM_CLOSE:
