@@ -392,7 +392,7 @@ static int test_group_names_reject_whitespace_only(void) {
         return 1;
     }
 
-    const char *valid_name = "  Work events  ";
+    const char *valid_name = "  Personal events  ";
     int added_index = notify_groups_add(&manager, valid_name, 0x4u);
     if (added_index != original_count ||
         strcmp(manager.groups[added_index].name, valid_name) != 0) {
