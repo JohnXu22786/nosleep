@@ -3668,6 +3668,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 {
                     int previous_count = settings_tray->notify_groups.count;
                     show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, -1);
+                    // The nested editor can dispatch Settings Cancel/Close.
+                    if (!IsWindow(hwnd) || !settings_tray || !IsWindow(hNotifyTab)) break;
                     refresh_notification_group_list(hNotifyTab, settings_tray);
                     // A saved new group is appended; cancel and failed saves leave count unchanged.
                     if (settings_tray->notify_groups.count > previous_count) {
