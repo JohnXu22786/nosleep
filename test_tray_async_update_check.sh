@@ -80,6 +80,7 @@ functions = "\n\n".join(
     for name in (
         "tray_update_check_begin",
         "tray_update_check_end",
+        "tray_set_manual_update_status",
         "tray_update_check_worker",
         "tray_prompt_available_update",
         "tray_process_update_check_result",
@@ -121,6 +122,7 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define NOTIFY_EVENT_UPDATE_CHECK_COMPLETED 2
 #define NOTIFY_EVENT_UPDATE_AVAILABLE 3
 #define IDM_REVIEW_UPDATE 1017
+#define IDC_ABOUT_UPDATE_STATUS 3003
 #define MF_BYCOMMAND 0x0000
 #define MF_GRAYED 0x0001
 #define MF_ENABLED 0x0000
@@ -176,9 +178,15 @@ static UINT last_menu_item;
 static UINT last_menu_flags;
 static NoSleepTray *current_tray;
 static HANDLE fake_thread_handle = (HANDLE)(uintptr_t)0x1234;
+static HWND about_dialog_hwnd;
+static char manual_update_status[128];
+static char last_status_text[128];
+static int last_status_control;
+static int status_update_count;
 
 static bool tray_update_check_begin(void);
 static void tray_update_check_end(void);
+static void tray_set_manual_update_status(const char *status);
 static DWORD WINAPI tray_update_check_worker(LPVOID parameter);
 static void tray_process_update_check_result(NoSleepTray *tray, bool silent,
                                               bool check_ok, UpdateInfo *info);
@@ -188,10 +196,19 @@ static void tray_handle_update_check_complete(NoSleepTray *tray,
 static bool tray_wait_for_update_check(NoSleepTray *tray);
 static bool update_check_in_progress;
 
-// UI updates are outside this fixture's asynchronous worker/lifetime scope.
+// Button presentation is outside this fixture's asynchronous worker scope.
 static void tray_set_update_check_visible(NoSleepTray *tray, bool checking) {
     (void)tray;
     (void)checking;
+}
+
+static BOOL SetDlgItemText(HWND hwnd, int control, const char *text) {
+    (void)hwnd;
+    if (control != IDC_ABOUT_UPDATE_STATUS) return 0;
+    last_status_control = control;
+    snprintf(last_status_text, sizeof(last_status_text), "%s", text ? text : "");
+    ++status_update_count;
+    return 1;
 }
 
 ''' + task_struct.group(0) + r'''
@@ -340,11 +357,13 @@ int main(void) {
     NoSleepTray tray = {0};
     tray.hwnd = (HWND)(uintptr_t)0x99;
     current_tray = &tray;
+    about_dialog_hwnd = (HWND)(uintptr_t)0x77;
 
     updater_check_result = true;
     tray_check_for_updates(&tray, false);
     if (create_thread_count != 1 || updater_check_count != 0 || post_count != 0 ||
-        notification_count != 0 || !update_check_in_progress || !tray.update_check_task) {
+        notification_count != 0 || !update_check_in_progress || !tray.update_check_task ||
+        status_update_count != 0) {
         return fail("manual checks must return before network work or UI handling starts");
     }
     tray_check_for_updates(&tray, false);
@@ -362,7 +381,11 @@ int main(void) {
         notification_count != 1 || last_notification != NOTIFY_EVENT_UPDATE_CHECK_COMPLETED ||
         notification_thread_id != 1 || prompt_count != 0 || close_count != 1 ||
         tray.available_update.update_available || last_menu_item != IDM_REVIEW_UPDATE ||
-        (last_menu_flags & MF_GRAYED) == 0) {
+        (last_menu_flags & MF_GRAYED) == 0 ||
+        strcmp(manual_update_status, "Latest version: v1.0.0") != 0 ||
+        last_status_control != IDC_ABOUT_UPDATE_STATUS ||
+        strcmp(last_status_text, "Latest version: v1.0.0") != 0 ||
+        status_update_count != 1) {
         return fail("a successful no-update result must be handled on the tray thread");
     }
 
@@ -376,7 +399,10 @@ int main(void) {
         return fail("a transient result-post failure must be retried");
     }
     tray_handle_update_check_complete(&tray, (TrayUpdateCheckTask *)last_post_parameter);
-    if (update_check_in_progress || notification_count != 1 || save_time_count != 2) {
+    if (update_check_in_progress || notification_count != 1 || save_time_count != 2 ||
+        strcmp(manual_update_status, "Latest version: v1.0.0") != 0 ||
+        strcmp(last_status_text, "Latest version: v1.0.0") != 0 ||
+        status_update_count != 1) {
         return fail("silent failures must save the check time without notifying the user");
     }
 
@@ -391,7 +417,10 @@ int main(void) {
     if (notification_count != 2 || last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE ||
         notification_thread_id != 1 || prompt_count != 1 ||
         create_thread_count != creates_before_update_prompt + 1 || download_count != 0 ||
-        update_check_in_progress) {
+        update_check_in_progress ||
+        strcmp(manual_update_status, "Version 2.0.0 is available") != 0 ||
+        strcmp(last_status_text, "Version 2.0.0 is available") != 0 ||
+        status_update_count != 2) {
         return fail("an update prompt must remain on the tray thread and suppress nested checks");
     }
 
@@ -400,7 +429,10 @@ int main(void) {
     run_pending_worker();
     tray_handle_update_check_complete(&tray, (TrayUpdateCheckTask *)last_post_parameter);
     if (notification_count != notifications_before_repeat_manual + 1 ||
-        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE || prompt_count != 2) {
+        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE || prompt_count != 2 ||
+        strcmp(manual_update_status, "Version 2.0.0 is available") != 0 ||
+        strcmp(last_status_text, "Version 2.0.0 is available") != 0 ||
+        status_update_count != 3) {
         return fail("an explicit check must still notify and prompt for the same available version");
     }
 
@@ -418,7 +450,10 @@ int main(void) {
         !automatic_tray.available_update.update_available ||
         strcmp(automatic_tray.available_update.latest_version, "2.0.0") != 0 ||
         strcmp(automatic_tray.available_update.download_url, updater_download_url) != 0 ||
-        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0 ||
+        strcmp(manual_update_status, "Version 2.0.0 is available") != 0 ||
+        strcmp(last_status_text, "Version 2.0.0 is available") != 0 ||
+        status_update_count != 3) {
         return fail("the first automatic discovery must notify and keep the update cached and reviewable");
     }
 
@@ -473,18 +508,26 @@ int main(void) {
     tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
     if (automatic_tray.update_check_task || automatic_tray.available_update.update_available ||
         notification_count != notifications_before_automatic + 2 ||
-        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) == 0) {
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) == 0 ||
+        strcmp(manual_update_status, "Version 2.0.0 is available") != 0 ||
+        strcmp(last_status_text, "Version 2.0.0 is available") != 0 ||
+        status_update_count != 3) {
         return fail("a successful no-update result must clear and disable the cached review update");
     }
 
     fail_create_thread = true;
     updater_update_available = false;
+    about_dialog_hwnd = (HWND)(uintptr_t)0x78;
     int notifications_before_create_failure = notification_count;
     int checks_before_create_failure = save_time_count;
     tray_check_for_updates(&tray, false);
     if (tray.update_check_task || update_check_in_progress || save_time_count != checks_before_create_failure + 1 ||
         notification_count != notifications_before_create_failure + 1 ||
-        last_notification != NOTIFY_EVENT_UPDATE_CHECK_FAILED) {
+        last_notification != NOTIFY_EVENT_UPDATE_CHECK_FAILED ||
+        strcmp(manual_update_status, "Check failed") != 0 ||
+        last_status_control != IDC_ABOUT_UPDATE_STATUS ||
+        strcmp(last_status_text, "Check failed") != 0 ||
+        status_update_count != 4) {
         return fail("thread-creation failure must release suppression and report a manual failure");
     }
 

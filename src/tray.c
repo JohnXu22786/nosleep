@@ -53,6 +53,7 @@ static HICON system_icon_shield = NULL;
 static bool update_check_in_progress = false;
 static bool update_check_visible = false;
 static HWND about_dialog_hwnd = NULL;
+static char manual_update_status[128] = "";
 // Settings/About procedures share static state; allow only one tray dialog pump.
 // Acquire before CreateWindowEx, which can synchronously dispatch window messages.
 static bool tray_dialog_open = false;
@@ -4749,6 +4750,18 @@ void tray_show_about_dialog(NoSleepTray* tray) {
 // About dialog control IDs
 #define IDC_ABOUT_CHECK_UPDATES 3001
 #define IDC_ABOUT_OK            3002
+#define IDC_ABOUT_UPDATE_STATUS 3003
+
+// Called only on the tray UI thread. Keep the last manual result for the next
+// time About is opened, while silent checks leave the user's feedback alone.
+static void tray_set_manual_update_status(const char* status) {
+    snprintf(manual_update_status, sizeof(manual_update_status), "%s",
+             status ? status : "");
+    if (about_dialog_hwnd) {
+        SetDlgItemText(about_dialog_hwnd, IDC_ABOUT_UPDATE_STATUS,
+                       manual_update_status);
+    }
+}
 
 // Called only on the tray UI thread; the About handle is cleared on destruction.
 static void tray_set_update_check_visible(NoSleepTray* tray, bool checking) {
@@ -4797,6 +4810,11 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             CreateWindowEx(0, "STATIC", build_info,
                 WS_CHILD | WS_VISIBLE, 20, y, 340, 20, hwnd, NULL, hInst, NULL);
             y += 30;
+
+            CreateWindowEx(0, "STATIC", manual_update_status,
+                WS_CHILD | WS_VISIBLE, 20, y, 340, 30, hwnd,
+                (HMENU)IDC_ABOUT_UPDATE_STATUS, hInst, NULL);
+            y += 34;
 
             CreateWindowEx(0, "BUTTON",
                 update_check_visible ? "Checking for updates..." : "Check for Updates...",
@@ -4910,6 +4928,7 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
 
     if (!check_ok) {
         if (!silent) {
+            tray_set_manual_update_status("Check failed");
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
                 "Update Check Failed", "Could not check for updates. Check your internet connection.", false);
         }
@@ -4922,6 +4941,9 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         memset(&tray->available_update, 0, sizeof(tray->available_update));
         EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_GRAYED);
         if (!silent) {
+            char status[128];
+            snprintf(status, sizeof(status), "Latest version: v%s", CURRENT_VERSION);
+            tray_set_manual_update_status(status);
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
                 "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
@@ -4946,6 +4968,10 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
     }
 
     if (!silent) {
+        char status[128];
+        snprintf(status, sizeof(status), "Version %s is available",
+                 info->latest_version);
+        tray_set_manual_update_status(status);
         UpdateInfo available = tray->available_update;
         tray_prompt_available_update(tray, &available);
     }
