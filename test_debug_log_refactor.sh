@@ -28,14 +28,9 @@ try "No getenv(\"NOSLEEP_DEBUG\") in tray.c" \
     test "$(grep -c 'getenv("NOSLEEP_DEBUG")' src/tray.c)" -eq 0
 
 # 2. No printf(...) followed by fflush(stdout) in tray_init/tray_run
-# Check that no bare "printf(" calls exist (only "sprintf(" or "snprintf(" remain).
-# Count total "printf(" matches and subtract known sprintf, snprintf, fprintf.
-TOTAL_PRINTF=$(grep -c "printf(" src/tray.c)
-SPRINTF_COUNT=$(grep -c "sprintf(" src/tray.c)
-SNPRINTF_COUNT=$(grep -c "snprintf(" src/tray.c)
-FPRINTF_COUNT=$(grep -c "fprintf(" src/tray.c)
-# All printf( calls should be sprintf, snprintf, or fprintf
-BARE_PRINTF=$((TOTAL_PRINTF - SPRINTF_COUNT - SNPRINTF_COUNT - FPRINTF_COUNT))
+# Match the printf identifier, excluding sprintf, snprintf, fprintf, and swprintf.
+# grep exits 1 when no matches exist; preserve other errors under set -e.
+BARE_PRINTF=$(grep -Ec '(^|[^[:alnum:]_])printf[[:space:]]*[(]' src/tray.c || [[ $? -eq 1 ]])
 try "No bare printf( calls remain (debug output replaced)" \
     test "$BARE_PRINTF" -eq 0
 
