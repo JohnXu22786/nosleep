@@ -296,7 +296,7 @@ static LRESULT CALLBACK download_dialog_proc(HWND hwnd, UINT message,
                 WS_CHILD | WS_VISIBLE | PBS_MARQUEE,
                 18, 50, 380, 20, hwnd, NULL, GetModuleHandleA(NULL), NULL);
             dialog->cancel_button = CreateWindowExA(0, "BUTTON", "Cancel",
-                WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                 310, 88, 88, 28, hwnd,
                 (HMENU)(INT_PTR)ID_UPDATER_DOWNLOAD_CANCEL,
                 GetModuleHandleA(NULL), NULL);
@@ -307,8 +307,8 @@ static LRESULT CALLBACK download_dialog_proc(HWND hwnd, UINT message,
             return 0;
 
         case WM_COMMAND:
-            if (LOWORD(wparam) == ID_UPDATER_DOWNLOAD_CANCEL &&
-                HIWORD(wparam) == BN_CLICKED) {
+            if ((LOWORD(wparam) == ID_UPDATER_DOWNLOAD_CANCEL ||
+                 LOWORD(wparam) == IDCANCEL) && HIWORD(wparam) == BN_CLICKED) {
                 request_download_cancel(dialog);
                 return 0;
             }
@@ -461,6 +461,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
         ShowWindow(dialog.hwnd, SW_SHOW);
         UpdateWindow(dialog.hwnd);
         SetForegroundWindow(dialog.hwnd);
+        SetFocus(dialog.cancel_button);
 
         dialog.worker_thread = CreateThread(NULL, 0, download_worker, &task, 0, NULL);
         if (dialog.worker_thread) {
@@ -477,8 +478,10 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
                     };
                     for (size_t i = 0; i < sizeof(download_windows) / sizeof(download_windows[0]); i++) {
                         while (PeekMessageA(&message, download_windows[i], 0, 0, PM_REMOVE)) {
-                            TranslateMessage(&message);
-                            DispatchMessageA(&message);
+                            if (!IsDialogMessageA(dialog.hwnd, &message)) {
+                                TranslateMessage(&message);
+                                DispatchMessageA(&message);
+                            }
                         }
                     }
                     while (PeekMessageA(&message, NULL, WM_QUIT, WM_QUIT, PM_REMOVE)) {
@@ -496,8 +499,10 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
                             request_download_cancel(&dialog);
                             continue;
                         }
-                        TranslateMessage(&message);
-                        DispatchMessageA(&message);
+                        if (!IsDialogMessageA(dialog.hwnd, &message)) {
+                            TranslateMessage(&message);
+                            DispatchMessageA(&message);
+                        }
                     }
                 } else {
                     request_download_cancel(&dialog);
