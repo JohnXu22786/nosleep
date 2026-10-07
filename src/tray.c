@@ -4233,7 +4233,12 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
             if (edit_index >= 0 && edit_mgr && edit_index < edit_mgr->count) {
                 SetWindowText(hNameEdit, edit_mgr->groups[edit_index].name);
             } else {
-                SetWindowText(hNameEdit, "My Group");
+                char name[MAX_GROUP_NAME] = "My Group";
+                for (int suffix = 2; notify_groups_name_is_duplicate(edit_mgr, name, -1) &&
+                     suffix <= MAX_NOTIFY_GROUPS + 1; suffix++) {
+                    snprintf(name, sizeof(name), "My Group %d", suffix);
+                }
+                SetWindowText(hNameEdit, name);
             }
             
             y += 55;
