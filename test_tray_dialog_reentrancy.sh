@@ -112,7 +112,8 @@ void tray_show_about_dialog(NoSleepTray*);
 static NoSleepTray tray_instance;
 static int creates, pumps, update_checks, depth, phase;
 static bool fail_create, dialog_alive;
-static int* result_pointer;
+static NoSleepTray* about_context;
+static void tray_check_for_updates(NoSleepTray*, bool);
 static HINSTANCE GetModuleHandle(void* x) { return x; }
 static void* LoadCursor(void* x, int id) { (void)id; return x; }
 static int RegisterClass(WNDCLASS* x) { (void)x; return 1; }
@@ -122,7 +123,10 @@ static HWND CreateWindowEx(int e,const char* c,const char* t,int s,int x,int y,i
  if (++creates > 1) { fputs("FAIL: nested open created another dialog and overwrote state\n",stderr); exit(1); }
  if (fail_create) return NULL;
  dialog_alive = true;
- if (strstr(c,"About")) result_pointer=p;
+ if (strstr(c,"About")) {
+  about_context=p;
+  if (about_context != &tray_instance) exit(6);
+ }
  // Synchronous WM_CREATE can dispatch another tray action too.
  tray_show_settings_dialog(&tray_instance); tray_show_about_dialog(&tray_instance);
  return (HWND)1;
@@ -138,8 +142,8 @@ static int DispatchMessage(MSG* m) {
  (void)m; ++depth;
  if (depth > 1) exit(2);
  tray_show_settings_dialog(&tray_instance); tray_show_about_dialog(&tray_instance);
- // Original About action must still reach its original result storage.
- if (phase == 1 && result_pointer) *result_pointer=1;
+ // Original About action must still reach its original tray context.
+ if (phase == 1 && about_context) tray_check_for_updates(about_context,false);
  DestroyWindow((HWND)1);
  --depth; return 0;
 }
