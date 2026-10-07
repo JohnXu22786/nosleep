@@ -85,6 +85,9 @@ jobs:
           make test-unit
           ./test_test_unit_failure_propagation.sh
 
+      - name: Test updater download dialog positioning
+        run: ./test_updater_download_position.sh
+
       - name: Test rebuild on version changes
         run: ./test_make_version_rebuild.sh
 
