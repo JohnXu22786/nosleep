@@ -65,6 +65,7 @@ struct DownloadTask {
     DWORD total_bytes;
     PVOID volatile active_request;
     bool succeeded;
+    UpdaterStreamResult failure;
 };
 
 static LRESULT CALLBACK download_dialog_proc(HWND hwnd, UINT message,
@@ -428,7 +429,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     if (!temp_path) return false;
     
     DownloadDialog dialog = {0};
-    DownloadTask task = {&dialog, info->download_url, temp_path, 0, NULL, false};
+    DownloadTask task = {&dialog, info->download_url, temp_path, 0, NULL, false, UPDATER_STREAM_READ_FAILED};
     dialog.task = &task;
     bool download_ok = false;
     bool worker_started = false;
@@ -532,7 +533,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     if (!worker_started) {
         // Keep updates available if the progress UI or its worker cannot be created.
         download_ok = download_file(info->download_url, temp_path,
-                                    NULL, NULL, NULL, NULL, NULL);
+                                    NULL, NULL, NULL, NULL, &task);
     }
     
     if (!download_ok) {
@@ -541,10 +542,28 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
             free(temp_path);
             return false;
         }
-        char err_msg[512];
-        snprintf(err_msg, sizeof(err_msg), 
-            "Failed to download update from:\n%s\n\nPlease check your internet connection and try again.",
-            info->download_url);
+        const char* recovery;
+        switch (task.failure) {
+            case UPDATER_STREAM_WRITE_FAILED:
+                recovery = "Could not save the update in your temporary folder.\n"
+                           "Check available disk space and folder permissions, then try again.";
+                break;
+            case UPDATER_STREAM_SIZE_REJECTED:
+                recovery = "The download exceeds the 64 MB safety limit.\n"
+                           "Download the update manually from the official GitHub release page.";
+                break;
+            case UPDATER_STREAM_READ_FAILED:
+                recovery = "Could not receive the update from the server.\n"
+                           "Check your internet connection and try again.";
+                break;
+            default:
+                recovery = "The download could not complete.\nPlease try again.";
+                break;
+        }
+        char err_msg[3072];
+        snprintf(err_msg, sizeof(err_msg),
+            "Failed to download update from:\n%s\n\n%s",
+            info->download_url, recovery);
         MessageBox(hwnd_parent, err_msg, "Download Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         free(temp_path);
         return false;
@@ -907,6 +926,8 @@ static bool download_file(const char* url, const wchar_t* output_path,
     if (total_bytes) *total_bytes = 0;
     if (!url || !output_path || download_was_canceled(cancel_event)) return false;
     
+    if (download_task) download_task->failure = UPDATER_STREAM_READ_FAILED;
+
     // Parse the URL
     // Expected format: https://github.com/.../nosleep-vX.X.X.exe
     wchar_t wurl[2048];
@@ -1012,6 +1033,7 @@ static bool download_file(const char* url, const wchar_t* output_path,
             WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
             NULL, &content_length, &content_length_size, NULL)) {
         if (content_length > max_download_bytes) {
+            if (download_task) download_task->failure = UPDATER_STREAM_SIZE_REJECTED;
             close_download_request(download_task, hRequest);
             if (hConnect) WinHttpCloseHandle(hConnect);
             WinHttpCloseHandle(hSession);
@@ -1031,6 +1053,7 @@ static bool download_file(const char* url, const wchar_t* output_path,
     HANDLE hFile = CreateFileW(output_path, GENERIC_WRITE, 0, NULL,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (hFile == INVALID_HANDLE_VALUE) {
+        if (download_task) download_task->failure = UPDATER_STREAM_WRITE_FAILED;
         close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
         WinHttpCloseHandle(hSession);
@@ -1041,6 +1064,7 @@ static bool download_file(const char* url, const wchar_t* output_path,
     DWORD buffer_size = 65536;
     char* buffer = (char*)malloc(buffer_size);
     if (!buffer) {
+        if (download_task) download_task->failure = UPDATER_STREAM_INTERRUPTED;
         CloseHandle(hFile);
         close_download_request(download_task, hRequest);
         WinHttpCloseHandle(hConnect);
@@ -1049,11 +1073,14 @@ static bool download_file(const char* url, const wchar_t* output_path,
         return false;
     }
     
-    bool copy_ok = updater_copy_stream(updater_read_winhttp, hRequest,
+    UpdaterStreamResult copy_result = updater_copy_stream_result(updater_read_winhttp, hRequest,
                                        updater_write_file, hFile,
                                        buffer, buffer_size, max_download_bytes,
                                        report_progress, progress_context);
     
+    bool copy_ok = copy_result == UPDATER_STREAM_OK;
+    if (download_task) download_task->failure = copy_result;
+
     free(buffer);
     CloseHandle(hFile);
     close_download_request(download_task, hRequest);
