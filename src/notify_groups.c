@@ -139,6 +139,19 @@ bool notify_groups_name_is_blank(const char* name) {
     return true;
 }
 
+static bool notify_groups_names_equal_ignoring_boundary_whitespace(const char* left,
+                                                                   const char* right) {
+    while (*left && isspace((unsigned char)*left)) left++;
+    while (*right && isspace((unsigned char)*right)) right++;
+
+    size_t left_length = strlen(left);
+    size_t right_length = strlen(right);
+    while (left_length > 0 && isspace((unsigned char)left[left_length - 1])) left_length--;
+    while (right_length > 0 && isspace((unsigned char)right[right_length - 1])) right_length--;
+
+    return left_length == right_length && memcmp(left, right, left_length) == 0;
+}
+
 bool notify_groups_name_is_duplicate(const NotifyGroupManager* mgr, const char* name, int exclude_index) {
     if (!mgr || !name) return false;
 
@@ -153,7 +166,8 @@ bool notify_groups_name_is_duplicate(const NotifyGroupManager* mgr, const char* 
     }
 
     for (int i = 0; i < mgr->count; i++) {
-        if (i != exclude_index && strcmp(mgr->groups[i].name, stored_name) == 0) {
+        if (i != exclude_index &&
+            notify_groups_names_equal_ignoring_boundary_whitespace(mgr->groups[i].name, stored_name)) {
             return true;
         }
     }
