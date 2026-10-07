@@ -84,6 +84,7 @@ typedef void *HINSTANCE;
 typedef void *HCURSOR;
 typedef unsigned long WPARAM;
 typedef long LPARAM;
+typedef struct { int unused; } SRWLOCK;
 typedef struct { int unused; } NotifyGroupManager;
 typedef enum {
     SESSION_FINISHED_NONE,
@@ -124,7 +125,9 @@ typedef struct NoSleepTray {
     bool start_on_startup;
     bool add_to_path;
     bool check_updates_on_startup;
+    SRWLOCK tray_icon_lock;
     UINT uTrayMessage;
+    UINT uTaskbarCreatedMessage;
     NotifyGroupManager notify_groups;
 } NoSleepTray;
 
@@ -188,6 +191,8 @@ static HINSTANCE GetModuleHandle(const char *name) { (void)name; return &module_
 static HCURSOR LoadCursor(HINSTANCE instance, const char *name) {
     (void)instance; (void)name; return &cursor_handle;
 }
+static void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+static void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 static UINT RegisterClass(const WNDCLASS *wc) { (void)wc; return 1; }
 static HWND CreateWindowEx(DWORD ex_style, const char *class_name,
                            const char *window_name, DWORD style,
@@ -313,6 +318,7 @@ int main(void) {
 functions = "\n\n".join(
     extract_function(signature)
     for signature in (
+        "static bool tray_add_icon_to_shell(NoSleepTray* tray)",
         "bool tray_init(NoSleepTray* tray)",
         "static void tray_create_menu(NoSleepTray* tray)",
     )

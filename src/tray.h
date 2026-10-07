@@ -96,6 +96,7 @@ typedef struct NoSleepTray {
     bool session_action_cancelled; // Manual stop blocks expiry action publication - protected by delayed_action_lock
     bool starting_nosleep;      // Prevent expiry actions while a replacement session starts - protected by delayed_action_lock
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
+    SRWLOCK tray_icon_lock; // Serializes NOTIFYICONDATA updates and shell calls
     SRWLOCK countdown_icon_cache_lock; // Serializes lazy countdown icon creation and cleanup
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
     ULONGLONG start_tick64;     // Monotonic tick count when nosleep started
@@ -138,6 +139,7 @@ typedef struct NoSleepTray {
     HANDLE countdown_stop_event; // Event to signal stop countdown thread
     HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID
+    UINT uTaskbarCreatedMessage; // Registered shell notification-area restart message
     bool start_on_startup;      // Whether to auto-start at Windows logon
     bool check_updates_on_startup; // Whether to check for updates on startup
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly

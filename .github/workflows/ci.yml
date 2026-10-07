@@ -68,6 +68,9 @@ jobs:
       - name: Test tray menu initialization failure cleanup
         run: bash test_tray_menu_init_failure.sh
 
+      - name: Test tray icon restoration after Explorer restart
+        run: bash test_tray_taskbar_restore.sh
+
       - name: Test countdown icon lifetime
         run: bash test_tray_countdown_icon.sh
 
