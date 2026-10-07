@@ -69,10 +69,9 @@ static int SetWindowPos(HWND hwnd, void* after, int x, int y, int w, int h, int 
     return 1;
 }
 static int initialize_dialog_layout(HWND hwnd, int width, int height) {
-    struct { int width, height; } dimensions = {width, height};
     // The sizing block reads the stored logical client dimensions.
     struct LayoutDimensions { int width, height; };
-    struct LayoutDimensions saved = {dimensions.width, dimensions.height};
+    struct LayoutDimensions saved = {width, height};
     struct LayoutDimensions* layout = &saved;
     unsigned dpi = 96;
     const RECT* suggested = NULL;

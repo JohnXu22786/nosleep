@@ -78,7 +78,19 @@ harness = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+typedef void* HANDLE;
+typedef HANDLE (*DialogDpiContextFn)(HANDLE);
+typedef struct { int left, top, right, bottom; } RECT;
+static HANDLE enter_dialog_dpi_context(DialogDpiContextFn* setter) {
+    *setter = NULL;
+    return NULL;
+}
 typedef void* HWND;
+static int GetWindowRect(HWND hwnd, RECT* rect) {
+    (void)hwnd;
+    *rect = (RECT){0, 0, 490, 440};
+    return 1;
+}
 typedef void* HINSTANCE;
 typedef void* HBRUSH;
 typedef void* LPVOID;
