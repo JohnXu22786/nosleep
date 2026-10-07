@@ -170,6 +170,65 @@ typedef struct {
     const UpdateInfo* info;
 } UpdatePrompt;
 
+typedef struct {
+    const char* message;
+    const char* release_page_url;
+} OversizedDownloadPrompt;
+
+static INT_PTR CALLBACK oversized_download_error_proc(HWND hwnd, UINT message,
+                                                       WPARAM wparam, LPARAM lparam) {
+    OversizedDownloadPrompt* prompt =
+        (OversizedDownloadPrompt*)GetWindowLongPtrA(hwnd, DWLP_USER);
+    if (message == WM_INITDIALOG) {
+        prompt = (OversizedDownloadPrompt*)lparam;
+        SetWindowLongPtrA(hwnd, DWLP_USER, (LONG_PTR)prompt);
+        SetDlgItemTextA(hwnd, IDC_DOWNLOAD_SIZE_MESSAGE, prompt->message);
+        return TRUE;
+    }
+    if (message == WM_COMMAND) {
+        switch (LOWORD(wparam)) {
+            case IDC_DOWNLOAD_SIZE_OPEN_RELEASE:
+                if (prompt && prompt->release_page_url &&
+                    (INT_PTR)ShellExecuteA(hwnd, "open", prompt->release_page_url,
+                                           NULL, NULL, SW_SHOWNORMAL) <= 32) {
+                    char error_message[1024];
+                    snprintf(error_message, sizeof(error_message),
+                        "Could not open this release page in your browser:\n%s\n\n"
+                        "Please open the address manually.",
+                        prompt->release_page_url);
+                    MessageBoxA(hwnd, error_message, "Could not open release page",
+                                MB_OK | MB_ICONERROR | MB_TOPMOST);
+                }
+                return TRUE;
+            case IDCANCEL:
+                EndDialog(hwnd, IDCANCEL);
+                return TRUE;
+        }
+    }
+    if (message == WM_CLOSE) {
+        EndDialog(hwnd, IDCANCEL);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void updater_show_oversized_download_error(HWND hwnd_parent,
+                                                   const char* message,
+                                                   const char* release_page_url) {
+    OversizedDownloadPrompt prompt = {message, release_page_url};
+    INT_PTR result = DialogBoxParamA(GetModuleHandleA(NULL),
+        MAKEINTRESOURCEA(IDD_DOWNLOAD_SIZE_ERROR), hwnd_parent,
+        oversized_download_error_proc, (LPARAM)&prompt);
+    if (result == -1) {
+        char fallback_message[2048];
+        snprintf(fallback_message, sizeof(fallback_message),
+            "%s\n\nThe recovery dialog could not be displayed. Open this release page manually:\n%s",
+            message, release_page_url);
+        MessageBoxA(hwnd_parent, fallback_message, "Download Failed",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
+}
+
 static INT_PTR CALLBACK update_prompt_proc(HWND hwnd, UINT message,
                                             WPARAM wparam, LPARAM lparam) {
     UpdatePrompt* prompt = (UpdatePrompt*)GetWindowLongPtrA(hwnd, DWLP_USER);
@@ -564,7 +623,13 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
         snprintf(err_msg, sizeof(err_msg),
             "Failed to download update from:\n%s\n\n%s",
             info->download_url, recovery);
-        MessageBox(hwnd_parent, err_msg, "Download Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        if (task.failure == UPDATER_STREAM_SIZE_REJECTED) {
+            updater_show_oversized_download_error(hwnd_parent, err_msg,
+                                                  updater_get_release_page_url(info));
+        } else {
+            MessageBox(hwnd_parent, err_msg, "Download Failed",
+                       MB_OK | MB_ICONERROR | MB_TOPMOST);
+        }
         free(temp_path);
         return false;
     }
