@@ -258,6 +258,7 @@ int main(void) {
     wchar_t expected_dir[512];
     wcscpy(expected_dir, long_exe);
     *wcsrchr(expected_dir, L'\\') = L'\0';
+    registry_type = REG_EXPAND_SZ;
     registry_exists = 0;
     registry_bytes = 0;
     assert(add_app_to_path());
