@@ -4154,7 +4154,11 @@ static void create_general_tab(HWND hwnd_parent, NoSleepTray* tray) {
     if (tray->prevent_display) {
         SendDlgItemMessage(hwnd_parent, IDC_PREVENT_DISPLAY, BM_SETCHECK, BST_CHECKED, 0);
     }
-    y += 30;
+    y += 25;
+    CreateWindowEx(0, "STATIC", "Keeps the display from idling off during an active session.",
+        WS_CHILD | WS_VISIBLE,
+        40, y, 390, 20, hwnd_parent, NULL, hInst, NULL);
+    y += 27;
 
     CreateWindowEx(0, "BUTTON", "Enable away mode",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
@@ -4162,7 +4166,12 @@ static void create_general_tab(HWND hwnd_parent, NoSleepTray* tray) {
     if (tray->away_mode) {
         SendDlgItemMessage(hwnd_parent, IDC_AWAY_MODE, BM_SETCHECK, BST_CHECKED, 0);
     }
-    y += 30;
+    y += 25;
+    CreateWindowEx(0, "STATIC", "On supported PCs, Windows can appear asleep while NoSleep "
+        "keeps the session running. Hardware support varies.",
+        WS_CHILD | WS_VISIBLE,
+        40, y, 390, 36, hwnd_parent, NULL, hInst, NULL);
+    y += 43;
 
     CreateWindowEx(0, "BUTTON", "Auto-start with Windows",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
