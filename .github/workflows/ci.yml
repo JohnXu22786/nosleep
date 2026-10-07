@@ -50,6 +50,9 @@ jobs:
       - name: Test General tab keyboard navigation
         run: ./test_tray_general_tab_keyboard_navigation.sh
 
+      - name: Test custom duration registry persistence
+        run: ./test_tray_custom_duration_settings.sh
+
       - name: Test CLI settings failures and PATH addition
         run: bash test_cli_settings_failures.sh
 
