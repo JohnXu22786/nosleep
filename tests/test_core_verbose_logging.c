@@ -32,7 +32,7 @@ int main(void) {
 
     assert(debug_output_calls == 1);
     assert(strcmp(debug_output,
-                  "[12:34:56] INFO - Status: Active for 2m 5s (refresh #7)\n") == 0);
+                  "[12:34:56 UTC] INFO - Status: Active for 2m 5s (refresh #7)\n") == 0);
 
     debug_output_calls = 0;
     debug_output[0] = '\0';
