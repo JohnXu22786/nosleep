@@ -90,6 +90,7 @@ typedef struct {
     bool verbose;
     bool check_updates_on_startup;
     int auto_check_interval;
+    uintptr_t update_timer_id;
     int notification_mode;
     bool add_to_path;
     bool start_on_startup;
@@ -365,6 +366,9 @@ static intptr_t SendMessage(HWND hwnd, int message, int wparam, int lparam) {
 }
 static void tray_apply_auto_check_interval(NoSleepTray *tray, int sel) {
     tray->auto_check_interval = sel;
+}
+static void refresh_auto_check_status(HWND hwnd, NoSleepTray *tray) {
+    (void)hwnd; (void)tray;
 }
 static void DestroyWindow(HWND hwnd) { (void)hwnd; ++dialog_destroy_count; }
 static int failures;
