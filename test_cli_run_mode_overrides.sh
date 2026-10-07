@@ -156,6 +156,8 @@ typedef struct {
     bool away_mode_cli_override;
     bool away_mode_cli_override_set;
     bool verbose;
+    bool verbose_cli_override;
+    bool verbose_cli_override_set;
     int refresh_interval_seconds;
     int session_finished_action;
     int notification_mode;
