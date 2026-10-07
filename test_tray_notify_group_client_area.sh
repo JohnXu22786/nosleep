@@ -14,8 +14,13 @@ root = Path(sys.argv[1])
 tray = (root / "src/tray.c").read_text()
 proc = tray[tray.index("static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {"):]
 start = proc.index("// Calculate dialog size based on number of events")
-end = proc.index("// Apply font", start)
+end = proc.index("return 0;", start)
 layout = proc[start:end]
+scale = tray[tray.index("static void scale_dialog_layout("):]
+size_start = scale.index("    RECT r =")
+size_end = scale.index("    InvalidateRect", size_start)
+sizing = scale[size_start:size_end]
+
 count = int(re.search(r"NOTIFY_EVENT_COUNT\s*=\s*(\d+)", (root / "src/notify_groups.h").read_text()).group(1))
 harness = r"""
 #include <stdio.h>
@@ -36,6 +41,9 @@ typedef struct { int left, top, right, bottom; } RECT;
 #define SWP_NOMOVE 1
 #define SWP_NOZORDER 2
 #define FALSE 0
+#define SWP_NOACTIVATE 4
+typedef unsigned long DWORD;
+static int MulDiv(int value, int numerator, int denominator) { return value * numerator / denominator; }
 #define NOTIFY_EVENT_COUNT __COUNT__
 static int frame_x, frame_y, client_width, client_height, buttons;
 static int button_right[2], button_bottom[2];
@@ -60,6 +68,17 @@ static int SetWindowPos(HWND hwnd, void* after, int x, int y, int w, int h, int 
     client_width = w - 2 * frame_x; client_height = h - frame_y - frame_x;
     return 1;
 }
+static int initialize_dialog_layout(HWND hwnd, int width, int height) {
+    // The sizing block reads the stored logical client dimensions.
+    struct LayoutDimensions { int width, height; };
+    struct LayoutDimensions saved = {width, height};
+    struct LayoutDimensions* layout = &saved;
+    unsigned dpi = 96;
+    const RECT* suggested = NULL;
+    int (*adjust)(RECT*, DWORD, int, DWORD, unsigned) = NULL;
+    __SIZING__
+    return 1;
+}
 static void layout(void) {
     HWND hwnd = 1; HINSTANCE hInst = 1;
     int y = 122;
@@ -80,7 +99,7 @@ int main(void) {
     puts("PASS: notification editor action buttons fit the client area across frame sizes");
 }
 """
-harness = harness.replace("__COUNT__", str(count)).replace("__LAYOUT__", layout)
+harness = harness.replace("__COUNT__", str(count)).replace("__LAYOUT__", layout).replace("__SIZING__", sizing)
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "layout.c"
     binary = Path(tmp) / "layout"

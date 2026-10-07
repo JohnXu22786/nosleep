@@ -120,12 +120,25 @@ harness = r'''#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
+typedef void* HANDLE;
+typedef HANDLE (*DialogDpiContextFn)(HANDLE);
+typedef struct { int left, top, right, bottom; } RECT;
+static HANDLE enter_dialog_dpi_context(DialogDpiContextFn* setter) {
+    *setter = NULL;
+    return NULL;
+}
 typedef void* HWND;
 typedef void* HINSTANCE;
 typedef void* HCURSOR;
 typedef void* HBRUSH;
 typedef void* HMENU;
 typedef void* HFONT;
+static int GetWindowRect(HWND hwnd, RECT* rect) {
+    (void)hwnd;
+    *rect = (RECT){0, 0, 460, 400};
+    return 1;
+}
+
 typedef unsigned int UINT;
 typedef unsigned long DWORD;
 typedef uintptr_t WPARAM;
