@@ -392,7 +392,7 @@ static int test_group_names_reject_whitespace_only(void) {
         return 1;
     }
 
-    const char *valid_name = "  Work events  ";
+    const char *valid_name = "  Personal events  ";
     int added_index = notify_groups_add(&manager, valid_name, 0x4u);
     if (added_index != original_count ||
         strcmp(manager.groups[added_index].name, valid_name) != 0) {
@@ -407,6 +407,55 @@ static int test_group_names_reject_whitespace_only(void) {
         return 1;
     }
 
+    return 0;
+}
+
+static int test_group_names_reject_boundary_whitespace_duplicates(void) {
+    NotifyGroupManager manager;
+    make_manager(&manager);
+
+    int work_index = notify_groups_add(&manager, "Work", 0x1u);
+    int personal_index = notify_groups_add(&manager, "Personal", 0x2u);
+    int original_count = manager.count;
+    if (work_index < 0 || personal_index < 0 ||
+        notify_groups_add(&manager, " \tWork\r\n", 0x4u) != -1 ||
+        manager.count != original_count ||
+        strcmp(manager.groups[work_index].name, "Work") != 0) {
+        fprintf(stderr, "FAIL: adding a boundary-whitespace duplicate was not rejected\n");
+        return 1;
+    }
+
+    if (notify_groups_update(&manager, personal_index, "\tWork ", 0x8u) ||
+        strcmp(manager.groups[personal_index].name, "Personal") != 0 ||
+        manager.groups[personal_index].event_mask != 0x2u) {
+        fprintf(stderr, "FAIL: renaming to a boundary-whitespace duplicate was not rejected\n");
+        return 1;
+    }
+
+    int lowercase_index = notify_groups_add(&manager, "work", 0x10u);
+    if (lowercase_index < 0 || strcmp(manager.groups[lowercase_index].name, "work") != 0) {
+        fprintf(stderr, "FAIL: group-name comparison became case-insensitive\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_unchanged_legacy_name_can_update_with_normalized_collision(void) {
+    NotifyGroupManager manager;
+    memset(&manager, 0, sizeof(manager));
+    manager.count = 2;
+    manager.active_index = 1;
+    strcpy(manager.groups[0].name, "Work");
+    manager.groups[0].event_mask = 0x1u;
+    strcpy(manager.groups[1].name, " Work ");
+    manager.groups[1].event_mask = 0x2u;
+
+    if (!notify_groups_update(&manager, 1, " Work ", 0x4u) ||
+        strcmp(manager.groups[1].name, " Work ") != 0 ||
+        manager.groups[1].event_mask != 0x4u) {
+        fprintf(stderr, "FAIL: unchanged legacy name could not update its events or was normalized\n");
+        return 1;
+    }
     return 0;
 }
 
@@ -663,6 +712,8 @@ static int test_partial_load_cannot_overwrite_persisted_groups(void) {
 int main(void) {
     int failures = 0;
     failures += test_group_names_reject_whitespace_only();
+    failures += test_group_names_reject_boundary_whitespace_duplicates();
+    failures += test_unchanged_legacy_name_can_update_with_normalized_collision();
     failures += test_root_key_creation_failure();
     failures += test_group_key_creation_failure();
     failures += test_value_write_failure("active_index", -1);
