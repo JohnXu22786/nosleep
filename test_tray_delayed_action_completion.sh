@@ -175,9 +175,10 @@ void tray_announce_delayed_action(NoSleepTray *tray, bool shutdown) {
     (void)tray;
     (void)shutdown;
 }
-void tray_start_countdown(NoSleepTray *tray, int action) {
+void tray_start_countdown(NoSleepTray *tray, int action, ULONGLONG start_tick64) {
     (void)tray;
     (void)action;
+    (void)start_tick64;
 }
 void tray_stop_countdown(NoSleepTray *tray) {
     if (stop_before_claim) {
