@@ -372,9 +372,10 @@ void notify_groups_load(NotifyGroupManager* mgr) {
     // Read active index
     DWORD val = 0;
     DWORD size = sizeof(DWORD);
-    result = RegQueryValueEx(hKeyRoot, "active_index", NULL, NULL, (LPBYTE)&val, &size);
+    DWORD active_index_type = 0;
+    result = RegQueryValueEx(hKeyRoot, "active_index", NULL, &active_index_type, (LPBYTE)&val, &size);
     if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
-    if (result != ERROR_SUCCESS) val = 0;
+    if (result != ERROR_SUCCESS || active_index_type != REG_DWORD || size != sizeof(DWORD)) val = 0;
     DWORD persisted_active_index = val;
     mgr->active_index = 0;
     bool active_index_mapped = false;
@@ -419,7 +420,7 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         DWORD mask_type = 0;
         result = RegQueryValueEx(hKeyGroup, "event_mask", NULL, &mask_type, (LPBYTE)&val, &size);
         if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
-        if (result != ERROR_SUCCESS || mask_type != REG_DWORD) {
+        if (result != ERROR_SUCCESS || mask_type != REG_DWORD || size != sizeof(DWORD)) {
             val = 0;
         }
         mgr->groups[mgr->count].event_mask = (unsigned int)val;
@@ -430,7 +431,8 @@ void notify_groups_load(NotifyGroupManager* mgr) {
         DWORD def_type = 0;
         result = RegQueryValueEx(hKeyGroup, "is_default", NULL, &def_type, (LPBYTE)&val, &size);
         if (notify_groups_value_read_failed(result)) mgr->load_incomplete = true;
-        mgr->groups[mgr->count].is_default = (result == ERROR_SUCCESS && def_type == REG_DWORD && val != 0);
+        mgr->groups[mgr->count].is_default = (result == ERROR_SUCCESS && def_type == REG_DWORD &&
+            size == sizeof(DWORD) && val != 0);
         
         RegCloseKey(hKeyGroup);
         mgr->count++;
