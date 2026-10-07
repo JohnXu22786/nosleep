@@ -4,6 +4,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define MAX_WAIT_COUNT 8
 
@@ -14,6 +15,25 @@ static BOOL signal_external_on_wait;
 static int execution_state_call_count;
 static int allow_sleep_call_count;
 static BOOL fail_refresh_execution_state;
+static int gmtime_call_count;
+static int fail_gmtime_call;
+static struct tm fake_utc;
+
+time_t time(time_t *timer) {
+    const time_t now = 0;
+    if (timer) *timer = now;
+    return now;
+}
+
+struct tm *gmtime(const time_t *timer) {
+    (void)timer;
+    ++gmtime_call_count;
+    if (gmtime_call_count == fail_gmtime_call) return NULL;
+
+    fake_utc.tm_year = 126;
+    fake_utc.tm_yday = 100;
+    return &fake_utc;
+}
 
 HANDLE CreateEvent(void *attributes, BOOL manual_reset, BOOL initial_state,
                    const char *name) {
@@ -114,6 +134,8 @@ static void reset_fake_clock(void) {
     execution_state_call_count = 0;
     allow_sleep_call_count = 0;
     fail_refresh_execution_state = FALSE;
+    gmtime_call_count = 0;
+    fail_gmtime_call = 0;
 }
 
 static void test_short_duration_caps_long_refresh_wait(void) {
@@ -175,10 +197,32 @@ static void test_refresh_failures_restore_sleep_and_return_failure(void) {
     nosleep_destroy(ns);
 }
 
+static void test_null_end_time_conversion_does_not_crash(void) {
+    reset_fake_clock();
+    fail_gmtime_call = 2;
+
+    NoSleep *ns = nosleep_create();
+    assert(ns != NULL);
+    HANDLE external_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    signal_external_on_wait = TRUE;
+
+    int result = nosleep_run(ns, INT_MAX, 1, FALSE, FALSE, FALSE,
+                             external_stop_event);
+
+    assert(result == 0);
+    assert(gmtime_call_count == 2);
+    assert(ns->refresh_count == 1);
+    assert(!ns->running);
+
+    nosleep_destroy(ns);
+    CloseHandle(external_stop_event);
+}
+
 int main(void) {
     test_short_duration_caps_long_refresh_wait();
     test_indefinite_long_wait_remains_interruptible();
     test_refresh_failures_restore_sleep_and_return_failure();
-    puts("PASS: duration boundaries, external stops, and refresh failure cleanup are handled");
+    test_null_end_time_conversion_does_not_crash();
+    puts("PASS: duration boundaries, time conversion failures, external stops, and refresh failure cleanup are handled");
     return 0;
 }
