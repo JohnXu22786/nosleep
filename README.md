@@ -120,7 +120,7 @@ Run `nosleep.exe` with the following arguments:
 | `--no-verbose` | | Disable detailed status logging for this run |
 | `--tray` | `-t` | Launch the system‑tray GUI |
 | `--startup` | `-s` | Start sleep prevention immediately (for Windows startup) |
-| `--session-finished MODE` | | Action after timer expires (`none`, `shutdown`, `sleep`) |
+| `--session-finished MODE` | | Action after timer expires (`none`, `shutdown`, `shutdown-graceful`, `sleep`) |
 | `--notification-mode MODE` | | Notification mode (`all`, `critical`, `none`) |
 | `--auto-check-interval I` | | Update check interval (`never`, `daily`, `weekly`) |
 | `--auto-start` | | Enable auto-start with Windows |
