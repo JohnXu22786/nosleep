@@ -122,7 +122,9 @@ typedef struct NoSleepTray {
     bool prevent_display_cli_override_set;
     bool away_mode_cli_override;
     bool away_mode_cli_override_set;
-    bool verbose;               // Print verbose status
+    bool verbose;               // Saved verbose logging preference
+    bool verbose_cli_override;
+    bool verbose_cli_override_set;
     int refresh_interval_seconds; // Interval between sleep-prevention refreshes
     SessionFinishedAction session_finished_action; // Action to take when session finishes
     bool sleep_after_timeout;   // Whether to sleep after timeout expires (deprecated, use session_finished_action)

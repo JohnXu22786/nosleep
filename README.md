@@ -116,7 +116,8 @@ Run `nosleep.exe` with the following arguments:
 | `--no-prevent-display` | | Disable display sleep prevention for this run |
 | `--away-mode` | `-a` | Enable away mode for this run (hardware‑dependent) |
 | `--no-away-mode` | | Disable away mode for this run |
-| `--verbose` | `-v` | Print detailed status on each refresh |
+| `--verbose` | `-v` | Enable detailed status logging for this run |
+| `--no-verbose` | | Disable detailed status logging for this run |
 | `--tray` | `-t` | Launch the system‑tray GUI |
 | `--startup` | `-s` | Start sleep prevention immediately (for Windows startup) |
 | `--session-finished MODE` | | Action after timer expires (`none`, `shutdown`, `sleep`) |
@@ -132,7 +133,8 @@ Run `nosleep.exe` with the following arguments:
 
 **Default behavior**: If no arguments are given, the program starts in tray mode, preserving backward compatibility.
 For each setting, omitting both mode flags leaves its saved preference in effect. Explicit mode flags
-override preferences for this run only.
+override preferences for this run only. This also applies to `--verbose` and `--no-verbose`;
+if both are supplied, the last one wins.
 
 #### Examples
 
