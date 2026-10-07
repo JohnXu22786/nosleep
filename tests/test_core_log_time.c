@@ -105,7 +105,7 @@ static void test_verbose_elapsed_status_crosses_32_bit_tick_boundary(void) {
     for (int i = 0; i < debug_output_count; ++i) {
         char expected[128];
         snprintf(expected, sizeof(expected),
-                 "[12:34:56] INFO - [12:34:56] Active: 0m %ds (#%d)\n",
+                 "[12:34:56 UTC] INFO - [12:34:56 UTC] Active: 0m %ds (#%d)\n",
                  i * 10, i + 1);
         assert(strcmp(debug_outputs[i], expected) == 0);
     }
