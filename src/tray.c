@@ -3828,6 +3828,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                             "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
                             "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
                     }
+                    if (!settings_tray || !IsWindow(hwnd) || !IsWindow(hGeneralTab)) break;
                     refresh_auto_check_status(hGeneralTab, settings_tray);
                     if (settings_tray->auto_check_interval != 0 && !settings_tray->update_timer_id) {
                         MessageBox(hwnd,

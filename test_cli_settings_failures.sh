@@ -367,6 +367,7 @@ static intptr_t SendMessage(HWND hwnd, int message, int wparam, int lparam) {
 static void tray_apply_auto_check_interval(NoSleepTray *tray, int sel) {
     tray->auto_check_interval = sel;
 }
+static bool IsWindow(HWND hwnd) { (void)hwnd; return true; }
 static void refresh_auto_check_status(HWND hwnd, NoSleepTray *tray) {
     (void)hwnd; (void)tray;
 }
