@@ -171,6 +171,8 @@ nosleep.exe --version
 
 When running in tray mode (default or with `--tray`), the application places an icon in the system tray with the following features:
 
+On Windows, if you don't see the icon in the notification area, open the taskbar's hidden icons (system tray overflow) to find NoSleep. To keep it visible, drag the NoSleep icon from the overflow to the visible notification area.
+
 * **Right-click the icon** to access the context menu
 * **Set duration** from the menu:
   - 30 minutes
