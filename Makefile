@@ -10,7 +10,12 @@ CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"$(VERSION)\"
 LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
 
 Comma := ,
-VERSION_COMMA := $(subst .,$(Comma),$(firstword $(subst -, ,$(VERSION))))
+# windres treats leading-zero resource numbers as octal; keep the display version
+# intact while converting the numeric resource components to decimal.
+VERSION_RESOURCE_INPUT := $(firstword $(subst -, ,$(VERSION)))
+export VERSION_RESOURCE_INPUT
+VERSION_DECIMAL := $(shell printf '%s\n' "$$VERSION_RESOURCE_INPUT" | sed -E 's/(^|[.])0+([0-9])/\1\2/g')
+VERSION_COMMA := $(subst .,$(Comma),$(VERSION_DECIMAL))
 VERSION_COMMA := $(VERSION_COMMA),0
 
 SRCDIR = src
