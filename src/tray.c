@@ -3481,6 +3481,8 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_VERBOSE_LOGGING      2004
 #define IDC_CHECK_UPDATES_STARTUP 2005
 #define IDC_AUTO_CHECK_INTERVAL  2006
+#define IDC_AUTO_CHECK_STATUS    2009
+#define IDC_AUTO_CHECK_RETRY     2010
 #define IDC_SETTINGS_OK          2007
 #define IDC_SETTINGS_CANCEL      2008
 #define IDC_ADD_TO_PATH          2012
@@ -3651,6 +3653,25 @@ static LRESULT CALLBACK notify_tab_subclass_proc(HWND hwnd, UINT msg, WPARAM wPa
     return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
+// Report the applied preference, independently of the combo's unsaved selection.
+static void refresh_auto_check_status(HWND general_tab, NoSleepTray* tray) {
+    const char* status;
+    bool failed = tray->auto_check_interval != 0 && !tray->update_timer_id;
+    if (tray->auto_check_interval == 0) {
+        status = "Applied schedule: disabled.";
+    } else if (failed) {
+        status = tray->auto_check_interval == 1
+            ? "Applied: Daily. Not scheduled; retry below."
+            : "Applied: Weekly. Not scheduled; retry below.";
+    } else {
+        status = tray->auto_check_interval == 1
+            ? "Applied schedule: Daily, active."
+            : "Applied schedule: Weekly, active.";
+    }
+    SetDlgItemText(general_tab, IDC_AUTO_CHECK_STATUS, status);
+    EnableWindow(GetDlgItem(general_tab, IDC_AUTO_CHECK_RETRY), failed);
+}
+
 static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* settings_tray = NULL;
     static HWND hTab = NULL;
@@ -3676,7 +3697,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             // Create tab control
             hTab = CreateWindowEx(0, WC_TABCONTROL, NULL,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | TCS_FIXEDWIDTH,
-                10, 10, 460, 350,
+                10, 10, 460, 410,
                 hwnd, (HMENU)IDC_SETTINGS_TAB, hInst, NULL);
 
             // Add tabs
@@ -3695,14 +3716,17 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             // General tab
             hGeneralTab = CreateWindowEx(WS_EX_CONTROLPARENT, "STATIC", NULL,
                 WS_CHILD | WS_VISIBLE,
-                15, 35, 450, 320,
+                15, 35, 450, 380,
                 hwnd, NULL, hInst, NULL);
+            if (!SetWindowSubclass(hGeneralTab, notify_tab_subclass_proc, 1, 0)) {
+                return -1;
+            }
             create_general_tab(hGeneralTab, settings_tray);
             
             // Notifications tab (initially hidden)
             hNotifyTab = CreateWindowEx(WS_EX_CONTROLPARENT, "STATIC", NULL,
                 WS_CHILD,  // Not visible initially
-                15, 35, 450, 320,
+                15, 35, 450, 380,
                 hwnd, NULL, hInst, NULL);
             // Notification controls send WM_COMMAND to their immediate parent,
             // so forward those messages to the dialog's command handlers.
@@ -3721,13 +3745,13 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             // OK and Cancel buttons at the bottom (outside tab control)
             CreateWindowEx(0, "BUTTON", "OK",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-                150, 370, 80, 28, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
+                150, 430, 80, 28, hwnd, (HMENU)IDC_SETTINGS_OK, hInst, NULL);
 
             CreateWindowEx(0, "BUTTON", "Cancel",
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
-                250, 370, 80, 28, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
+                250, 430, 80, 28, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
 
-            if (!initialize_dialog_layout(hwnd, 480, 410)) return -1;
+            if (!initialize_dialog_layout(hwnd, 480, 470)) return -1;
 
             return 0;
         }
@@ -3748,6 +3772,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
         case WM_COMMAND:
             switch (LOWORD(wParam)) {
+                case IDC_AUTO_CHECK_RETRY:
+                    if (settings_tray && HIWORD(wParam) == BN_CLICKED) {
+                        // Retry the applied schedule without saving pending preferences.
+                        tray_apply_auto_check_interval(settings_tray, settings_tray->auto_check_interval);
+                        refresh_auto_check_status(hGeneralTab, settings_tray);
+                    }
+                    break;
+
                 case IDOK: // Enter from IsDialogMessage
                 case IDC_SETTINGS_OK:
                 {
@@ -3795,6 +3827,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                         MessageBox(hwnd,
                             "The PATH change failed. NoSleep will retry applying this setting the next time it starts.",
                             "nosleep - PATH update failed", MB_OK | MB_ICONWARNING);
+                    }
+                    if (!settings_tray || !IsWindow(hwnd) || !IsWindow(hGeneralTab)) break;
+                    refresh_auto_check_status(hGeneralTab, settings_tray);
+                    if (settings_tray->auto_check_interval != 0 && !settings_tray->update_timer_id) {
+                        MessageBox(hwnd,
+                            "Preferences were saved, but automatic update checks could not be scheduled. Use Retry applied schedule to try again. Cancel closes Settings without undoing the saved preferences.",
+                            "nosleep - Updates not scheduled", MB_OK | MB_ICONWARNING);
+                        break;
                     }
                     DestroyWindow(hwnd);
                     break;
@@ -4006,6 +4046,16 @@ static void create_general_tab(HWND hwnd_parent, NoSleepTray* tray) {
         SendMessage(hCombo, CB_SETCURSEL, (WPARAM)idx, 0);
     }
     y += 30;
+
+    CreateWindowEx(0, "STATIC", "",
+        WS_CHILD | WS_VISIBLE,
+        20, y, 410, 20, hwnd_parent, (HMENU)IDC_AUTO_CHECK_STATUS, hInst, NULL);
+    y += 22;
+    CreateWindowEx(0, "BUTTON", "Retry applied schedule",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        20, y, 200, 28, hwnd_parent, (HMENU)IDC_AUTO_CHECK_RETRY, hInst, NULL);
+    refresh_auto_check_status(hwnd_parent, tray);
+    y += 36;
 
     CreateWindowEx(0, "BUTTON", "Add nosleep to environment PATH",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP,
@@ -4797,7 +4847,7 @@ static void tray_setup_update_timer(NoSleepTray* tray) {
     if (!tray->update_timer_id) {
         tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
             "Automatic Updates Not Scheduled",
-            "Could not schedule automatic update checks. Open Settings and reapply your interval to retry.", false);
+            "Could not schedule automatic update checks. Open Settings and use Retry applied schedule to retry.", false);
     }
 }
 
