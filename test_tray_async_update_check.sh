@@ -165,12 +165,15 @@ static int notification_count;
 static NotifyEventId last_notification;
 static DWORD notification_thread_id;
 static int prompt_count;
-static int compare_result;
 static bool prompt_answer;
 static bool check_again_during_prompt;
 static int download_count;
 static int save_time_count;
 static int message_box_count;
+static char updater_latest_version[64] = "2.0.0";
+static char updater_download_url[512] = "https://example.test/nosleep.exe";
+static UINT last_menu_item;
+static UINT last_menu_flags;
 static NoSleepTray *current_tray;
 static HANDLE fake_thread_handle = (HANDLE)(uintptr_t)0x1234;
 
@@ -258,8 +261,8 @@ static bool updater_check(UpdateInfo *info, HWND hwnd_parent) {
     updater_parent = hwnd_parent;
     if (info && updater_update_available) {
         info->update_available = true;
-        strcpy(info->latest_version, "2.0.0");
-        strcpy(info->download_url, "https://example.test/nosleep.exe");
+        strcpy(info->latest_version, updater_latest_version);
+        strcpy(info->download_url, updater_download_url);
     }
     return updater_check_result;
 }
@@ -278,9 +281,8 @@ static void tray_show_notification(NoSleepTray *tray, NotifyEventId event_type,
 }
 
 static int updater_compare_versions(const char *latest, const char *current) {
-    (void)latest;
-    (void)current;
-    return compare_result;
+    int result = strcmp(latest, current);
+    return result < 0 ? -1 : result > 0 ? 1 : 0;
 }
 
 static bool updater_show_prompt_dialog(HWND hwnd, UpdateInfo *info) {
@@ -302,7 +304,9 @@ static bool updater_download_and_install(UpdateInfo *info, const wchar_t *path, 
 }
 
 static UINT EnableMenuItem(void *menu, UINT item, UINT flags) {
-    (void)menu; (void)item; (void)flags;
+    (void)menu;
+    last_menu_item = item;
+    last_menu_flags = flags;
     return 0;
 }
 
@@ -356,7 +360,9 @@ int main(void) {
     tray_handle_update_check_complete(&tray, (TrayUpdateCheckTask *)last_post_parameter);
     if (tray.update_check_task || update_check_in_progress || save_time_count != 1 ||
         notification_count != 1 || last_notification != NOTIFY_EVENT_UPDATE_CHECK_COMPLETED ||
-        notification_thread_id != 1 || prompt_count != 0 || close_count != 1) {
+        notification_thread_id != 1 || prompt_count != 0 || close_count != 1 ||
+        tray.available_update.update_available || last_menu_item != IDM_REVIEW_UPDATE ||
+        (last_menu_flags & MF_GRAYED) == 0) {
         return fail("a successful no-update result must be handled on the tray thread");
     }
 
@@ -376,7 +382,6 @@ int main(void) {
 
     updater_check_result = true;
     updater_update_available = true;
-    compare_result = 1;
     prompt_answer = false;
     check_again_during_prompt = true;
     int creates_before_update_prompt = create_thread_count;
@@ -390,11 +395,94 @@ int main(void) {
         return fail("an update prompt must remain on the tray thread and suppress nested checks");
     }
 
+    int notifications_before_repeat_manual = notification_count;
+    tray_check_for_updates(&tray, false);
+    run_pending_worker();
+    tray_handle_update_check_complete(&tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_repeat_manual + 1 ||
+        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE || prompt_count != 2) {
+        return fail("an explicit check must still notify and prompt for the same available version");
+    }
+
+    NoSleepTray automatic_tray = {0};
+    automatic_tray.hwnd = (HWND)(uintptr_t)0x98;
+    automatic_tray.hmenu = (void *)(uintptr_t)0x42;
+    strcpy(updater_latest_version, "2.0.0");
+    strcpy(updater_download_url, "https://example.test/nosleep-2.0.0.exe");
+    int notifications_before_automatic = notification_count;
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_automatic + 1 ||
+        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE ||
+        !automatic_tray.available_update.update_available ||
+        strcmp(automatic_tray.available_update.latest_version, "2.0.0") != 0 ||
+        strcmp(automatic_tray.available_update.download_url, updater_download_url) != 0 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        return fail("the first automatic discovery must notify and keep the update cached and reviewable");
+    }
+
+    strcpy(updater_download_url, "https://example.test/nosleep-2.0.0-refreshed.exe");
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_automatic + 1 ||
+        strcmp(automatic_tray.available_update.download_url, updater_download_url) != 0 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        return fail("a repeated automatic result must refresh the review cache without notifying again");
+    }
+
+    strcpy(updater_latest_version, "3.0.0");
+    strcpy(updater_download_url, "https://example.test/nosleep-3.0.0.exe");
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_automatic + 2 ||
+        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE ||
+        strcmp(automatic_tray.available_update.latest_version, "3.0.0") != 0 ||
+        strcmp(automatic_tray.available_update.download_url, updater_download_url) != 0 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        return fail("a newer automatic release must notify and replace the cached review version");
+    }
+
+    strcpy(updater_download_url, "https://example.test/nosleep-3.0.0-refreshed.exe");
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_automatic + 2 ||
+        strcmp(automatic_tray.available_update.download_url, updater_download_url) != 0 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        return fail("a repeated check of the newer release must refresh the cache without another notification");
+    }
+
+    updater_check_result = false;
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (automatic_tray.update_check_task || !automatic_tray.available_update.update_available ||
+        strcmp(automatic_tray.available_update.latest_version, "3.0.0") != 0 ||
+        notification_count != notifications_before_automatic + 2 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0) {
+        return fail("a failed automatic check must keep the last known review update");
+    }
+
+    updater_check_result = true;
+    updater_update_available = false;
+    tray_check_for_updates(&automatic_tray, true);
+    run_pending_worker();
+    tray_handle_update_check_complete(&automatic_tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (automatic_tray.update_check_task || automatic_tray.available_update.update_available ||
+        notification_count != notifications_before_automatic + 2 ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) == 0) {
+        return fail("a successful no-update result must clear and disable the cached review update");
+    }
+
     fail_create_thread = true;
     updater_update_available = false;
     int notifications_before_create_failure = notification_count;
+    int checks_before_create_failure = save_time_count;
     tray_check_for_updates(&tray, false);
-    if (tray.update_check_task || update_check_in_progress || save_time_count != 4 ||
+    if (tray.update_check_task || update_check_in_progress || save_time_count != checks_before_create_failure + 1 ||
         notification_count != notifications_before_create_failure + 1 ||
         last_notification != NOTIFY_EVENT_UPDATE_CHECK_FAILED) {
         return fail("thread-creation failure must release suppression and report a manual failure");

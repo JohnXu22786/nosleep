@@ -4916,11 +4916,11 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         goto update_check_done;
     }
 
-    // A successful check replaces the cached result; failures keep the last known update.
-    memset(&tray->available_update, 0, sizeof(tray->available_update));
-    EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_GRAYED);
-
-    if (!info || !info->update_available) {
+    if (!info || !info->update_available ||
+        updater_compare_versions(info->latest_version, CURRENT_VERSION) <= 0) {
+        // A successful check with no newer update clears the cached result.
+        memset(&tray->available_update, 0, sizeof(tray->available_update));
+        EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_GRAYED);
         if (!silent) {
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
                 "No Updates",
@@ -4929,22 +4929,17 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         goto update_check_done;
     }
 
-    // Compare versions
-    if (updater_compare_versions(info->latest_version, CURRENT_VERSION) <= 0) {
-        if (!silent) {
-            tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
-                "No Updates",
-                "You are running the latest version (v" CURRENT_VERSION ")", false);
-        }
-        goto update_check_done;
-    }
+    // Keep the prior version until the new result's notification decision is made.
+    bool notify_update_available = !silent || !tray->available_update.update_available ||
+        updater_compare_versions(info->latest_version,
+                                 tray->available_update.latest_version) > 0;
 
     // Copy the worker result before its stack snapshot goes out of scope.
     tray->available_update = *info;
     EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_ENABLED);
 
     // The menu remains available even when notifications are suppressed.
-    {
+    if (notify_update_available) {
         char msg[256];
         snprintf(msg, sizeof(msg), "Version %s is available! Right-click the tray icon and choose Review Available Update.", info->latest_version);
         tray_show_notification(tray, NOTIFY_EVENT_UPDATE_AVAILABLE, "Update Available", msg, false);
