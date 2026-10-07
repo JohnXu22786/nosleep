@@ -120,7 +120,7 @@ static const char* const HELP_TEXT =
 
 static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
                            CLIParseError* error);
-static int run_tray_mode(const CLIOptions* opts);
+static int run_tray_mode(const CLIOptions* opts, HANDLE startup_ready_event);
 static int run_configure_mode(const CLIOptions* opts);
 
 // Preserve inherited CRT streams (including redirected files and pipes).
@@ -313,20 +313,61 @@ static int relaunch_from_command_line_file(const wchar_t* arguments_path) {
         return 1;
     }
 
-    STARTUPINFOW startup_info = {0};
-    startup_info.cb = sizeof(startup_info);
-    PROCESS_INFORMATION process_info = {0};
-    BOOL launched = CreateProcessW(executable_path, command_line, NULL, NULL, FALSE, 0,
-                                   NULL, NULL, &startup_info, &process_info);
-    free(command_line);
-    if (!launched) {
+    wchar_t startup_event_name[64];
+    int startup_event_name_length = swprintf(
+        startup_event_name, sizeof(startup_event_name) / sizeof(startup_event_name[0]),
+        L"Local\\NoSleepUpdaterReady-%lu", (unsigned long)GetCurrentProcessId());
+    if (startup_event_name_length < 0 ||
+        (size_t)startup_event_name_length >=
+            sizeof(startup_event_name) / sizeof(startup_event_name[0])) {
+        free(command_line);
         MessageBoxW(NULL, L"The updated application could not be started. Please start nosleep manually.",
                     L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         return 1;
     }
 
+    HANDLE startup_ready_event = CreateEventW(NULL, TRUE, FALSE, startup_event_name);
+    if (!startup_ready_event || GetLastError() == ERROR_ALREADY_EXISTS) {
+        if (startup_ready_event) CloseHandle(startup_ready_event);
+        free(command_line);
+        MessageBoxW(NULL, L"The updated application startup could not be verified. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    wchar_t* startup_command_line = updater_append_ready_event_argument(
+        command_line, startup_event_name);
+    free(command_line);
+    if (!startup_command_line) {
+        CloseHandle(startup_ready_event);
+        MessageBoxW(NULL, L"The updated application command line is too long. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    STARTUPINFOW startup_info = {0};
+    startup_info.cb = sizeof(startup_info);
+    PROCESS_INFORMATION process_info = {0};
+    BOOL launched = CreateProcessW(executable_path, startup_command_line, NULL, NULL, FALSE, 0,
+                                   NULL, NULL, &startup_info, &process_info);
+    free(startup_command_line);
+    if (!launched) {
+        CloseHandle(startup_ready_event);
+        MessageBoxW(NULL, L"The updated application could not be started. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
+
+    HANDLE startup_handles[] = {startup_ready_event, process_info.hProcess};
+    DWORD startup_result = WaitForMultipleObjects(2, startup_handles, FALSE, INFINITE);
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
+    CloseHandle(startup_ready_event);
+    if (startup_result != WAIT_OBJECT_0) {
+        MessageBoxW(NULL, L"The updated application exited before completing startup. Please start nosleep manually.",
+                    L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 1;
+    }
     return 0;
 }
 
@@ -365,14 +406,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     
     if (!argv) {
+        if (updater_command_line_has_ready_event_argument(GetCommandLineW())) {
+            MessageBoxW(NULL, L"The application startup could not be verified. Please start nosleep manually.",
+                        L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            return 1;
+        }
         // Could not parse command line, default to tray mode
-        return run_tray_mode(&opts);
+        return run_tray_mode(&opts, NULL);
     }
 
     if (argc == 3 && wcscmp(argv[1], UPDATER_INTERNAL_RELAUNCH_OPTION_W) == 0) {
         int relaunch_result = relaunch_from_command_line_file(argv[2]);
         LocalFree(argv);
         return relaunch_result;
+    }
+
+    HANDLE startup_ready_event = NULL;
+    if (argc >= 3 &&
+        wcscmp(argv[argc - 2], UPDATER_INTERNAL_READY_EVENT_OPTION_W) == 0) {
+        startup_ready_event = OpenEventW(EVENT_MODIFY_STATE, FALSE, argv[argc - 1]);
+        if (!startup_ready_event) {
+            MessageBoxW(NULL, L"The application startup could not be verified. Please start nosleep manually.",
+                        L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
+            LocalFree(argv);
+            return 1;
+        }
+        argc -= 2;
     }
     
     // Parse arguments
@@ -422,7 +481,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     
     // Default: run tray mode with CLI overrides
-    return run_tray_mode(&opts);
+    return run_tray_mode(&opts, startup_ready_event);
 }
 
 
@@ -640,7 +699,14 @@ static int run_configure_mode(const CLIOptions* opts) {
 
 
 
-static int run_tray_mode(const CLIOptions* opts) {
+static bool signal_updater_startup_ready_event(HANDLE startup_ready_event) {
+    if (!startup_ready_event) return true;
+    BOOL signaled = SetEvent(startup_ready_event);
+    CloseHandle(startup_ready_event);
+    return signaled != FALSE;
+}
+
+static int run_tray_mode(const CLIOptions* opts, HANDLE startup_ready_event) {
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
         OutputDebugString("[nosleep] run_tray_mode: starting with debug enabled\n");
@@ -662,6 +728,12 @@ static int run_tray_mode(const CLIOptions* opts) {
 
     if (!tray_init(tray)) {
         MessageBox(NULL, "Failed to initialize tray", "nosleep - Error", MB_OK | MB_ICONERROR);
+        tray_destroy(tray);
+        return 1;
+    }
+
+    if (!signal_updater_startup_ready_event(startup_ready_event)) {
+        MessageBox(NULL, "Failed to confirm application startup", "nosleep - Error", MB_OK | MB_ICONERROR);
         tray_destroy(tray);
         return 1;
     }

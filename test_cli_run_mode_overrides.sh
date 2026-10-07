@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regression tests for per-run overrides of the saved display and away modes.
+# Regression tests for per-run mode overrides and updater startup readiness.
 
 set -euo pipefail
 
@@ -46,7 +46,7 @@ overrides_match = re.search(
 )
 assert overrides_match, "could not find the run-mode CLI override block"
 run_mode_match = re.search(
-    r"static int run_tray_mode\(const CLIOptions\* opts\) \{.*?^\}",
+    r"static int run_tray_mode\(const CLIOptions\* opts, HANDLE startup_ready_event\) \{.*?^\}",
     source,
     re.S | re.M,
 )
@@ -72,6 +72,7 @@ save_modes = tray_source[save_start:save_end].rstrip()
 prefix = r"""
 #include <assert.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -95,6 +96,7 @@ typedef unsigned long DWORD;
 typedef long LONG;
 typedef void *HKEY;
 typedef void *HWND;
+typedef void *HANDLE;
 typedef unsigned char *LPBYTE;
 typedef struct { int unused; } NotifyGroupManager;
 typedef int SessionFinishedAction;
@@ -184,12 +186,27 @@ static int saved_auto_check_interval;
 static int saved_check_updates_startup;
 static int saved_add_to_path;
 static NoSleepTray test_tray;
+static bool tray_init_succeeds = true;
+static bool tray_init_completed;
+static bool startup_ready_signal_succeeds = true;
+static int startup_ready_signal_calls;
+static HANDLE startup_ready_signal_handle;
 
 static NoSleepTray *tray_create(void) { return &test_tray; }
-static bool tray_init(NoSleepTray *tray) { (void)tray; return true; }
+static bool tray_init(NoSleepTray *tray) {
+    (void)tray;
+    tray_init_completed = tray_init_succeeds;
+    return tray_init_succeeds;
+}
 static void tray_update_session_finished_menu(NoSleepTray *tray) { (void)tray; }
 static void tray_destroy(NoSleepTray *tray) { (void)tray; }
 static void tray_run(NoSleepTray *tray) { (void)tray; ++tray_run_calls; }
+static bool signal_updater_startup_ready_event(HANDLE ready_event) {
+    assert(tray_init_completed);
+    ++startup_ready_signal_calls;
+    startup_ready_signal_handle = ready_event;
+    return startup_ready_signal_succeeds;
+}
 static void tray_start_nosleep(NoSleepTray *tray, int duration) {
     (void)tray; (void)duration;
 }
@@ -381,13 +398,60 @@ static void test_persistent_flags_require_configure_mode(void) {
     assert(saved_add_to_path == CLI_ENABLE);
 }
 
+static void test_startup_signal_follows_successful_tray_initialization(void) {
+    CLIOptions options = default_options();
+    HANDLE ready_event = (HANDLE)(uintptr_t)0x55;
+    startup_ready_signal_calls = 0;
+    startup_ready_signal_handle = NULL;
+    tray_init_succeeds = true;
+    tray_init_completed = false;
+
+    assert(run_tray_mode(&options, ready_event) == 0);
+    assert(startup_ready_signal_calls == 1);
+    assert(startup_ready_signal_handle == ready_event);
+}
+
+static void test_startup_signal_is_skipped_when_tray_initialization_fails(void) {
+    CLIOptions options = default_options();
+    HANDLE ready_event = (HANDLE)(uintptr_t)0x55;
+    startup_ready_signal_calls = 0;
+    startup_ready_signal_handle = NULL;
+    tray_init_succeeds = false;
+    tray_init_completed = false;
+
+    assert(run_tray_mode(&options, ready_event) == 1);
+    assert(startup_ready_signal_calls == 0);
+    assert(startup_ready_signal_handle == NULL);
+    tray_init_succeeds = true;
+}
+
+static void test_failed_startup_signal_stops_tray_startup(void) {
+    CLIOptions options = default_options();
+    HANDLE ready_event = (HANDLE)(uintptr_t)0x55;
+    int tray_runs_before = tray_run_calls;
+    startup_ready_signal_calls = 0;
+    startup_ready_signal_handle = NULL;
+    startup_ready_signal_succeeds = false;
+    tray_init_succeeds = true;
+    tray_init_completed = false;
+
+    assert(run_tray_mode(&options, ready_event) == 1);
+    assert(startup_ready_signal_calls == 1);
+    assert(startup_ready_signal_handle == ready_event);
+    assert(tray_run_calls == tray_runs_before);
+    startup_ready_signal_succeeds = true;
+}
+
 int main(void) {
     test_absent_flags_preserve_saved_values();
     test_negative_flags_disable_saved_values_for_this_run();
     test_existing_positive_flags_still_enable_modes();
     test_last_explicit_flag_wins();
     test_persistent_flags_require_configure_mode();
-    puts("PASS: CLI mode overrides preserve saved values by default and apply per run");
+    test_startup_signal_follows_successful_tray_initialization();
+    test_startup_signal_is_skipped_when_tray_initialization_fails();
+    test_failed_startup_signal_stops_tray_startup();
+    puts("PASS: CLI overrides apply per run and updater readiness follows tray initialization");
     return 0;
 }
 """
