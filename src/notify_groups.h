@@ -81,6 +81,9 @@ bool notify_groups_remove(NotifyGroupManager* mgr, int index);
 // Update a group's name and event mask
 bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, unsigned int event_mask);
 
+// Restore a selected built-in group to a chosen preset (0: All, 1: Critical, 2: None)
+bool notify_groups_restore_default(NotifyGroupManager* mgr, int index, int preset_index);
+
 // Save all groups to registry; returns false on incomplete load or registry failure
 bool notify_groups_save(NotifyGroupManager* mgr);
 
