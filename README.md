@@ -73,7 +73,15 @@ If you prefer to compile manually, run these commands from the project root in a
 ```bash
 mkdir -p obj bin
 VERSION=0.0.0
-VERSION_COMMA=$(printf '%s\n' "${VERSION%%-*}" | sed 's/\./,/g'),0
+VERSION_RESOURCE_INPUT=${VERSION%%-*}
+IFS=. read -r -a VERSION_COMPONENTS <<< "$VERSION_RESOURCE_INPUT"
+VERSION_COMMA=
+for component in "${VERSION_COMPONENTS[@]}"; do
+    component="${component#"${component%%[!0]*}"}"
+    component="${component:-0}"
+    VERSION_COMMA="${VERSION_COMMA:+$VERSION_COMMA,}$component"
+done
+VERSION_COMMA="${VERSION_COMMA},0"
 sed "s/@VERSION_COMMA@/$VERSION_COMMA/g; s/@VERSION_STRING@/$VERSION/g" src/resources.rc > obj/resources_built.rc
 windres --include-dir src -i obj/resources_built.rc -o obj/resources.o
 gcc -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"${VERSION}\" \
