@@ -1332,6 +1332,17 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     tray_update_stop_menu_item(tray);
 }
 
+// Called with delayed_action_lock held. A countdown worker reserves startup
+// under this lock while updating the tray outside it; Stop waits for that
+// update to finish before signaling cancellation.
+static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray) {
+    while (tray->delayed_countdown_starting) {
+        SleepConditionVariableSRW(&tray->stop_condition,
+                                  &tray->delayed_action_lock,
+                                  INFINITE, 0);
+    }
+}
+
 static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
                                           DWORD expected_thread_id,
                                           bool timer_expired,
@@ -1351,6 +1362,9 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         DEBUG_LOG("tray_stop_nosleep: ignoring cleanup from an ended session");
         return false;
     }
+
+    tray_wait_for_delayed_countdown_start(tray);
+
     if (is_nosleep_thread) {
         ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
     }
@@ -1996,6 +2010,34 @@ static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedActio
                            "Time's up!", message, true);
 }
 
+static bool tray_start_delayed_countdown(NoSleepTray* tray,
+                                         SessionFinishedAction action,
+                                         HANDLE stop_event,
+                                         ULONGLONG start_tick64) {
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool cancelled = tray->session_action_cancelled || tray->starting_nosleep ||
+                     ATOMIC_LOAD_BOOL(&tray->stopping) ||
+                     WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0;
+    if (!cancelled) {
+        tray->delayed_countdown_starting = true;
+    }
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+
+    if (cancelled) {
+        return false;
+    }
+
+    // Keep tray and shell updates outside delayed_action_lock. Stop waits for
+    // this reservation to finish before publishing cancellation.
+    tray_start_countdown(tray, action, start_tick64);
+
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray->delayed_countdown_starting = false;
+    WakeAllConditionVariable(&tray->stop_condition);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    return true;
+}
+
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
     NoSleepTray* tray = (NoSleepTray*)lpParam;
 
@@ -2005,7 +2047,11 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
 
     ULONGLONG start_tick64 = GetTickCount64();
     // Dispatch and display share the same 60-second timing target.
-    tray_start_countdown(tray, SESSION_FINISHED_SLEEP, start_tick64);
+    if (!tray_start_delayed_countdown(tray, SESSION_FINISHED_SLEEP,
+                                      tray->sleep_stop_event, start_tick64)) {
+        tray_reap_delayed_action_handle(tray, &tray->sleep_timer);
+        return 0;
+    }
     ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
@@ -2070,7 +2116,11 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
     // Start countdown display
     ULONGLONG start_tick64 = GetTickCount64();
     // Dispatch and display share the same 60-second timing target.
-    tray_start_countdown(tray, action, start_tick64);
+    if (!tray_start_delayed_countdown(tray, action,
+                                      tray->shutdown_stop_event, start_tick64)) {
+        tray_reap_delayed_action_handle(tray, &tray->shutdown_timer);
+        return 0;
+    }
     ULONGLONG delay_ms = 60 * 1000;
     
     while (true) {
@@ -5294,15 +5344,18 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         // System is about to enter sleep
                         DEBUG_LOG("System entering sleep, stopping all timers");
                         
-                        // Stop any active countdown
+                        // Do not wait for action workers here: a sleep action can
+                        // be generating this broadcast while waiting for it to return.
+                        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                        tray_wait_for_delayed_countdown_start(tray);
+                        SetEvent(tray->sleep_stop_event);
+                        SetEvent(tray->shutdown_stop_event);
+                        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+
+                        // Stop any countdown that was already active.
                         if (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                             tray_stop_countdown(tray);
                         }
-                        
-                        // Do not wait for action workers here: a sleep action can
-                        // be generating this broadcast while waiting for it to return.
-                        SetEvent(tray->sleep_stop_event);
-                        SetEvent(tray->shutdown_stop_event);
                         
                         // Show notification
                         tray_show_notification(tray, NOTIFY_EVENT_SLEEP_DETECTED,
