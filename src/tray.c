@@ -3500,6 +3500,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
 #define IDC_NOTIFY_SET_ACTIVE       2205
 #define IDC_NOTIFY_EVENT_SELECT_ALL 2206
 #define IDC_NOTIFY_EVENT_CLEAR_ALL  2207
+#define IDC_NOTIFY_RESTORE_DEFAULT  2208
 
 // Tab indices
 #define TAB_GENERAL       0
@@ -3891,6 +3892,49 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     break;
                 }
 
+                case IDC_NOTIFY_RESTORE_DEFAULT:
+                {
+                    HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
+                    if (!hList) break;
+                    int sel = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
+                    if (sel == LB_ERR) break;
+                    int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
+                    if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count ||
+                        !settings_tray->notify_groups.groups[group_idx].is_default) break;
+
+                    // Legacy groups retain only a default flag, not their original preset.
+                    HMENU presets = CreatePopupMenu();
+                    if (!presets) break;
+                    AppendMenu(presets, MF_STRING, 1, "All notifications");
+                    AppendMenu(presets, MF_STRING, 2, "Critical only");
+                    AppendMenu(presets, MF_STRING, 3, "None");
+                    RECT button;
+                    GetWindowRect(GetDlgItem(hNotifyTab, IDC_NOTIFY_RESTORE_DEFAULT), &button);
+                    int choice = TrackPopupMenu(presets, TPM_RETURNCMD | TPM_NONOTIFY,
+                        button.left, button.bottom, 0, hwnd, NULL);
+                    DestroyMenu(presets);
+                    // Menu tracking dispatches messages, including Settings Close.
+                    if (!IsWindow(hwnd) || !settings_tray || !IsWindow(hNotifyTab) ||
+                        choice < 1 || choice > 3) break;
+
+                    NotifyGroupManager updated = settings_tray->notify_groups;
+                    if (!notify_groups_restore_default(&updated, group_idx, choice - 1)) {
+                        MessageBox(hwnd,
+                            "A group already uses this preset name. Rename that group before restoring this default.",
+                            "nosleep - Cannot restore default", MB_OK | MB_ICONWARNING);
+                        break;
+                    }
+                    if (notify_groups_save(&updated)) {
+                        settings_tray->notify_groups = updated;
+                    } else {
+                        MessageBox(hwnd,
+                            "Could not save notification groups. Please check registry access and try again.",
+                            "nosleep - Notification group save failed", MB_OK | MB_ICONWARNING);
+                    }
+                    refresh_notification_group_list(hNotifyTab, settings_tray);
+                    break;
+                }
+
                 case IDC_NOTIFY_SET_ACTIVE:
                 {
                     HWND hList = GetDlgItem(hNotifyTab, IDC_NOTIFY_GROUP_LIST);
@@ -4096,15 +4140,20 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
         WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
         305, 115, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_ADD_GROUP, hInst, NULL);
 
+    CreateWindowEx(0, "BUTTON", "Restore default...",
+        WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+        305, 150, 120, 28, hwnd_parent, (HMENU)IDC_NOTIFY_RESTORE_DEFAULT, hInst, NULL);
+
     // Help text for notification groups
     CreateWindowEx(0, "STATIC", 
         "Notification groups control which notification types\n"
         "produce balloon messages. Select a group and click\n"
         "Configure... to customize which events produce them.\n"
+        "Restore default... lets built-in groups recover a preset.\n"
         "Changes are saved immediately; Settings Cancel does\n"
         "not undo notification group changes.",
         WS_CHILD | WS_VISIBLE,
-        15, 220, 410, 80, hwnd_parent, NULL, hInst, NULL);
+        15, 220, 410, 100, hwnd_parent, NULL, hInst, NULL);
 
     refresh_notification_group_list(hwnd_parent, tray);
 }
@@ -4121,6 +4170,8 @@ static void update_notification_group_actions(HWND hwnd_parent, NoSleepTray* tra
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_CONFIGURE_GROUP), valid);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_DEL_GROUP),
         valid && !tray->notify_groups.groups[group_index].is_default);
+    EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_RESTORE_DEFAULT),
+        valid && tray->notify_groups.groups[group_index].is_default);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_SET_ACTIVE),
         valid && group_index != tray->notify_groups.active_index);
 }

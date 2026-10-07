@@ -211,6 +211,18 @@ bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, 
     return true;
 }
 
+bool notify_groups_restore_default(NotifyGroupManager* mgr, int index, int preset_index) {
+    if (!mgr || index < 0 || index >= mgr->count ||
+        !mgr->groups[index].is_default || preset_index < 0 || preset_index >= 3) {
+        return false;
+    }
+
+    NotifyGroupManager defaults = {0};
+    init_default_groups(&defaults);
+    NotifyGroup* preset = &defaults.groups[preset_index];
+    return notify_groups_update(mgr, index, preset->name, preset->event_mask);
+}
+
 bool notify_groups_save(NotifyGroupManager* mgr) {
     if (!mgr || mgr->load_incomplete) return false;
     
