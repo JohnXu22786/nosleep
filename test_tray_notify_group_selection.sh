@@ -68,6 +68,12 @@ def extract_function(name):
 
 
 refresh = extract_function("refresh_notification_group_list")
+update_actions = extract_function("update_notification_group_actions")
+notifications_tab = extract_function("create_notifications_tab")
+
+assert '"Up to 20 groups can be created; Add Group is\\n"' in notifications_tab and (
+    '"disabled at the limit.' in notifications_tab
+), "the Notifications tab must explain why Add Group is disabled at capacity"
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
@@ -96,6 +102,12 @@ typedef struct {
 } NoSleepTray;
 
 #define IDC_NOTIFY_GROUP_LIST 501
+#define IDC_NOTIFY_CONFIGURE_GROUP 502
+#define IDC_NOTIFY_DEL_GROUP 503
+#define IDC_NOTIFY_RESTORE_DEFAULT 504
+#define IDC_NOTIFY_SET_ACTIVE 505
+#define IDC_NOTIFY_ADD_GROUP 506
+#define MAX_NOTIFY_GROUPS 20
 #define LB_ERR (-1)
 #define LB_GETCOUNT 1u
 #define LB_GETCURSEL 2u
@@ -110,11 +122,29 @@ static int list_count;
 static int list_selection = LB_ERR;
 static int list_item_data[20];
 static char list_item_text[20][256];
+static bool control_enabled[600];
 static int failures;
 
 static HWND GetDlgItem(HWND parent, int id) {
     (void)parent;
-    return id == IDC_NOTIFY_GROUP_LIST ? list_handle : NULL;
+    return id == IDC_NOTIFY_GROUP_LIST ? list_handle : (HWND)(uintptr_t)id;
+}
+
+static int EnableWindow(HWND hwnd, int enable) {
+    int id = (int)(uintptr_t)hwnd;
+    bool was_enabled = id >= 0 && id < (int)(sizeof(control_enabled) / sizeof(control_enabled[0]))
+        ? control_enabled[id]
+        : false;
+    if (id >= 0 && id < (int)(sizeof(control_enabled) / sizeof(control_enabled[0]))) {
+        control_enabled[id] = enable != 0;
+    }
+    return was_enabled;
+}
+
+static bool is_control_enabled(int id) {
+    return id >= 0 && id < (int)(sizeof(control_enabled) / sizeof(control_enabled[0]))
+        ? control_enabled[id]
+        : false;
 }
 
 static LRESULT SendMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -150,12 +180,6 @@ static LRESULT SendMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         default:
             return LB_ERR;
     }
-}
-
-// This fixture exercises list selection; button availability is a UI callback.
-static void update_notification_group_actions(HWND parent, NoSleepTray* tray) {
-    (void)parent;
-    (void)tray;
 }
 
 static void seed_list(int count, int selected_row) {
@@ -212,6 +236,23 @@ main = r'''int main(void) {
     refresh_notification_group_list(parent, &tray);
     expect_selected_group(1, "deleting the selected group falls back to active");
 
+    // Add Group remains available below capacity and is disabled at the limit.
+    tray.notify_groups.count = MAX_NOTIFY_GROUPS - 1;
+    seed_list(tray.notify_groups.count, 0);
+    update_notification_group_actions(parent, &tray);
+    if (!is_control_enabled(IDC_NOTIFY_ADD_GROUP)) {
+        fprintf(stderr, "FAIL: Add Group stays enabled below capacity\n");
+        ++failures;
+    }
+
+    tray.notify_groups.count = MAX_NOTIFY_GROUPS;
+    seed_list(tray.notify_groups.count, 0);
+    update_notification_group_actions(parent, &tray);
+    if (is_control_enabled(IDC_NOTIFY_ADD_GROUP)) {
+        fprintf(stderr, "FAIL: Add Group is disabled at capacity\n");
+        ++failures;
+    }
+
     return failures ? 1 : 0;
 }
 '''
@@ -220,7 +261,7 @@ with tempfile.TemporaryDirectory(prefix="nosleep-notify-selection-") as temp_dir
     temp = Path(temp_dir)
     harness_path = temp / "notify_group_selection.c"
     executable_path = temp / "notify_group_selection"
-    harness_path.write_text(harness + refresh + main)
+    harness_path.write_text(harness + update_actions + refresh + main)
     subprocess.run(
         ["cc", "-std=c99", "-Wall", "-Wextra", "-Werror", str(harness_path), "-o", str(executable_path)],
         check=True,
