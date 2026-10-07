@@ -3307,7 +3307,6 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 DeleteObject(hInputFont);
                 hInputFont = NULL;
             }
-            PostQuitMessage(0);
             break;
             
         case WM_CLOSE:
@@ -3412,15 +3411,22 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     // Show dialog
     ShowWindow(hwndDlg, SW_SHOW);
     
-    // Message loop for modal dialog
+    // Normal dialog closure ends this loop without consuming application quit.
     MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
+    int message_result = 1;
+    while (IsWindow(hwndDlg) && (message_result = GetMessage(&msg, NULL, 0, 0)) > 0) {
         if (!IsDialogMessage(hwndDlg, &msg)) {
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
     }
-    
+
+    if (message_result <= 0) {
+        result = -1;
+        if (IsWindow(hwndDlg)) DestroyWindow(hwndDlg);
+        if (message_result == 0) PostQuitMessage((int)msg.wParam);
+    }
+
     // Cleanup
     if (previous_context) set_dpi_context(previous_context);
     UnregisterClass("NoSleepInputDialog", hInstance);
@@ -3770,7 +3776,6 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             hGeneralTab = NULL;
             hNotifyTab = NULL;
             hIntervalCombo = NULL;
-            PostQuitMessage(0);
             break;
 
         case WM_CLOSE:
@@ -3980,11 +3985,17 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
         ShowWindow(hwndDlg, SW_SHOW);
 
         MSG msg;
-        while (GetMessage(&msg, NULL, 0, 0)) {
+        int message_result = 1;
+        while (IsWindow(hwndDlg) && (message_result = GetMessage(&msg, NULL, 0, 0)) > 0) {
             if (!IsDialogMessage(hwndDlg, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
+        }
+
+        if (message_result <= 0) {
+            if (IsWindow(hwndDlg)) DestroyWindow(hwndDlg);
+            if (message_result == 0) PostQuitMessage((int)msg.wParam);
         }
     }
 
@@ -4312,11 +4323,17 @@ void tray_show_about_dialog(NoSleepTray* tray) {
         ShowWindow(hwndDlg, SW_SHOW);
 
         MSG msg;
-        while (GetMessage(&msg, NULL, 0, 0)) {
+        int message_result = 1;
+        while (IsWindow(hwndDlg) && (message_result = GetMessage(&msg, NULL, 0, 0)) > 0) {
             if (!IsDialogMessage(hwndDlg, &msg)) {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
             }
+        }
+
+        if (message_result <= 0) {
+            if (IsWindow(hwndDlg)) DestroyWindow(hwndDlg);
+            if (message_result == 0) PostQuitMessage((int)msg.wParam);
         }
     }
 
@@ -4435,7 +4452,6 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             }
             about_dialog_hwnd = NULL;
             pResult = NULL;
-            PostQuitMessage(0);
             break;
 
         case WM_CLOSE:
