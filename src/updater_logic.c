@@ -145,6 +145,23 @@ static bool is_valid_release_notes_url(const char* url, size_t length) {
            is_valid_version(url + prefix_length);
 }
 
+const char* updater_get_release_page_url(const UpdateInfo* info) {
+    static const char fallback[] =
+        "https://github.com/JohnXu22786/nosleep/releases";
+    if (!info) return fallback;
+
+    size_t url_length = 0;
+    while (url_length < sizeof(info->release_notes_url) &&
+           info->release_notes_url[url_length] != '\0') {
+        url_length++;
+    }
+    if (url_length < sizeof(info->release_notes_url) &&
+        is_valid_release_notes_url(info->release_notes_url, url_length)) {
+        return info->release_notes_url;
+    }
+    return fallback;
+}
+
 static int compare_prerelease(const char* v1, size_t v1_len,
                               const char* v2, size_t v2_len) {
     const char* end1 = v1 + v1_len;

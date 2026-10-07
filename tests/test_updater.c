@@ -197,6 +197,36 @@ static void test_parse_full(void) {
     PASS();
 }
 
+static void test_release_page_url(void) {
+    printf("\n--- updater_get_release_page_url ---\n");
+    fflush(stdout);
+    UpdateInfo info = {0};
+    static const char* fallback =
+        "https://github.com/JohnXu22786/nosleep/releases";
+    static const char* release_page =
+        "https://github.com/JohnXu22786/nosleep/releases/tag/v2.1.0";
+
+    strcpy(info.release_notes_url, release_page);
+    strcpy(info.download_url,
+           "https://attacker.example/nosleep.exe");
+    TEST("use a valid release page and never fall back to the download URL");
+    ASSERT(strcmp(updater_get_release_page_url(&info), release_page) == 0,
+           "Expected validated release page URL");
+    PASS();
+
+    info.release_notes_url[0] = '\0';
+    TEST("use official releases listing when release notes are absent");
+    ASSERT(strcmp(updater_get_release_page_url(&info), fallback) == 0,
+           "Expected official releases listing");
+    PASS();
+
+    strcpy(info.release_notes_url, "https://attacker.example/releases");
+    TEST("use official releases listing when the release page is unvalidated");
+    ASSERT(strcmp(updater_get_release_page_url(&info), fallback) == 0,
+           "Expected malformed release page to be rejected");
+    PASS();
+}
+
 static void test_parse_no_exe(void) {
     printf("\n--- updater_parse_response (no EXE asset) ---\n");
     fflush(stdout);
@@ -377,6 +407,7 @@ int main(void) {
 
     test_ver_compare();
     test_parse_full();
+    test_release_page_url();
     test_parse_no_exe();
     test_parse_exe_suffix();
     test_parse_malformed_exe_urls();
