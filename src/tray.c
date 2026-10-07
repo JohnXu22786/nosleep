@@ -172,6 +172,7 @@ NoSleepTray* tray_create(void) {
     
     memset(tray, 0, sizeof(NoSleepTray));
     InitializeSRWLock(&tray->delayed_action_lock);
+    InitializeSRWLock(&tray->tray_icon_lock);
     InitializeSRWLock(&tray->countdown_icon_cache_lock);
     InitializeConditionVariable(&tray->stop_condition);
     tray->duration_minutes = -1; // Not set
@@ -323,6 +324,34 @@ void tray_destroy(NoSleepTray* tray) {
     free(tray);
 }
 
+static bool tray_add_icon_to_shell(NoSleepTray* tray) {
+    AcquireSRWLockExclusive(&tray->tray_icon_lock);
+    tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    if (!Shell_NotifyIcon(NIM_ADD, &tray->nid)) {
+        DEBUG_PRINT("tray_add_icon_to_shell: Shell_NotifyIcon failed with error %lu\n", GetLastError());
+        ReleaseSRWLockExclusive(&tray->tray_icon_lock);
+        return false;
+    }
+
+    // Set the legacy notification version again after an Explorer restart.
+    tray->nid.uVersion = 3; // NOTIFYICON_VERSION
+    if (!Shell_NotifyIcon(NIM_SETVERSION, &tray->nid)) {
+        DEBUG_PRINT("tray_add_icon_to_shell: NIM_SETVERSION failed with error %lu\n", GetLastError());
+    }
+    ReleaseSRWLockExclusive(&tray->tray_icon_lock);
+    return true;
+}
+
+static bool tray_handle_taskbar_created(NoSleepTray* tray, UINT msg) {
+    if (!tray || !tray->uTaskbarCreatedMessage || msg != tray->uTaskbarCreatedMessage) {
+        return false;
+    }
+
+    DEBUG_PRINT("tray_window_proc: Explorer restarted; restoring tray icon\n");
+    tray_add_icon_to_shell(tray);
+    return true;
+}
+
 bool tray_init(NoSleepTray* tray) {
     DEBUG_PRINT("tray_init called\n");
     if (!tray) return false;
@@ -377,6 +406,11 @@ bool tray_init(NoSleepTray* tray) {
         tray->uTrayMessage = TRAY_ICON_MESSAGE_ID;
     }
     DEBUG_PRINT("tray_init: Registered tray message ID: %u (0x%X)\n", tray->uTrayMessage, tray->uTrayMessage);
+
+    tray->uTaskbarCreatedMessage = RegisterWindowMessage("TaskbarCreated");
+    if (!tray->uTaskbarCreatedMessage) {
+        DEBUG_PRINT("tray_init: RegisterWindowMessage(TaskbarCreated) failed; Explorer restart recovery is unavailable\n");
+    }
     
     // Setup tray icon
     memset(&tray->nid, 0, sizeof(NOTIFYICONDATA));
@@ -391,21 +425,12 @@ bool tray_init(NoSleepTray* tray) {
     
     DEBUG_PRINT("tray_init: Adding tray icon...\n");
     DEBUG_PRINT("tray_init: hWnd=%p, uID=%u, uCallbackMessage=%u\n", tray->hwnd, tray->nid.uID, tray->nid.uCallbackMessage);
-    if (!Shell_NotifyIcon(NIM_ADD, &tray->nid)) {
-        DEBUG_PRINT("tray_init: Shell_NotifyIcon failed with error %lu\n", GetLastError());
+    if (!tray_add_icon_to_shell(tray)) {
         DestroyWindow(tray->hwnd);
         return false;
     }
     DEBUG_PRINT("tray_init: Tray icon added successfully\n");
     DEBUG_PRINT("tray_init: Icon added with hWnd=%p, uID=%u, uCallbackMessage=%u\n", tray->nid.hWnd, tray->nid.uID, tray->nid.uCallbackMessage);
-    
-    // Set tray icon version to legacy version (NOTIFYICON_VERSION = 3) for mouse messages
-    tray->nid.uVersion = 3; // NOTIFYICON_VERSION
-    if (!Shell_NotifyIcon(NIM_SETVERSION, &tray->nid)) {
-        DEBUG_PRINT("tray_init: NIM_SETVERSION failed with error %lu\n", GetLastError());
-    } else {
-        DEBUG_PRINT("tray_init: Tray icon version set to %u (legacy mouse messages)\n", tray->nid.uVersion);
-    }
     
     // Read startup state from registry
     tray->start_on_startup = is_startup_enabled();
@@ -2260,6 +2285,8 @@ DWORD WINAPI countdown_thread(LPVOID lpParam) {
 void tray_update_icon(NoSleepTray* tray) {
     int remaining_minutes = -1;
     if (!tray || !tray->hwnd) return;
+
+    AcquireSRWLockExclusive(&tray->tray_icon_lock);
     
     // Take local snapshots of atomic variables for consistency
     bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
@@ -2301,6 +2328,7 @@ void tray_update_icon(NoSleepTray* tray) {
         }
         DEBUG_LOG("tray_update_icon: Shell_NotifyIcon (countdown) %s after %d attempts", 
                 success ? "succeeded" : "failed", retry_count);
+        ReleaseSRWLockExclusive(&tray->tray_icon_lock);
         return;
     }
     
@@ -2392,6 +2420,7 @@ void tray_update_icon(NoSleepTray* tray) {
         retry_count++;
     }
     DEBUG_LOG("tray_update_icon: Shell_NotifyIcon %s after %d attempts", success ? "succeeded" : "failed", retry_count);
+    ReleaseSRWLockExclusive(&tray->tray_icon_lock);
 }
 
 void tray_update_stop_menu_item(NoSleepTray* tray) {
@@ -3307,6 +3336,8 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     
     char full_title[256];
     sprintf(full_title, "nosleep - %s", title);
+
+    AcquireSRWLockExclusive(&tray->tray_icon_lock);
     
     // Use balloon notification
     tray->nid.uFlags |= NIF_INFO;
@@ -3319,6 +3350,7 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     
     // Reset flags
     tray->nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    ReleaseSRWLockExclusive(&tray->tray_icon_lock);
 }
 
 // Older SDK targets omit this message even though newer systems send it.
@@ -5079,6 +5111,10 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
     }
     
     tray = (NoSleepTray*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+
+    if (tray_handle_taskbar_created(tray, msg)) {
+        return 0;
+    }
     
     // Check for tray icon message (either registered or default)
     if (tray && (msg == tray->uTrayMessage || msg == TRAY_ICON_MESSAGE_ID)) {
@@ -5242,7 +5278,9 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         case WM_DESTROY:
             // Remove tray icon
             if (tray) {
+                AcquireSRWLockExclusive(&tray->tray_icon_lock);
                 Shell_NotifyIcon(NIM_DELETE, &tray->nid);
+                ReleaseSRWLockExclusive(&tray->tray_icon_lock);
             }
             PostQuitMessage(0);
             break;
