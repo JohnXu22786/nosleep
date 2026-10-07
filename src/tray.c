@@ -4227,7 +4227,6 @@ static void create_general_tab(HWND hwnd_parent, NoSleepTray* tray) {
 // Create controls for the "Notifications" tab
 static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
     HINSTANCE hInst = GetModuleHandle(NULL);
-    (void)tray;
 
     // Create group listbox
     CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
@@ -4261,10 +4260,10 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
 
     // Help text for notification groups
     CreateWindowEx(0, "STATIC", 
-        "Notification groups control which notification types\n"
-        "produce balloon messages. Select a group and click\n"
-        "Configure... to customize which events produce them.\n"
-        "Restore default... lets built-in groups recover a preset.\n"
+        "Notification groups control which events show balloons.\n"
+        "Select a group and click Configure... to edit it.\n"
+        "Restore default... resets a built-in group's preset.\n"
+        "Up to 20 groups; Add Group is disabled at the limit.\n"
         "Changes are saved immediately; Settings Cancel does\n"
         "not undo notification group changes.",
         WS_CHILD | WS_VISIBLE,
@@ -4282,6 +4281,8 @@ static void update_notification_group_actions(HWND hwnd_parent, NoSleepTray* tra
         : (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)selection, 0);
     bool valid = tray && group_index >= 0 && group_index < tray->notify_groups.count;
 
+    EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_ADD_GROUP),
+        tray && tray->notify_groups.count < MAX_NOTIFY_GROUPS);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_CONFIGURE_GROUP), valid);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_DEL_GROUP),
         valid && !tray->notify_groups.groups[group_index].is_default);
