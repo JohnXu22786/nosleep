@@ -15,5 +15,5 @@ CC="${CC:-gcc}"
 OUTPUT="$("$TMPDIR_PATH/test_core_verbose_logging")"
 printf '%s\n' "$OUTPUT"
 printf '%s\n' "$OUTPUT" | grep -Fq \
-    '[12:34:56] INFO - Status: Active for 2m 5s (refresh #7)'
-printf '%s\n' "$OUTPUT" | grep -Fq '[12:34:56] INFO - Regular status'
+    '[12:34:56 UTC] INFO - Status: Active for 2m 5s (refresh #7)'
+printf '%s\n' "$OUTPUT" | grep -Fq '[12:34:56 UTC] INFO - Regular status'
