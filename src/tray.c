@@ -3274,12 +3274,14 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
             {
                 CREATESTRUCT* cs = (CREATESTRUCT*)lParam;
                 pResult = (int*)cs->lpCreateParams;
+                char initial_duration[16];
+                snprintf(initial_duration, sizeof(initial_duration), "%d", pResult ? *pResult : 30);
                 if (pResult) {
                     *pResult = -1;
                 }
                 
                 // Create edit control
-                hEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", "30",
+                hEdit = CreateWindowEx(WS_EX_CLIENTEDGE, "EDIT", initial_duration,
                     WS_CHILD | WS_VISIBLE | ES_NUMBER | WS_TABSTOP,
                     20, 30, 150, 25,
                     hwnd, (HMENU)4, GetModuleHandle(NULL), NULL);
@@ -3354,7 +3356,8 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 static int tray_show_custom_dialog(NoSleepTray* tray) {
     // Create a simple input dialog using CreateWindow
     HINSTANCE hInstance = GetModuleHandle(NULL);
-    int result = -1;
+    static int last_custom_duration = 30;
+    int result = last_custom_duration;
     
     // Register dialog window class
     WNDCLASS wc = {0};
@@ -3464,6 +3467,9 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     // Cleanup
     if (previous_context) set_dpi_context(previous_context);
     UnregisterClass("NoSleepInputDialog", hInstance);
+    if (result > 0) {
+        last_custom_duration = result;
+    }
     
     return result;
 }
