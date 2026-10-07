@@ -3510,6 +3510,127 @@ static void create_notifications_tab(HWND hwnd_tab, NoSleepTray* tray);
 static void refresh_notification_group_list(HWND hwnd_tab, NoSleepTray* tray);
 static void update_notification_group_actions(HWND hwnd_tab, NoSleepTray* tray);
 
+// Keep the original 96-DPI geometry so repeated monitor changes do not
+// accumulate rounding errors, including controls nested inside tab pages.
+typedef struct DialogControlLayout {
+    HWND hwnd;
+    RECT bounds;
+    struct DialogControlLayout* next;
+} DialogControlLayout;
+
+typedef struct {
+    DialogControlLayout* controls;
+    BOOL failed;
+    int width;
+    int height;
+} DialogLayout;
+
+static BOOL CALLBACK capture_dialog_control(HWND child, LPARAM param) {
+    DialogLayout* layout = (DialogLayout*)param;
+    DialogControlLayout* control = calloc(1, sizeof(*control));
+    if (!control) {
+        layout->failed = TRUE;
+        return FALSE;
+    }
+    control->hwnd = child;
+    GetWindowRect(child, &control->bounds);
+    // Combo boxes need their full drop-down height when repositioned.
+    char class_name[32];
+    if (GetClassName(child, class_name, sizeof(class_name)) &&
+        lstrcmpi(class_name, "COMBOBOX") == 0) {
+        RECT dropped;
+        if (SendMessage(child, CB_GETDROPPEDCONTROLRECT, 0, (LPARAM)&dropped)) {
+            control->bounds.bottom = control->bounds.top + dropped.bottom - dropped.top;
+        }
+    }
+    MapWindowPoints(NULL, GetParent(child), (POINT*)&control->bounds, 2);
+    control->next = layout->controls;
+    layout->controls = control;
+    return TRUE;
+}
+
+static void free_dialog_layout(HWND hwnd) {
+    DialogLayout* layout = (DialogLayout*)RemoveProp(hwnd, "NoSleepDialogLayout");
+    if (!layout) return;
+    while (layout->controls) {
+        DialogControlLayout* next = layout->controls->next;
+        free(layout->controls);
+        layout->controls = next;
+    }
+    free(layout);
+}
+
+static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
+    DialogLayout* layout = (DialogLayout*)GetProp(hwnd, "NoSleepDialogLayout");
+    if (!layout || !dpi) return;
+    for (DialogControlLayout* control = layout->controls; control; control = control->next) {
+        RECT* r = &control->bounds;
+        MoveWindow(control->hwnd, MulDiv(r->left, dpi, 96), MulDiv(r->top, dpi, 96),
+            MulDiv(r->right - r->left, dpi, 96), MulDiv(r->bottom - r->top, dpi, 96), TRUE);
+    }
+    HFONT replacement = create_dialog_font(MulDiv(14, dpi, 96));
+    if (replacement) {
+        EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)replacement);
+        HFONT previous = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)replacement);
+        if (previous) DeleteObject(previous);
+    }
+    typedef BOOL (WINAPI *AdjustForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    AdjustForDpiFn adjust = (AdjustForDpiFn)GetProcAddress(
+        GetModuleHandle("user32.dll"), "AdjustWindowRectExForDpi");
+    RECT r = {0, 0, MulDiv(layout->width, dpi, 96), MulDiv(layout->height, dpi, 96)};
+    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    if (!adjust || !adjust(&r, style, FALSE, ex_style, dpi)) {
+        AdjustWindowRectEx(&r, style, FALSE, ex_style);
+    }
+    SetWindowPos(hwnd, NULL, suggested ? suggested->left : 0, suggested ? suggested->top : 0,
+        r.right - r.left, r.bottom - r.top,
+        SWP_NOZORDER | SWP_NOACTIVATE | (suggested ? 0 : SWP_NOMOVE));
+    InvalidateRect(hwnd, NULL, TRUE);
+}
+
+static BOOL initialize_dialog_layout(HWND hwnd, int width, int height) {
+    DialogLayout* layout = calloc(1, sizeof(*layout));
+    if (!layout) return FALSE;
+    layout->width = width;
+    layout->height = height;
+    if (!SetProp(hwnd, "NoSleepDialogLayout", (HANDLE)layout)) {
+        free(layout);
+        return FALSE;
+    }
+    EnumChildWindows(hwnd, capture_dialog_control, (LPARAM)layout);
+    if (layout->failed) {
+        free_dialog_layout(hwnd);
+        return FALSE;
+    }
+    scale_dialog_layout(hwnd, custom_dialog_dpi(hwnd), NULL);
+    RECT bounds;
+    GetWindowRect(hwnd, &bounds);
+    MONITORINFO monitor = {0};
+    monitor.cbSize = sizeof(monitor);
+    if (GetMonitorInfo(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        int x = monitor.rcWork.left + (monitor.rcWork.right - monitor.rcWork.left -
+            (bounds.right - bounds.left)) / 2;
+        int y = monitor.rcWork.top + (monitor.rcWork.bottom - monitor.rcWork.top -
+            (bounds.bottom - bounds.top)) / 2;
+        SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    return TRUE;
+}
+
+// Modern systems receive per-monitor notifications; older systems use their
+// existing awareness and the device-context DPI fallback.
+typedef HANDLE (WINAPI *DialogDpiContextFn)(HANDLE);
+static HANDLE enter_dialog_dpi_context(DialogDpiContextFn* setter) {
+    *setter = (DialogDpiContextFn)GetProcAddress(
+        GetModuleHandle("user32.dll"), "SetThreadDpiAwarenessContext");
+    if (!*setter) return NULL;
+    HANDLE previous = (*setter)((HANDLE)(INT_PTR)-4);
+    if (!previous) previous = (*setter)((HANDLE)(INT_PTR)-3);
+    return previous;
+}
+
 // Global for passing group edit info
 static struct {
     NotifyGroupManager* mgr;
@@ -3606,21 +3727,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 250, 370, 80, 28, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
 
-            // Apply font
-            HFONT settingsFont = create_dialog_font(14);
-            if (settingsFont) {
-                EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)settingsFont);
-                SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)settingsFont);
-            }
-
-            // Center on screen
-            RECT rc;
-            GetWindowRect(hwnd, &rc);
-            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-            int x = (screenWidth - (rc.right - rc.left)) / 2;
-            int yy = (screenHeight - (rc.bottom - rc.top)) / 2;
-            SetWindowPos(hwnd, NULL, x, yy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            if (!initialize_dialog_layout(hwnd, 480, 410)) return -1;
 
             return 0;
         }
@@ -3806,6 +3913,14 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     break;
                 }
             }
+            break;
+
+        case WM_DPICHANGED:
+            scale_dialog_layout(hwnd, HIWORD(wParam), (const RECT*)lParam);
+            return 0;
+
+        case WM_NCDESTROY:
+            free_dialog_layout(hwnd);
             break;
 
         case WM_DESTROY:
@@ -4016,10 +4131,15 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
 
     RegisterClass(&wc);
 
+    DialogDpiContextFn set_dpi_context;
+    HANDLE previous_context = enter_dialog_dpi_context(&set_dpi_context);
+    RECT owner_bounds = {0};
+    GetWindowRect(tray->hwnd, &owner_bounds);
+
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepSettingsDialog", "nosleep Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 490, 440,
+        owner_bounds.left, owner_bounds.top, 490, 440,
         tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
@@ -4040,6 +4160,8 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
             if (message_result == 0) PostQuitMessage((int)msg.wParam);
         }
     }
+
+    if (previous_context) set_dpi_context(previous_context);
 
     UnregisterClass("NoSleepSettingsDialog", hInstance);
     tray_dialog_open = false;
@@ -4167,28 +4289,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 190, dlg_height - 40, 80, 28, hwnd, (HMENU)IDC_NOTIFY_GROUP_EDIT_CANCEL, hInst, NULL);
 
-            // Resize window to fit content
-            RECT rc = {0, 0, 460, dlg_height};
-            AdjustWindowRectEx(&rc, GetWindowLongPtr(hwnd, GWL_STYLE),
-                GetMenu(hwnd) != NULL, GetWindowLongPtr(hwnd, GWL_EXSTYLE));
-            SetWindowPos(hwnd, NULL, 0, 0, rc.right - rc.left, rc.bottom - rc.top,
-                SWP_NOMOVE | SWP_NOZORDER);
-
-            // Apply font
-            HFONT editFont = create_dialog_font(14);
-            if (editFont) {
-                EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)editFont);
-                SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)editFont);
-            }
-
-            // Center on screen
-            GetWindowRect(hwnd, &rc);
-            int sw = GetSystemMetrics(SM_CXSCREEN);
-            int sh = GetSystemMetrics(SM_CYSCREEN);
-            SetWindowPos(hwnd, NULL, 
-                (sw - (rc.right - rc.left)) / 2,
-                (sh - (rc.bottom - rc.top)) / 2,
-                0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            if (!initialize_dialog_layout(hwnd, 460, dlg_height)) return -1;
 
             return 0;
         }
@@ -4266,6 +4367,14 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
             }
             break;
 
+        case WM_DPICHANGED:
+            scale_dialog_layout(hwnd, HIWORD(wParam), (const RECT*)lParam);
+            return 0;
+
+        case WM_NCDESTROY:
+            free_dialog_layout(hwnd);
+            break;
+
         case WM_DESTROY:
             {
                 HFONT hFont = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
@@ -4306,10 +4415,15 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
     g_notify_edit_ctx.group_index = group_index;
     g_notify_edit_ctx.hwnd_parent = hwnd_parent;
 
+    DialogDpiContextFn set_dpi_context;
+    HANDLE previous_context = enter_dialog_dpi_context(&set_dpi_context);
+    RECT owner_bounds = {0};
+    GetWindowRect(hwnd_parent, &owner_bounds);
+
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepNotifyGroupEditDialog", title,
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        CW_USEDEFAULT, CW_USEDEFAULT, 460, 400,
+        owner_bounds.left, owner_bounds.top, 460, 400,
         hwnd_parent, NULL, hInstance, NULL
     );
 
@@ -4335,6 +4449,8 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
         EnableWindow(hwnd_parent, TRUE);
         SetActiveWindow(hwnd_parent);
     }
+
+    if (previous_context) set_dpi_context(previous_context);
 
     UnregisterClass("NoSleepNotifyGroupEditDialog", hInstance);
 }
