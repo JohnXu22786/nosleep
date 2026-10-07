@@ -3085,6 +3085,10 @@ static bool settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD
     }
 }
 
+static DWORD normalize_auto_check_interval(DWORD interval) {
+    return interval <= 2 ? interval : 1;
+}
+
 static int settings_load_custom_duration(void) {
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
@@ -3134,7 +3138,7 @@ void tray_load_settings(NoSleepTray* tray) {
     tray->check_updates_on_startup = (val != 0);
 
     settings_read_dword(hKey, "auto_check_interval", &val, 1);
-    tray->auto_check_interval = (int)val;
+    tray->auto_check_interval = (int)normalize_auto_check_interval(val);
 
     settings_read_dword(hKey, "notification_mode", &val, (DWORD)NOTIFY_ALL);
     tray->notification_mode = (int)val;
@@ -3345,8 +3349,8 @@ static bool should_check_for_updates(void) {
     if (result != ERROR_SUCCESS) return true;
 
     DWORD interval = 1;
-    DWORD size = sizeof(DWORD);
-    RegQueryValueEx(hKey, "auto_check_interval", NULL, NULL, (LPBYTE)&interval, &size);
+    settings_read_dword(hKey, "auto_check_interval", &interval, 1);
+    interval = normalize_auto_check_interval(interval);
 
     if (interval == 0) {
         RegCloseKey(hKey);
@@ -3373,8 +3377,10 @@ static bool should_check_for_updates(void) {
     ULONGLONG interval_100ns;
     if (interval == 1) {
         interval_100ns = (ULONGLONG)24 * 60 * 60 * 10000000LL;
-    } else {
+    } else if (interval == 2) {
         interval_100ns = (ULONGLONG)7 * 24 * 60 * 60 * 10000000LL;
+    } else {
+        return false;
     }
 
     return (now - last_check) >= interval_100ns;
@@ -5145,7 +5151,7 @@ void tray_check_for_updates(NoSleepTray* tray, bool silent) {
 }
 
 static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
-    if (!tray || interval == CB_ERR) return;
+    if (!tray || interval < 0 || interval > 2) return;
     if (tray->auto_check_interval == interval &&
         (interval == 0 || tray->update_timer_id != 0)) return;
 
@@ -5166,8 +5172,10 @@ static void tray_setup_update_timer(NoSleepTray* tray) {
     UINT interval_ms;
     if (tray->auto_check_interval == 1) {
         interval_ms = 24 * 60 * 60 * 1000;
-    } else {
+    } else if (tray->auto_check_interval == 2) {
         interval_ms = 7 * 24 * 60 * 60 * 1000;
+    } else {
+        return;
     }
 
     tray->update_timer_id = SetTimer(tray->hwnd, 1002, interval_ms, NULL);

@@ -18,7 +18,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name, return_type="void"):
     definition = re.search(
-        r"\bstatic\s+" + re.escape(return_type) + r"\s+" +
+        r"\b(?:static\s+)?" + re.escape(return_type) + r"\s+" +
         re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
@@ -77,6 +77,14 @@ assert "tray_apply_auto_check_interval(settings_tray, proposed.auto_check_interv
     "saving the selected update interval must apply it to the live timer"
 )
 
+startup_check = extract_function("should_check_for_updates", "bool")
+assert "interval = normalize_auto_check_interval(interval);" in startup_check, (
+    "startup update checks must normalize the stored interval"
+)
+
+normalize_interval = extract_function("normalize_auto_check_interval", "DWORD")
+read_setting = extract_function("settings_read_dword", "bool")
+load_settings = extract_function("tray_load_settings")
 apply_interval = extract_function("tray_apply_auto_check_interval")
 setup_timer = extract_function("tray_setup_update_timer")
 begin_update_check = extract_function("tray_update_check_begin", "bool")
@@ -89,14 +97,41 @@ harness = r'''#include <stdbool.h>
 #include <string.h>
 
 typedef void* HWND;
+typedef void* HKEY;
 typedef unsigned int UINT;
+typedef unsigned int DWORD;
+typedef int LONG;
 typedef uintptr_t UINT_PTR;
+typedef unsigned char* LPBYTE;
+typedef enum {
+    SESSION_FINISHED_NONE = 0,
+    SESSION_FINISHED_SHUTDOWN,
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
+} SessionFinishedAction;
+
 typedef struct {
     HWND hwnd;
     int auto_check_interval;
     UINT_PTR update_timer_id;
+    bool prevent_display;
+    bool away_mode;
+    bool verbose;
+    bool check_updates_on_startup;
+    int notification_mode;
+    bool add_to_path_preference_set;
+    bool add_to_path;
+    SessionFinishedAction session_finished_action;
 } NoSleepTray;
 
+#define HKEY_CURRENT_USER ((HKEY)(uintptr_t)1)
+#define REG_DWORD 4
+#define ERROR_SUCCESS 0
+#define ERROR_FILE_NOT_FOUND 2
+#define REG_OPTION_NON_VOLATILE 0
+#define KEY_READ 0
+#define SETTINGS_REG_KEY "Software\\nosleep\\settings"
+#define NOTIFY_ALL 0
 #define CB_ERR (-1)
 #define NOTIFY_EVENT_UPDATE_CHECK_FAILED 7
 
@@ -112,6 +147,39 @@ static int notification_count;
 static NotifyEventId last_notification_event;
 static char last_notification_title[128];
 static char last_notification_message[256];
+static DWORD stored_auto_check_interval = 3;
+
+static LONG RegCreateKeyEx(HKEY root, const char* subkey, DWORD reserved,
+                           char* class_name, DWORD options, DWORD access,
+                           void* security, HKEY* result, DWORD* disposition) {
+    (void)root;
+    (void)subkey;
+    (void)reserved;
+    (void)class_name;
+    (void)options;
+    (void)access;
+    (void)security;
+    (void)disposition;
+    *result = (HKEY)(uintptr_t)1;
+    return ERROR_SUCCESS;
+}
+
+static LONG RegQueryValueEx(HKEY key, const char* name, void* reserved,
+                            DWORD* type, LPBYTE data, DWORD* size) {
+    (void)key;
+    (void)reserved;
+    if (strcmp(name, "auto_check_interval") != 0) return ERROR_FILE_NOT_FOUND;
+    if (*size < sizeof(stored_auto_check_interval)) return 234;
+    *type = REG_DWORD;
+    memcpy(data, &stored_auto_check_interval, sizeof(stored_auto_check_interval));
+    *size = sizeof(stored_auto_check_interval);
+    return ERROR_SUCCESS;
+}
+
+static LONG RegCloseKey(HKEY key) {
+    (void)key;
+    return ERROR_SUCCESS;
+}
 
 static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
                                    const char* title, const char* message, bool critical) {
@@ -144,6 +212,9 @@ static UINT_PTR SetTimer(HWND hwnd, UINT_PTR timer_id, UINT interval_ms, void* c
 
 static void tray_setup_update_timer(NoSleepTray* tray);
 
+__NORMALIZE_INTERVAL__
+__READ_SETTING__
+__LOAD_SETTINGS__
 __APPLY_INTERVAL__
 __SETUP_TIMER__
 __BEGIN_UPDATE_CHECK__
@@ -155,8 +226,23 @@ static int fail(const char* scenario) {
 }
 
 int main(void) {
-    NoSleepTray tray = { (HWND)1, 0, 0 };
-    NoSleepTray startup_tray = { (HWND)1, 1, 0 };
+    NoSleepTray tray = { .hwnd = (HWND)1 };
+    NoSleepTray startup_tray = { .hwnd = (HWND)1, .auto_check_interval = 1 };
+    NoSleepTray loaded_tray = { .hwnd = (HWND)1 };
+
+    tray_load_settings(&loaded_tray);
+    if (loaded_tray.auto_check_interval != 1) {
+        return fail("an invalid stored update interval must be normalized to Daily");
+    }
+    tray_setup_update_timer(&loaded_tray);
+    if (loaded_tray.update_timer_id == 0 || set_count != 1 ||
+        last_interval_ms != 86400000U) {
+        return fail("an invalid stored interval must schedule the normalized daily timer");
+    }
+
+    set_count = 0;
+    kill_count = 0;
+    notification_count = 0;
 
     if (!tray_update_check_begin()) {
         return fail("the first update check must start");
@@ -232,7 +318,11 @@ int main(void) {
 }
 '''
 
-harness = harness.replace("__APPLY_INTERVAL__", apply_interval).replace(
+harness = harness.replace("__NORMALIZE_INTERVAL__", normalize_interval).replace(
+    "__READ_SETTING__", read_setting
+).replace(
+    "__LOAD_SETTINGS__", load_settings
+).replace("__APPLY_INTERVAL__", apply_interval).replace(
     "__SETUP_TIMER__", setup_timer
 ).replace("__BEGIN_UPDATE_CHECK__", begin_update_check).replace(
     "__END_UPDATE_CHECK__", end_update_check
