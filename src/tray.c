@@ -2480,14 +2480,34 @@ void tray_update_session_finished_menu(NoSleepTray* tray) {
 
 // PATH registry values use UTF-16, independently of the application's ANSI UI.
 static wchar_t* get_exe_path_w(void) {
-    wchar_t* path = (wchar_t*)malloc(MAX_PATH * sizeof(wchar_t));
+    size_t capacity = MAX_PATH;
+    wchar_t* path = (wchar_t*)malloc(capacity * sizeof(wchar_t));
     if (!path) return NULL;
-    DWORD len = GetModuleFileNameW(NULL, path, MAX_PATH);
-    if (len == 0 || len >= MAX_PATH) {
-        free(path);
-        return NULL;
+
+    for (;;) {
+        DWORD len = GetModuleFileNameW(NULL, path, (DWORD)capacity);
+        if (len == 0) {
+            free(path);
+            return NULL;
+        }
+        if ((size_t)len < capacity) return path;
+
+        if (capacity > (size_t)MAXDWORD / 2 ||
+            capacity > ((size_t)-1 / sizeof(wchar_t)) / 2) {
+            free(path);
+            return NULL;
+        }
+
+        size_t new_capacity = capacity * 2;
+        wchar_t* new_path = (wchar_t*)realloc(
+            path, new_capacity * sizeof(wchar_t));
+        if (!new_path) {
+            free(path);
+            return NULL;
+        }
+        path = new_path;
+        capacity = new_capacity;
     }
-    return path;
 }
 
 // Compare bounded UTF-16 PATH segments using Windows ordinal case folding.
@@ -2895,20 +2915,28 @@ static bool is_startup_enabled(void) {
     }
     swprintf(expected, expected_len, L"\"%ls\" --startup", exe_path);
 
-    wchar_t reg_value[MAX_PATH + 16] = {0};
-    DWORD value_size = sizeof(reg_value);
+    wchar_t* reg_value = (wchar_t*)malloc(expected_len * sizeof(wchar_t));
+    if (!reg_value) {
+        free(exe_path);
+        free(expected);
+        RegCloseKey(hKey);
+        return false;
+    }
+    DWORD value_size = (DWORD)(expected_len * sizeof(wchar_t));
     DWORD value_type = 0;
     result = RegQueryValueExW(hKey, L"nosleep", NULL, &value_type,
                              (LPBYTE)reg_value, &value_size);
     RegCloseKey(hKey);
 
     bool enabled = (result == ERROR_SUCCESS && value_type == REG_SZ &&
-        value_size >= sizeof(wchar_t) && value_size <= sizeof(reg_value) &&
+        value_size >= sizeof(wchar_t) &&
+        value_size <= expected_len * sizeof(wchar_t) &&
         value_size % sizeof(wchar_t) == 0 &&
         reg_value[value_size / sizeof(wchar_t) - 1] == L'\0' &&
         wcscmp(reg_value, expected) == 0);
     free(exe_path);
     free(expected);
+    free(reg_value);
     return enabled;
 }
 

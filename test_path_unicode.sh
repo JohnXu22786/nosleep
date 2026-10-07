@@ -11,6 +11,7 @@ root = Path(sys.argv[1])
 tray = (root / 'src/tray.c').read_text()
 # Compile the production PATH block, not a copied implementation.
 block = tray[tray.index('static wchar_t* get_exe_path_w(void) {'):tray.index('static bool apply_path_preference(bool add_to_path) {')]
+startup_state = tray[tray.index('static bool is_startup_enabled(void) {'):tray.index('static bool set_startup_registry(bool enable) {')]
 prelude = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -26,6 +27,7 @@ typedef unsigned char *LPBYTE;
 typedef void *HKEY;
 typedef intptr_t LPARAM;
 #define MAX_PATH 260
+#define MAXDWORD ((DWORD)~0U)
 #define HKEY_CURRENT_USER ((HKEY)1)
 #define KEY_READ 1
 #define KEY_WRITE 2
@@ -57,15 +59,35 @@ int CompareStringOrdinal(const wchar_t *a, int a_len, const wchar_t *b,
 }
 static const wchar_t *exe = L"C:\\安装\\😀\\nosleep.exe";
 static wchar_t registry[2048];
+static wchar_t startup_registry[2048];
 static DWORD registry_bytes;
+static DWORD startup_registry_bytes;
 static DWORD registry_type = REG_EXPAND_SZ;
+static DWORD startup_registry_type = REG_SZ;
 static int ansi_calls;
 static int writes;
 static int grow_on_read;
 static int registry_exists = 1;
+static int fail_module_filename;
+static int fail_malloc;
+static int fail_realloc;
+static int module_filename_calls;
+static void *test_malloc(size_t size) {
+    return fail_malloc ? NULL : malloc(size);
+}
+static void *test_realloc(void *ptr, size_t size) {
+    return fail_realloc ? NULL : realloc(ptr, size);
+}
+#define malloc test_malloc
+#define realloc test_realloc
 DWORD GetModuleFileNameW(void *module, wchar_t *out, DWORD size) {
     (void)module;
-    if (wcslen(exe) >= size) return size;
+    ++module_filename_calls;
+    if (fail_module_filename) return 0;
+    if (wcslen(exe) >= size) {
+        wmemcpy(out, exe, size);
+        return size;
+    }
     wcscpy(out, exe);
     return (DWORD)wcslen(out);
 }
@@ -76,8 +98,17 @@ DWORD GetModuleFileName(void *module, char *out, DWORD size) {
     return (DWORD)strlen(out);
 }
 LONG RegOpenKeyExW(HKEY root, const wchar_t *name, DWORD a, DWORD b, HKEY *key) {
-    (void)root; (void)a; (void)b; assert(wcscmp(name, L"Environment") == 0);
-    *key = (HKEY)2; return ERROR_SUCCESS;
+    (void)root; (void)a; (void)b;
+    if (wcscmp(name, L"Environment") == 0) {
+        *key = (HKEY)2;
+        return ERROR_SUCCESS;
+    }
+    if (wcscmp(name, L"Software\\Microsoft\\Windows\\CurrentVersion\\Run") == 0) {
+        *key = (HKEY)3;
+        return ERROR_SUCCESS;
+    }
+    assert(0);
+    return ERROR_FILE_NOT_FOUND;
 }
 LONG RegOpenKeyEx(HKEY root, const char *name, DWORD a, DWORD b, HKEY *key) {
     (void)name; ++ansi_calls; return RegOpenKeyExW(root, L"Environment", a, b, key);
@@ -92,17 +123,32 @@ LONG RegCreateKeyEx(HKEY root, const char *name, DWORD a, void *c, DWORD d,
 }
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, void *reserved, DWORD *type,
                      LPBYTE out, DWORD *size) {
-    (void)key; (void)reserved; assert(wcscmp(name, L"Path") == 0);
-    if (type) *type = registry_type;
-    if (!registry_exists) return ERROR_FILE_NOT_FOUND;
-    if (out && grow_on_read) {
+    (void)reserved;
+    wchar_t *value;
+    DWORD value_bytes;
+    DWORD value_type;
+    if (key == (HKEY)3) {
+        assert(wcscmp(name, L"nosleep") == 0);
+        value = startup_registry;
+        value_bytes = startup_registry_bytes;
+        value_type = startup_registry_type;
+    } else {
+        assert(key == (HKEY)2 && wcscmp(name, L"Path") == 0);
+        value = registry;
+        value_bytes = registry_bytes;
+        value_type = registry_type;
+    }
+    if (type) *type = value_type;
+    if (key == (HKEY)2 && !registry_exists) return ERROR_FILE_NOT_FOUND;
+    if (key == (HKEY)2 && out && grow_on_read) {
         wcscat(registry, L";C:\\新增");
         registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+        value_bytes = registry_bytes;
         grow_on_read = 0;
     }
-    if (!out) { *size = registry_bytes; return ERROR_SUCCESS; }
-    if (*size < registry_bytes) { *size = registry_bytes; return ERROR_MORE_DATA; }
-    memcpy(out, registry, registry_bytes); *size = registry_bytes; return ERROR_SUCCESS;
+    if (!out) { *size = value_bytes; return ERROR_SUCCESS; }
+    if (*size < value_bytes) { *size = value_bytes; return ERROR_MORE_DATA; }
+    memcpy(out, value, value_bytes); *size = value_bytes; return ERROR_SUCCESS;
 }
 LONG RegQueryValueEx(HKEY key, const char *name, void *reserved, DWORD *type,
                     LPBYTE out, DWORD *size) {
@@ -182,13 +228,54 @@ int main(void) {
     registry_bytes = 0;
     assert(add_app_to_path());
     assert(remove_app_from_path());
-    puts("PASS: Unicode PATH add/remove preserves existing entries and registry byte sizes");
+
+    static wchar_t long_exe[512];
+    const wchar_t *prefix = L"C:\\NoSleep\\";
+    size_t long_exe_length = wcslen(prefix);
+    wmemcpy(long_exe, prefix, long_exe_length);
+    wmemset(long_exe + long_exe_length, L'x', 300);
+    long_exe_length += 300;
+    long_exe[long_exe_length++] = L'\\';
+    wcscpy(long_exe + long_exe_length, L"nosleep.exe");
+    exe = long_exe;
+
+    fail_malloc = 1;
+    assert(get_exe_path_w() == NULL);
+    fail_malloc = 0;
+    fail_module_filename = 1;
+    assert(get_exe_path_w() == NULL);
+    fail_module_filename = 0;
+    fail_realloc = 1;
+    assert(get_exe_path_w() == NULL);
+    fail_realloc = 0;
+
+    int calls_before_long_path = module_filename_calls;
+    wchar_t *long_path = get_exe_path_w();
+    assert(long_path && wcscmp(long_path, long_exe) == 0);
+    assert(module_filename_calls >= calls_before_long_path + 2);
+    free(long_path);
+
+    wchar_t expected_dir[512];
+    wcscpy(expected_dir, long_exe);
+    *wcsrchr(expected_dir, L'\\') = L'\0';
+    registry_type = REG_EXPAND_SZ;
+    registry_exists = 0;
+    registry_bytes = 0;
+    assert(add_app_to_path());
+    assert(wcscmp(registry, expected_dir) == 0);
+
+    wcscpy(startup_registry, L"\"");
+    wcscat(startup_registry, long_exe);
+    wcscat(startup_registry, L"\" --startup");
+    startup_registry_bytes = (DWORD)((wcslen(startup_registry) + 1) * sizeof(wchar_t));
+    assert(is_startup_enabled());
+    puts("PASS: Unicode PATH and long executable paths preserve registry behavior");
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / 'path.c'
     binary = Path(tmp) / 'path'
-    source.write_text(prelude + block + main)
+    source.write_text(prelude + block + startup_state + main)
     subprocess.run(['cc', '-std=c99', '-Wall', '-Wextra', str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
 PY
