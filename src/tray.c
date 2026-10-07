@@ -495,6 +495,13 @@ static HICON icon_to_grayscale(HICON hColorIcon) {
     
     HDC hdcScreen = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdcScreen);
+    if (!hdcMem) {
+        DEBUG_LOG("icon_to_grayscale: CreateCompatibleDC failed, error=%lu", GetLastError());
+        if (hdcScreen) ReleaseDC(NULL, hdcScreen);
+        DeleteObject(iconInfo.hbmColor);
+        DeleteObject(iconInfo.hbmMask);
+        return NULL;
+    }
     
     // Get bitmap dimensions
     BITMAP bmp;
@@ -654,7 +661,19 @@ static HICON create_numbered_icon(int number) {
     // Create device contexts and bitmaps
     HDC hdc = GetDC(NULL);
     HDC hdcMem = CreateCompatibleDC(hdc);
+    if (!hdcMem) {
+        DEBUG_LOG("create_numbered_icon: CreateCompatibleDC for color bitmap failed, error=%lu", GetLastError());
+        if (hdc) ReleaseDC(NULL, hdc);
+        return NULL;
+    }
+
     HDC hdcMask = CreateCompatibleDC(hdc);
+    if (!hdcMask) {
+        DEBUG_LOG("create_numbered_icon: CreateCompatibleDC for mask bitmap failed, error=%lu", GetLastError());
+        DeleteDC(hdcMem);
+        if (hdc) ReleaseDC(NULL, hdc);
+        return NULL;
+    }
     
     // Create 32-bit ARGB bitmap for color
     BITMAPINFO bmi = {0};
