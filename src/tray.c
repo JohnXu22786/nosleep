@@ -3097,18 +3097,19 @@ static int settings_load_custom_duration(void) {
     return value >= 1 && value <= 1440 ? (int)value : 30;
 }
 
-static void settings_save_custom_duration(int duration) {
-    if (duration < 1 || duration > 1440) return;
+static bool settings_save_custom_duration(int duration) {
+    if (duration < 1 || duration > 1440) return false;
 
     HKEY hKey;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
-    if (result != ERROR_SUCCESS) return;
+    if (result != ERROR_SUCCESS) return false;
 
     DWORD value = (DWORD)duration;
-    RegSetValueEx(hKey, "custom_duration_minutes", 0, REG_DWORD,
-                  (LPBYTE)&value, sizeof(value));
+    result = RegSetValueEx(hKey, "custom_duration_minutes", 0, REG_DWORD,
+                           (LPBYTE)&value, sizeof(value));
     RegCloseKey(hKey);
+    return result == ERROR_SUCCESS;
 }
 
 void tray_load_settings(NoSleepTray* tray) {
@@ -3686,8 +3687,13 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     if (previous_context) set_dpi_context(previous_context);
     UnregisterClass("NoSleepInputDialog", hInstance);
     if (result > 0) {
-        last_custom_duration = result;
-        settings_save_custom_duration(result);
+        if (settings_save_custom_duration(result)) {
+            last_custom_duration = result;
+        } else {
+            MessageBox(tray->hwnd,
+                "The custom duration could not be saved. It will be used now but will not be remembered after NoSleep exits.",
+                "nosleep - Custom duration not saved", MB_OK | MB_ICONWARNING);
+        }
     }
     
     return result;
