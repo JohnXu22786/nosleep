@@ -707,8 +707,13 @@ static bool signal_updater_startup_ready_event(HANDLE startup_ready_event) {
 }
 
 static int run_tray_mode(const CLIOptions* opts, HANDLE startup_ready_event) {
+    prepare_cli_output();
+
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
+        fprintf(stderr, "[nosleep] run_tray_mode: starting with debug enabled\n");
+        fprintf(stderr, "Starting nosleep in system tray mode...\n");
+        fprintf(stderr, "Right-click the tray icon to set duration and control nosleep.\n");
         OutputDebugString("[nosleep] run_tray_mode: starting with debug enabled\n");
         OutputDebugString("Starting nosleep in system tray mode...\n");
         OutputDebugString("Right-click the tray icon to set duration and control nosleep.\n");
