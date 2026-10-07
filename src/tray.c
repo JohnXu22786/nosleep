@@ -1088,7 +1088,7 @@ static void tray_create_menu(NoSleepTray* tray) {
     if (!AppendMenu(hSubMenu, MF_SEPARATOR, 0, NULL)) {
         goto fail;
     }
-    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Indefinite")) {
+    if (!AppendMenu(hSubMenu, MF_STRING, IDM_START_INDEFINITE, "Until stopped")) {
         goto fail;
     }
     
@@ -1145,7 +1145,7 @@ static void tray_create_menu(NoSleepTray* tray) {
     if (!AppendMenu(tray->hmenu, MF_SEPARATOR, 0, NULL)) {
         goto fail;
     }
-    if (!AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Set Duration")) {
+    if (!AppendMenu(tray->hmenu, MF_STRING | MF_POPUP, (UINT_PTR)hSubMenu, "Start for...")) {
         goto fail;
     }
     hSubMenu = NULL; // The parent menu now owns this submenu.
