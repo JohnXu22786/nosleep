@@ -80,10 +80,14 @@ assert re.search(
 ), "the custom dialog must load the saved duration once per process"
 assert re.search(
     r"if\s*\(result\s*>\s*0\)\s*\{\s*"
+    r"if\s*\(settings_save_custom_duration\(result\)\)\s*\{\s*"
     r"last_custom_duration\s*=\s*result;\s*"
-    r"settings_save_custom_duration\(result\);",
+    r"\}\s*else\s*\{\s*"
+    r"MessageBox\(tray->hwnd,\s*"
+    r'"The custom duration could not be saved\. It will be used now but will not be remembered after NoSleep exits\.",\s*'
+    r'"nosleep - Custom duration not saved",\s*MB_OK\s*\|\s*MB_ICONWARNING\);',
     dialog,
-), "only an accepted custom duration may update and persist the remembered value"
+), "the dialog must remember a duration only after saving it and warn when saving fails"
 assert re.search(
     r"minutes\s*>=\s*1\s*&&\s*minutes\s*<=\s*1440", tray
 ), "custom duration input must retain the 1-1440 validation"
@@ -199,7 +203,8 @@ int main(void) {
     expect(registry_close_count == 1,
            "loading a missing duration must close its settings key");
 
-    settings_save_custom_duration(75);
+    expect(settings_save_custom_duration(75),
+           "a successful registry write must report persistence success");
     expect(value_present && stored_value == 75 && stored_type == REG_DWORD,
            "an accepted custom duration must be saved as a DWORD");
     expect(strcmp(last_key_path, SETTINGS_REG_KEY) == 0 &&
@@ -207,6 +212,27 @@ int main(void) {
            "the duration must use the existing settings registry key and value name");
     expect(settings_load_custom_duration() == 75,
            "a saved custom duration must be restored by a fresh settings load");
+
+    int writes_before_key_failure = registry_write_count;
+    int closes_before_key_failure = registry_close_count;
+    key_create_result = ERROR_ACCESS_DENIED;
+    expect(!settings_save_custom_duration(90),
+           "failure to open the settings key must report persistence failure");
+    expect(registry_write_count == writes_before_key_failure,
+           "a failed key creation must not attempt to write the duration");
+    expect(registry_close_count == closes_before_key_failure,
+           "a failed key creation must not close an unopened key");
+    key_create_result = ERROR_SUCCESS;
+
+    int closes_before_write_failure = registry_close_count;
+    value_write_result = ERROR_ACCESS_DENIED;
+    expect(!settings_save_custom_duration(90),
+           "failure to write the custom duration must report persistence failure");
+    expect(registry_close_count == closes_before_write_failure + 1,
+           "the settings key must close after a failed value write");
+    expect(stored_value == 75,
+           "a failed value write must not replace the previously saved duration");
+    value_write_result = ERROR_SUCCESS;
 
     settings_save_custom_duration(1);
     expect(settings_load_custom_duration() == 1,
@@ -216,8 +242,9 @@ int main(void) {
            "the largest valid custom duration must round-trip");
 
     int writes_before_invalid = registry_write_count;
-    settings_save_custom_duration(0);
-    settings_save_custom_duration(1441);
+    expect(!settings_save_custom_duration(0) &&
+           !settings_save_custom_duration(1441),
+           "out-of-range durations must report that nothing was saved");
     expect(registry_write_count == writes_before_invalid,
            "out-of-range durations must not be persisted");
 
