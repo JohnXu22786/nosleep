@@ -16,7 +16,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name):
     definition = re.search(
-        r"\b(?:static\s+)?(?:void|bool|size_t)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        r"\b(?:static\s+)?(?:void|bool|size_t|DWORD)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
     )
@@ -820,6 +820,8 @@ source = (
     + extract_function("tray_set_add_to_path")
     + "\n"
     + extract_function("settings_read_dword")
+    + "\n"
+    + extract_function("normalize_auto_check_interval")
     + "\n"
     + extract_function("tray_load_settings")
     + "\n"
