@@ -292,6 +292,32 @@ bool updater_show_prompt_dialog(HWND hwnd_parent, UpdateInfo* info) {
     return (result == IDYES);
 }
 
+void updater_prompt_release_page(HWND hwnd_parent, const UpdateInfo* info) {
+    if (!info || !info->latest_version[0]) return;
+
+    char message[512];
+    snprintf(message, sizeof(message),
+        "Version %s is available, but this release has no installable Windows .exe.\n\n"
+        "Would you like to open the official release page?",
+        info->latest_version);
+    if (MessageBoxA(hwnd_parent, message, "Installer Unavailable - nosleep",
+                    MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON1 | MB_TOPMOST) != IDYES) {
+        return;
+    }
+
+    const char* release_page_url = updater_get_release_page_url(info);
+    if ((INT_PTR)ShellExecuteA(hwnd_parent, "open", release_page_url,
+                               NULL, NULL, SW_SHOWNORMAL) <= 32) {
+        char error_message[1024];
+        snprintf(error_message, sizeof(error_message),
+            "Could not open the official release page in your browser:\n%s\n\n"
+            "Please open the address manually.",
+            release_page_url);
+        MessageBoxA(hwnd_parent, error_message, "Could not open release page",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+    }
+}
+
 static bool register_download_dialog_class(void) {
     static const char* class_name = "NoSleepUpdaterDownloadDialog";
     WNDCLASSA window_class = {0};

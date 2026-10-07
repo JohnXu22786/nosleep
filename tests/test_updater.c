@@ -53,6 +53,7 @@ static const char* SAMPLE_JSON_FULL =
 static const char* SAMPLE_JSON_NO_EXE =
     "{"
     "  \"tag_name\": \"v2.1.0\","
+    "  \"html_url\": \"https://github.com/JohnXu22786/nosleep/releases/tag/v2.1.0\","
     "  \"name\": \"nosleep v2.1.0\","
     "  \"assets\": ["
     "    {"
@@ -77,6 +78,12 @@ static const char* SAMPLE_JSON_EMPTY_ASSETS =
     "  \"tag_name\": \"v2.1.0\","
     "  \"assets\": []"
     "}";
+
+static const char* SAMPLE_JSON_MALFORMED_ASSETS[] = {
+    "{\"tag_name\":\"v2.1.0\",\"assets\":[null]}",
+    "{\"tag_name\":\"v2.1.0\",\"assets\":[{\"name\":\"nosleep.zip\"}]}",
+    "{\"tag_name\":\"v2.1.0\",\"assets\":[{\"browser_download_url\":\"\"}]}"
+};
 
 static const char* SAMPLE_JSON_NO_V =
     "{"
@@ -232,10 +239,14 @@ static void test_parse_no_exe(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("ZIP-only release is unavailable and has no guessed download URL");
-    ASSERT(!updater_parse_response(SAMPLE_JSON_NO_EXE, &info) &&
+    TEST("ZIP-only release parses successfully without an installable asset");
+    ASSERT(updater_parse_response(SAMPLE_JSON_NO_EXE, &info) &&
            !info.update_available && info.download_url[0] == '\0',
-           "Expected no update without an EXE asset URL");
+           "Expected release check success without an EXE asset URL");
+    ASSERT(strcmp(info.latest_version, "2.1.0") == 0 &&
+           strcmp(updater_get_release_page_url(&info),
+                  "https://github.com/JohnXu22786/nosleep/releases/tag/v2.1.0") == 0,
+           "Expected release version and official page to remain available");
     PASS();
 }
 
@@ -244,10 +255,10 @@ static void test_parse_exe_suffix(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("asset URL ending in .exe.zip is unavailable");
-    ASSERT(!parse_asset_url("https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe.zip", &info) &&
+    TEST("asset URL ending in .exe.zip is not installable");
+    ASSERT(parse_asset_url("https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe.zip", &info) &&
            !info.update_available && info.download_url[0] == '\0',
-           "Expected only an .exe URL path to make an update available");
+           "Expected valid release lookup without an installable .exe");
     PASS();
 }
 
@@ -264,11 +275,11 @@ static void test_parse_malformed_exe_urls(void) {
         "https://github.com:65536/nosleep-2.1.0.exe"
     };
 
-    TEST("malformed and non-HTTPS EXE URLs are unavailable");
+    TEST("malformed and non-HTTPS EXE URLs do not prevent a valid release check");
     for (size_t i = 0; i < sizeof(invalid_urls) / sizeof(invalid_urls[0]); i++) {
-        if (parse_asset_url(invalid_urls[i], &info) || info.update_available ||
+        if (!parse_asset_url(invalid_urls[i], &info) || info.update_available ||
             info.download_url[0] != '\0') {
-            FAIL("Expected an absolute HTTPS URL with a valid host and port");
+            FAIL("Expected valid release without a usable EXE asset");
             return;
         }
     }
@@ -334,10 +345,10 @@ static void test_parse_no_exe_assets(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("release without an assets array is unavailable");
+    TEST("release missing the required assets array remains a parse failure");
     ASSERT(!updater_parse_response(SAMPLE_JSON_NO_ASSETS, &info) &&
            !info.update_available && info.download_url[0] == '\0',
-           "Expected no update without an EXE asset URL");
+           "Expected response missing assets to remain malformed");
     PASS();
 }
 
@@ -346,10 +357,27 @@ static void test_parse_empty_assets(void) {
     fflush(stdout);
     UpdateInfo info;
 
-    TEST("release with an empty assets array is unavailable");
-    ASSERT(!updater_parse_response(SAMPLE_JSON_EMPTY_ASSETS, &info) &&
+    TEST("release with an empty assets array is a successful check without an installer");
+    ASSERT(updater_parse_response(SAMPLE_JSON_EMPTY_ASSETS, &info) &&
            !info.update_available && info.download_url[0] == '\0',
-           "Expected no update without an EXE asset URL");
+           "Expected successful release check without an EXE asset URL");
+    PASS();
+}
+
+static void test_parse_malformed_assets(void) {
+    printf("\n--- updater_parse_response (malformed assets) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+
+    TEST("release assets with a non-object item, missing URL, or empty URL remain parse failures");
+    for (size_t i = 0; i < sizeof(SAMPLE_JSON_MALFORMED_ASSETS) /
+                            sizeof(SAMPLE_JSON_MALFORMED_ASSETS[0]); i++) {
+        if (updater_parse_response(SAMPLE_JSON_MALFORMED_ASSETS[i], &info) ||
+            info.update_available || info.download_url[0] != '\0') {
+            FAIL("Expected malformed asset entries to remain a parse failure");
+            return;
+        }
+    }
     PASS();
 }
 
@@ -417,6 +445,7 @@ int main(void) {
     test_parse_malformed_tag();
     test_parse_no_exe_assets();
     test_parse_empty_assets();
+    test_parse_malformed_assets();
     test_parse_no_leading_v();
     test_parse_invalid_json();
     test_parse_null_inputs();
