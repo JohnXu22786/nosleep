@@ -2483,6 +2483,11 @@ static wchar_t* get_exe_path_w(void) {
 
 // Compare bounded UTF-16 PATH segments using Windows ordinal case folding.
 static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n) {
+    // A preserved root separator may use either slash form in PATH.
+    if (n > 0 && (a[n - 1] == L'\\' || a[n - 1] == L'/') &&
+        (b[n - 1] == L'\\' || b[n - 1] == L'/')) {
+        n--;
+    }
     if (n == 0) return true;
     if (n > INT_MAX) return false;
     // A zero API result indicates failure and must never count as a match.
