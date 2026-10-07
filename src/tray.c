@@ -92,6 +92,26 @@ static int tray_show_custom_dialog(NoSleepTray* tray);
 static HICON create_colored_icon(COLORREF bg_color, bool draw_z);
 static HICON create_numbered_icon(int number);
 static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height);
+// Cache one size for the resource, generated glyphs and blink mask.
+// The taskbar belongs to Explorer, so its window DPI is independent of our
+// hidden window's DPI awareness. Older Windows falls back to system metrics.
+static int tray_icon_width = 16;
+static int tray_icon_height = 16;
+
+static void initialize_tray_icon_size(void) {
+    typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
+    typedef int (WINAPI *GetSystemMetricsForDpiFn)(int, UINT);
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    GetDpiForWindowFn get_dpi = (GetDpiForWindowFn)GetProcAddress(user32, "GetDpiForWindow");
+    GetSystemMetricsForDpiFn get_metrics = (GetSystemMetricsForDpiFn)GetProcAddress(user32, "GetSystemMetricsForDpi");
+    HWND taskbar = FindWindowW(L"Shell_TrayWnd", NULL);
+    UINT dpi = get_dpi && taskbar ? get_dpi(taskbar) : 0;
+    int width = dpi && get_metrics ? get_metrics(SM_CXSMICON, dpi) : GetSystemMetrics(SM_CXSMICON);
+    int height = dpi && get_metrics ? get_metrics(SM_CYSMICON, dpi) : GetSystemMetrics(SM_CYSMICON);
+    tray_icon_width = width > 0 ? width : 16;
+    tray_icon_height = height > 0 ? height : 16;
+}
+
 static void load_gray_and_color_icons(NoSleepTray* tray);
 static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam);
 static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam);
@@ -552,7 +572,7 @@ static void load_gray_and_color_icons(NoSleepTray* tray) {
     DEBUG_LOG("load_gray_and_color_icons: loading icons from resources");
     
     // Load color icon from resource
-    tray->hIconActive = load_icon_from_resource(MAKEINTRESOURCE(IDI_APPICON), 32, 32);
+    tray->hIconActive = load_icon_from_resource(MAKEINTRESOURCE(IDI_APPICON), tray_icon_width, tray_icon_height);
     
     if (!tray->hIconActive) {
         fprintf(stderr, "[nosleep] Failed to load color icon from resource, using fallback\n");
@@ -574,9 +594,9 @@ static void load_gray_and_color_icons(NoSleepTray* tray) {
 }
 
 static HICON create_colored_icon(COLORREF bg_color, bool draw_z) {
-    // Create a 32x32 color icon with solid background
-    const int width = 32;
-    const int height = 32;
+    // Create a tray-sized color icon with solid background
+    const int width = tray_icon_width;
+    const int height = tray_icon_height;
     
     // XOR bitmap (color) - 32-bit per pixel (BGRA)
     int xor_row_bytes = width * 4; // 32-bit = 4 bytes per pixel
@@ -593,21 +613,16 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z) {
     
     // Draw white Z shape if requested
     if (draw_z) {
-        // Coordinates scaled to 32x32 (37.5% area like Python version)
-        // Top horizontal line (10,10 to 22,10)
-        for (int x = 10; x <= 22; x++) {
-            int y = 10;
-            pixels[y * width + x] = 0xFFFFFFFF; // White opaque
+        int left = width * 10 / 32;
+        int right = width * 22 / 32;
+        int top = height * 10 / 32;
+        int bottom = height * 22 / 32;
+        for (int x = left; x <= right; x++) {
+            pixels[top * width + x] = 0xFFFFFFFF;
+            pixels[bottom * width + x] = 0xFFFFFFFF;
         }
-        // Diagonal line (22,10 to 10,22)
-        for (int d = 0; d <= 12; d++) {
-            int x = 22 - d;
-            int y = 10 + d;
-            pixels[y * width + x] = 0xFFFFFFFF;
-        }
-        // Bottom horizontal line (10,22 to 22,22)
-        for (int x = 10; x <= 22; x++) {
-            int y = 22;
+        for (int y = top; y <= bottom; y++) {
+            int x = right - (y - top) * (right - left) / (bottom - top);
             pixels[y * width + x] = 0xFFFFFFFF;
         }
     }
@@ -633,8 +648,8 @@ static HICON create_colored_icon(COLORREF bg_color, bool draw_z) {
 
 static HICON create_numbered_icon(int number) {
     DEBUG_LOG("create_numbered_icon(%d)", number);
-    const int width = 32;
-    const int height = 32;
+    const int width = tray_icon_width;
+    const int height = tray_icon_height;
     
     // Create device contexts and bitmaps
     HDC hdc = GetDC(NULL);
@@ -696,10 +711,9 @@ static HICON create_numbered_icon(int number) {
     
     // Dynamic font scaling algorithm matching Python version
     // Python uses 128x128 canvas with 80pt starting font, max 110x110 area
-    // Scale to 32x32: starting font = 80 * (32/128) = 20
-    // Max dimensions = 110 * (32/128) = 27.5 -> use 27
-    const int startFontSize = 20;
-    const int maxDim = 27;
+    int size = width < height ? width : height;
+    const int startFontSize = size * 80 / 128;
+    const int maxDim = size * 110 / 128;
     
     HFONT hFont = NULL;
     HFONT oldFont = NULL;
@@ -769,7 +783,19 @@ static HICON create_numbered_icon(int number) {
     GdiFlush();
     
     // Capture glyph coverage before adding a one-pixel dark outline.
-    BYTE coverage[32 * 32];
+    BYTE* coverage = (BYTE*)malloc((size_t)width * height);
+    if (!coverage) {
+        if (oldFont) SelectObject(hdcMem, oldFont);
+        if (hFont) DeleteObject(hFont);
+        SelectObject(hdcMem, oldBmpColor);
+        SelectObject(hdcMask, oldBmpMask);
+        DeleteObject(hbmpColor);
+        DeleteObject(hbmpMask);
+        DeleteDC(hdcMem);
+        DeleteDC(hdcMask);
+        ReleaseDC(NULL, hdc);
+        return NULL;
+    }
     for (int i = 0; i < width * height; i++) {
         DWORD color = pixels[i];
         BYTE r = (color >> 16) & 0xFF;
@@ -800,6 +826,8 @@ static HICON create_numbered_icon(int number) {
             }
         }
     }
+
+    free(coverage);
 
     // Clean up GDI objects
     if (oldFont) {
@@ -832,8 +860,8 @@ static HICON create_numbered_icon(int number) {
 static HICON create_transparent_icon(void) {
     DEBUG_LOG("create_transparent_icon: creating fully transparent icon");
     
-    const int width = 32;
-    const int height = 32;
+    const int width = tray_icon_width;
+    const int height = tray_icon_height;
     
     // Create XOR bitmap (all zeros - black)
     // XOR bitmap is 1-bit per pixel: 0 = black
@@ -869,7 +897,7 @@ static HICON create_transparent_icon(void) {
     if (!hIcon) {
         DEBUG_LOG("create_transparent_icon: trying alternative method");
         
-        // Alternative: create a 32x32 icon with alpha=0
+        // Alternative: create a tray-sized icon with alpha=0
         HDC hdc = GetDC(NULL);
         if (!hdc) {
             DEBUG_LOG("create_transparent_icon: GetDC failed, error=%lu", GetLastError());
@@ -946,6 +974,7 @@ static HICON create_transparent_icon(void) {
 static void tray_create_icons(NoSleepTray* tray) {
     DEBUG_PRINT("tray_create_icons called\n");
     DEBUG_LOG("tray_create_icons: loading icons");
+    initialize_tray_icon_size();
     // Load color icon from resource and create grayscale version
     load_gray_and_color_icons(tray);
     
