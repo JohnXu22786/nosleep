@@ -10,10 +10,10 @@ typedef struct {
     char download_url[512];    // Direct download URL for the EXE asset
     char release_notes_url[512]; // Validated GitHub release page, empty if unavailable
     char tag_name[64];         // Full tag name (e.g., "v2.0.0")
-    bool update_available;     // Whether an update is available
+    bool update_available;     // Whether a usable Windows installer is available
 } UpdateInfo;
 
-// Parse a GitHub release response and return true when a usable release is found.
+// Parse a valid GitHub release response, even when it has no usable Windows installer.
 bool updater_parse_response(const char* json_response, UpdateInfo* info);
 
 // Return the validated release page, or the repository's official releases listing.

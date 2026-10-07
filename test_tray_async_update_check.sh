@@ -83,6 +83,7 @@ functions = "\n\n".join(
         "tray_set_manual_update_status",
         "tray_update_check_worker",
         "tray_prompt_available_update",
+        "tray_review_available_update",
         "tray_process_update_check_result",
         "tray_check_for_updates",
         "tray_handle_update_check_complete",
@@ -160,13 +161,17 @@ static LPARAM last_post_parameter;
 static DWORD last_post_thread_id;
 static int updater_check_count;
 static bool updater_check_result;
+static bool updater_release_found;
 static bool updater_update_available;
 static HWND updater_parent;
 static DWORD updater_thread_id;
 static int notification_count;
 static NotifyEventId last_notification;
+static char last_notification_title[128];
+static char last_notification_message[512];
 static DWORD notification_thread_id;
 static int prompt_count;
+static int release_page_prompt_count;
 static bool prompt_answer;
 static bool check_again_during_prompt;
 static int download_count;
@@ -195,6 +200,7 @@ static void tray_handle_update_check_complete(NoSleepTray *tray,
                                                TrayUpdateCheckTask *task);
 static bool tray_wait_for_update_check(NoSleepTray *tray);
 static bool update_check_in_progress;
+static void updater_prompt_release_page(HWND hwnd_parent, const UpdateInfo *info);
 
 // Button presentation is outside this fixture's asynchronous worker scope.
 static void tray_set_update_check_visible(NoSleepTray *tray, bool checking) {
@@ -276,10 +282,12 @@ static bool updater_check(UpdateInfo *info, HWND hwnd_parent) {
     ++updater_check_count;
     updater_thread_id = current_thread_id;
     updater_parent = hwnd_parent;
-    if (info && updater_update_available) {
-        info->update_available = true;
+    if (info && updater_release_found) {
         strcpy(info->latest_version, updater_latest_version);
-        strcpy(info->download_url, updater_download_url);
+        if (updater_update_available) {
+            info->update_available = true;
+            strcpy(info->download_url, updater_download_url);
+        }
     }
     return updater_check_result;
 }
@@ -289,12 +297,20 @@ static void save_last_update_check_time(void) { ++save_time_count; }
 static void tray_show_notification(NoSleepTray *tray, NotifyEventId event_type,
                                    const char *title, const char *message, bool critical) {
     (void)tray;
-    (void)title;
-    (void)message;
     (void)critical;
     ++notification_count;
     last_notification = event_type;
+    snprintf(last_notification_title, sizeof(last_notification_title), "%s",
+             title ? title : "");
+    snprintf(last_notification_message, sizeof(last_notification_message), "%s",
+             message ? message : "");
     notification_thread_id = current_thread_id;
+}
+
+static void updater_prompt_release_page(HWND hwnd_parent, const UpdateInfo *info) {
+    (void)hwnd_parent;
+    (void)info;
+    ++release_page_prompt_count;
 }
 
 static int updater_compare_versions(const char *latest, const char *current) {
@@ -407,6 +423,7 @@ int main(void) {
     }
 
     updater_check_result = true;
+    updater_release_found = true;
     updater_update_available = true;
     prompt_answer = false;
     check_again_during_prompt = true;
@@ -502,6 +519,7 @@ int main(void) {
     }
 
     updater_check_result = true;
+    updater_release_found = false;
     updater_update_available = false;
     tray_check_for_updates(&automatic_tray, true);
     run_pending_worker();
@@ -515,8 +533,44 @@ int main(void) {
         return fail("a successful no-update result must clear and disable the cached review update");
     }
 
+    NoSleepTray no_asset_tray = {0};
+    no_asset_tray.hwnd = (HWND)(uintptr_t)0x97;
+    no_asset_tray.hmenu = (void *)(uintptr_t)0x43;
+    updater_release_found = true;
+    strcpy(updater_latest_version, "4.0.0");
+    int notifications_before_no_asset = notification_count;
+    int release_prompts_before_no_asset = release_page_prompt_count;
+    int statuses_before_no_asset = status_update_count;
+    tray_check_for_updates(&no_asset_tray, false);
+    run_pending_worker();
+    tray_handle_update_check_complete(&no_asset_tray,
+                                     (TrayUpdateCheckTask *)last_post_parameter);
+    if (notification_count != notifications_before_no_asset + 1 ||
+        last_notification != NOTIFY_EVENT_UPDATE_AVAILABLE ||
+        strcmp(no_asset_tray.available_update.latest_version, "4.0.0") != 0 ||
+        no_asset_tray.available_update.update_available ||
+        last_menu_item != IDM_REVIEW_UPDATE || (last_menu_flags & MF_GRAYED) != 0 ||
+        !strstr(last_notification_message, "no Windows installer") ||
+        !strstr(last_notification_message, "Review Available Update") ||
+        strcmp(last_notification_title, "Installer Unavailable") != 0 ||
+        release_page_prompt_count != release_prompts_before_no_asset + 1 ||
+        strcmp(manual_update_status, "Installer unavailable for v4.0.0") != 0 ||
+        strcmp(last_status_text, "Installer unavailable for v4.0.0") != 0 ||
+        status_update_count != statuses_before_no_asset + 1) {
+        return fail("a newer release without an EXE must be successful, cached, and offer its release page");
+    }
+
+    int download_prompts_before_review = prompt_count;
+    int release_prompts_before_review = release_page_prompt_count;
+    tray_review_available_update(&no_asset_tray);
+    if (release_page_prompt_count != release_prompts_before_review + 1 ||
+        prompt_count != download_prompts_before_review || update_check_in_progress) {
+        return fail("reviewing a cached no-installer release must offer its page, not the EXE download");
+    }
+
     fail_create_thread = true;
     updater_update_available = false;
+    updater_release_found = false;
     about_dialog_hwnd = (HWND)(uintptr_t)0x78;
     int notifications_before_create_failure = notification_count;
     int checks_before_create_failure = save_time_count;
@@ -527,7 +581,7 @@ int main(void) {
         strcmp(manual_update_status, "Check failed") != 0 ||
         last_status_control != IDC_ABOUT_UPDATE_STATUS ||
         strcmp(last_status_text, "Check failed") != 0 ||
-        status_update_count != 4) {
+        status_update_count != 5) {
         return fail("thread-creation failure must release suppression and report a manual failure");
     }
 

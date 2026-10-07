@@ -22,4 +22,7 @@ bool updater_download_and_install(UpdateInfo* info, const wchar_t* current_exe_p
 // Returns true if user wants to download
 bool updater_show_prompt_dialog(HWND hwnd_parent, UpdateInfo* info);
 
+// Offer the official release page when a newer release has no installer.
+void updater_prompt_release_page(HWND hwnd_parent, const UpdateInfo* info);
+
 #endif // UPDATER_H

@@ -5015,6 +5015,13 @@ static DWORD WINAPI tray_update_check_worker(LPVOID parameter) {
 
 // Only explicit user actions call this prompt, which retains the release-notes choice.
 static void tray_prompt_available_update(NoSleepTray* tray, UpdateInfo* info) {
+    if (!info) return;
+
+    if (!info->update_available) {
+        updater_prompt_release_page(tray->hwnd, info);
+        return;
+    }
+
     // Ask user if they want to download
     bool want_download = updater_show_prompt_dialog(tray->hwnd, info);
     if (!want_download) {
@@ -5040,6 +5047,19 @@ static void tray_prompt_available_update(NoSleepTray* tray, UpdateInfo* info) {
 
 }
 
+static void tray_review_available_update(NoSleepTray* tray) {
+    if (!tray || !tray->available_update.latest_version[0] ||
+        updater_compare_versions(tray->available_update.latest_version,
+                                 CURRENT_VERSION) <= 0 ||
+        !tray_update_check_begin()) {
+        return;
+    }
+
+    UpdateInfo available = tray->available_update;
+    tray_prompt_available_update(tray, &available);
+    tray_update_check_end();
+}
+
 static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
                                               bool check_ok, UpdateInfo* info) {
     save_last_update_check_time();
@@ -5053,7 +5073,7 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
         goto update_check_done;
     }
 
-    if (!info || !info->update_available ||
+    if (!info || !info->latest_version[0] ||
         updater_compare_versions(info->latest_version, CURRENT_VERSION) <= 0) {
         // A successful check with no newer update clears the cached result.
         memset(&tray->available_update, 0, sizeof(tray->available_update));
@@ -5065,6 +5085,37 @@ static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
             tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_COMPLETED,
                 "No Updates",
                 "You are running the latest version (v" CURRENT_VERSION ")", false);
+        }
+        goto update_check_done;
+    }
+
+    if (!info->update_available) {
+        bool notify_update_available = !silent ||
+            !tray->available_update.latest_version[0] ||
+            updater_compare_versions(info->latest_version,
+                                     tray->available_update.latest_version) > 0 ||
+            tray->available_update.update_available;
+
+        tray->available_update = *info;
+        EnableMenuItem(tray->hmenu, IDM_REVIEW_UPDATE, MF_BYCOMMAND | MF_ENABLED);
+
+        if (notify_update_available) {
+            char message[256];
+            snprintf(message, sizeof(message),
+                "Version %s is available, but no Windows installer is attached. "
+                "Right-click the tray icon and choose Review Available Update to open the official release page.",
+                info->latest_version);
+            tray_show_notification(tray, NOTIFY_EVENT_UPDATE_AVAILABLE,
+                "Installer Unavailable", message, false);
+        }
+
+        if (!silent) {
+            char status[128];
+            snprintf(status, sizeof(status), "Installer unavailable for v%s",
+                     info->latest_version);
+            tray_set_manual_update_status(status);
+            UpdateInfo available = tray->available_update;
+            tray_prompt_available_update(tray, &available);
         }
         goto update_check_done;
     }
@@ -5301,11 +5352,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     tray_show_settings_dialog(tray);
                     break;
                 case IDM_REVIEW_UPDATE:
-                    if (tray->available_update.update_available && tray_update_check_begin()) {
-                        UpdateInfo available = tray->available_update;
-                        tray_prompt_available_update(tray, &available);
-                        tray_update_check_end();
-                    }
+                    tray_review_available_update(tray);
                     break;
                 case IDM_CHECK_UPDATES:
                     tray_check_for_updates(tray, false);

@@ -301,27 +301,43 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
         }
     }
 
-    // Parse "assets" array for browser_download_url
-    // Look for .exe file in the assets
+    // GitHub release responses must include an assets array, but a valid release
+    // can still have no Windows installer attached.
     cJSON* assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
-    if (cJSON_IsArray(assets)) {
+    bool has_assets_array = cJSON_IsArray(assets);
+    bool assets_are_valid = has_assets_array;
+    if (has_assets_array) {
         cJSON* asset = NULL;
         cJSON_ArrayForEach(asset, assets) {
+            if (!cJSON_IsObject(asset)) {
+                assets_are_valid = false;
+                break;
+            }
+
             cJSON* url = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
-            if (cJSON_IsString(url) && url->valuestring) {
-                size_t url_len = strlen(url->valuestring);
-                if (url_len < sizeof(info->download_url) - 1 &&
-                    is_valid_exe_asset_url(url->valuestring, url_len)) {
-                    strncpy(info->download_url, url->valuestring, sizeof(info->download_url) - 1);
-                    info->download_url[sizeof(info->download_url) - 1] = '\0';
-                    info->update_available = true;
-                    cJSON_Delete(root);
-                    return true;
-                }
+            if (!cJSON_IsString(url) || !url->valuestring ||
+                !url->valuestring[0]) {
+                assets_are_valid = false;
+                break;
+            }
+
+            size_t url_len = strlen(url->valuestring);
+            if (!info->update_available &&
+                url_len < sizeof(info->download_url) - 1 &&
+                is_valid_exe_asset_url(url->valuestring, url_len)) {
+                strncpy(info->download_url, url->valuestring,
+                        sizeof(info->download_url) - 1);
+                info->download_url[sizeof(info->download_url) - 1] = '\0';
+                info->update_available = true;
             }
         }
     }
 
+    if (!assets_are_valid) {
+        info->download_url[0] = '\0';
+        info->update_available = false;
+    }
+
     cJSON_Delete(root);
-    return false;
+    return assets_are_valid;
 }
