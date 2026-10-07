@@ -32,7 +32,7 @@ typedef struct {
     bool tray_mode;
     bool startup;
 
-    // Track whether the legacy verbose CLI flag was explicitly specified
+    // Track whether the verbose CLI flag was explicitly specified
     bool verbose_set;
 
     // Batch mode settings (-1 = not specified)
@@ -77,7 +77,8 @@ static const char* const HELP_TEXT =
     "                            (requires compatible hardware)\n"
     "      --no-away-mode        Disable away mode for this run\n"
     "                            (each setting defaults to its saved preference)\n"
-    "  -v, --verbose             Print detailed status to debug output\n"
+    "  -v, --verbose             Enable detailed debug output for this run\n"
+    "      --no-verbose          Disable detailed debug output for this run\n"
     "  -t, --tray                Start in system tray mode\n"
     "                            (default if no arguments provided)\n"
     "  -s, --startup             Start sleep prevention immediately (for Windows startup)\n"
@@ -496,6 +497,10 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
             opts->verbose = true;
             opts->verbose_set = true;
         }
+        else if (strcmp(arg, "--no-verbose") == 0) {
+            opts->verbose = false;
+            opts->verbose_set = true;
+        }
         else if (strcmp(arg, "--tray") == 0 || strcmp(arg, "-t") == 0) {
             opts->tray_mode = true;
         }
@@ -673,7 +678,8 @@ static int run_tray_mode(const CLIOptions* opts) {
         tray->away_mode_cli_override_set = true;
     }
     if (opts->verbose_set) {
-        tray->verbose = opts->verbose;
+        tray->verbose_cli_override = opts->verbose;
+        tray->verbose_cli_override_set = true;
     }
     tray->refresh_interval_seconds = opts->interval;
     
