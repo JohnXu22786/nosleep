@@ -117,6 +117,7 @@ typedef struct NoSleepTray {
     bool duration_expired;
     bool stopping;
     bool session_action_cancelled;
+    bool delayed_countdown_starting;
     bool core_init_failed;
     bool nosleep_run_failed;
     HANDLE stop_event;
@@ -280,7 +281,9 @@ int main(void) {
 }
 '''
 
-functions = extract_function("tray_stop_nosleep_for_session") + "\n\n" + extract_function("tray_stop_nosleep")
+functions = extract_function("tray_wait_for_delayed_countdown_start") + "\n\n" + \
+    extract_function("tray_stop_nosleep_for_session") + "\n\n" + \
+    extract_function("tray_stop_nosleep")
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "test_tray_cancellation_notice_action.c"
     binary = Path(tmp) / "test_tray_cancellation_notice_action"
