@@ -178,7 +178,7 @@ int main(void) {
         last_notification_event != NOTIFY_EVENT_UPDATE_CHECK_FAILED ||
         strcmp(last_notification_title, "Automatic Updates Not Scheduled") != 0 ||
         strcmp(last_notification_message,
-               "Could not schedule automatic update checks. Open Settings and reapply your interval to retry.") != 0) {
+               "Could not schedule automatic update checks. Open Settings and use Retry applied schedule to retry.") != 0) {
         return fail("a startup SetTimer failure must preserve the saved interval and notify the user");
     }
 
