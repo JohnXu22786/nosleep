@@ -72,6 +72,7 @@ run-cli: $(TARGET)
 test-unit: $(OBJDIR) test-cli test-updater-url-policy
 	bash ./test_updater_launch_cleanup.sh
 	bash ./test_updater_wait_process.sh
+	bash ./test_updater_startup_handshake.sh
 	bash ./test_updater_replace_failure.sh
 	bash ./test_updater_initial_url_query.sh
 	bash ./test_updater_url_port.sh

@@ -60,6 +60,51 @@ int main(void) {
     }
     free(repeated_arguments);
 
+    wchar_t* startup_command_line = updater_append_ready_event_argument(
+        L"nosleep.exe --duration 25", L"Local\\NoSleepUpdaterReady-4242");
+    if (!startup_command_line ||
+        wcscmp(startup_command_line,
+               L"nosleep.exe --duration 25 --nosleep-internal-update-ready-event "
+               L"Local\\NoSleepUpdaterReady-4242") != 0) {
+        fwprintf(stderr, L"updater readiness event argument was not appended\n");
+        free(startup_command_line);
+        return 1;
+    }
+    free(startup_command_line);
+
+    if (!updater_command_line_has_ready_event_argument(
+            L"nosleep.exe --duration 25 --nosleep-internal-update-ready-event "
+            L"Local\\NoSleepUpdaterReady-4242") ||
+        updater_command_line_has_ready_event_argument(
+            L"nosleep.exe --nosleep-internal-update-ready-event "
+            L"Local\\NoSleepUpdaterReady-4242 --duration 25") ||
+        updater_command_line_has_ready_event_argument(
+            L"nosleep.exe \"--nosleep-internal-update-ready-event "
+            L"Local\\NoSleepUpdaterReady-4242\"") ||
+        !updater_command_line_has_ready_event_argument(
+            L"nosleep.exe \"--nosleep-internal-update-ready-event "
+            L"Local\\bad\" --nosleep-internal-update-ready-event "
+            L"Local\\NoSleepUpdaterReady-4242")) {
+        fwprintf(stderr, L"updater readiness event argument detection failed\n");
+        return 1;
+    }
+
+    if (updater_append_ready_event_argument(L"nosleep.exe", L"Local\\bad event")) {
+        fwprintf(stderr, L"unsafe updater readiness event name was accepted\n");
+        return 1;
+    }
+
+    wchar_t too_long_command_line[UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS];
+    for (size_t i = 0; i < UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS - 1; ++i) {
+        too_long_command_line[i] = L'x';
+    }
+    too_long_command_line[UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS - 1] = L'\0';
+    if (updater_append_ready_event_argument(too_long_command_line,
+                                            L"Local\\NoSleepUpdaterReady-4242")) {
+        fwprintf(stderr, L"overlong updater readiness command line was accepted\n");
+        return 1;
+    }
+
     puts("updater command-line argument serialization test passed");
     return 0;
 }
