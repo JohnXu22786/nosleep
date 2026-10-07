@@ -79,7 +79,7 @@ assert re.search(r"SessionFinishedAction\s+countdown_action\s*;", tray_header), 
 start_countdown = extract_function("tray_start_countdown")
 assert re.search(
     r"tray_start_countdown\(NoSleepTray\s*\*\s*tray,\s*"
-    r"SessionFinishedAction\s+action\)",
+    r"SessionFinishedAction\s+action,\s*ULONGLONG\s+start_tick64\)",
     start_countdown,
 ), "countdown startup must receive its scheduled action explicitly"
 assert re.search(r"tray->countdown_action\s*=\s*action\s*;", start_countdown), (
@@ -91,10 +91,10 @@ assert start_countdown.index("tray->countdown_action = action;") < start_countdo
 
 sleep_thread = extract_function("delayed_sleep_thread")
 shutdown_thread = extract_function("delayed_shutdown_thread")
-assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SLEEP\)", sleep_thread), (
+assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SLEEP,\s*start_tick64\)", sleep_thread), (
     "the delayed sleep thread must identify its scheduled action"
 )
-assert re.search(r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;[\s\S]*?tray_start_countdown\(tray,\s*action\)", shutdown_thread), (
+assert re.search(r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;[\s\S]*?tray_start_countdown\(tray,\s*action,\s*start_tick64\)", shutdown_thread), (
     "the delayed shutdown thread must identify its scheduled action"
 )
 
@@ -200,6 +200,7 @@ startup_failure_harness = r'''#include <stdbool.h>
 #include <string.h>
 
 typedef unsigned long DWORD;
+typedef unsigned long long ULONGLONG;
 typedef void *LPVOID;
 typedef void *HANDLE;
 #define WINAPI
@@ -220,6 +221,7 @@ typedef enum {
 
 typedef struct NoSleepTray {
     SessionFinishedAction countdown_action;
+    ULONGLONG countdown_start_tick64;
     bool delayed_sleep_countdown_active;
     int countdown_seconds;
     bool countdown_blink_state;
@@ -227,6 +229,15 @@ typedef struct NoSleepTray {
     HANDLE countdown_stop_event;
     HANDLE countdown_timer_thread;
 } NoSleepTray;
+
+static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
+    (void)start_tick64;
+    return 0;
+}
+
+static int tray_countdown_display_seconds(ULONGLONG remaining_ms) {
+    return (int)((remaining_ms + 999) / 1000);
+}
 
 static bool create_thread_success;
 static int notification_count;
@@ -294,7 +305,7 @@ static int expect_failure_notice(SessionFinishedAction action,
     icon_update_count = 0;
     menu_update_count = 0;
 
-    tray_start_countdown(&tray, action);
+    tray_start_countdown(&tray, action, 0);
 
     if (notification_count != 1 || notification_event != NOTIFY_EVENT_ERROR ||
         strcmp(notification_title, "Countdown Display Unavailable") != 0 ||
