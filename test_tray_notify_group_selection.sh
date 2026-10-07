@@ -71,9 +71,17 @@ refresh = extract_function("refresh_notification_group_list")
 update_actions = extract_function("update_notification_group_actions")
 notifications_tab = extract_function("create_notifications_tab")
 
+assert re.search(
+    r'"LISTBOX", NULL,\s*WS_CHILD[^,]*\bWS_HSCROLL\b', notifications_tab, re.S
+), "the notification group list must allow horizontal scrolling"
 assert '"Up to 20 groups; Add Group is disabled at the limit.\\n"' in notifications_tab, (
     "the Notifications tab must explain why Add Group is disabled at capacity"
 )
+assert re.search(
+    r"case WM_DPICHANGED:\s*scale_dialog_layout\(hwnd, HIWORD\(wParam\), \(const RECT\*\)lParam\);\s*"
+    r"refresh_notification_group_list\(hNotifyTab, settings_tray\);",
+    tray,
+), "the list extent must be recalculated when its font changes with the dialog DPI"
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
@@ -81,10 +89,15 @@ harness = r'''#include <stdbool.h>
 #include <string.h>
 
 typedef void* HWND;
+typedef void* HDC;
+typedef void* HFONT;
+typedef void* HGDIOBJ;
 typedef unsigned int UINT;
 typedef uintptr_t WPARAM;
 typedef intptr_t LPARAM;
 typedef intptr_t LRESULT;
+typedef int BOOL;
+typedef struct { long cx, cy; } SIZE;
 
 typedef struct {
     char name[128];
@@ -116,14 +129,44 @@ typedef struct {
 #define LB_ADDSTRING 5u
 #define LB_SETITEMDATA 6u
 #define LB_SETCURSEL 7u
+#define LB_SETHORIZONTALEXTENT 8u
+#define WM_GETFONT 9u
 
 static HWND list_handle = (HWND)(uintptr_t)1;
 static int list_count;
 static int list_selection = LB_ERR;
+static int list_horizontal_extent;
 static int list_item_data[20];
 static char list_item_text[20][256];
 static bool control_enabled[600];
 static int failures;
+
+static int measure_test_text(const char* text, int count) {
+    int width = 0;
+    for (int i = 0; i < count; ++i) {
+        width += text[i] == 'W' ? 11 : (text[i] == ' ' ? 4 : 8);
+    }
+    return width;
+}
+
+static HDC GetDC(HWND hwnd) {
+    return hwnd == list_handle ? (HDC)(uintptr_t)2 : NULL;
+}
+
+static int ReleaseDC(HWND hwnd, HDC dc) {
+    return hwnd == list_handle && dc != NULL;
+}
+
+static HGDIOBJ SelectObject(HDC dc, HGDIOBJ object) {
+    return dc && object ? (HGDIOBJ)(uintptr_t)3 : NULL;
+}
+
+static BOOL GetTextExtentPoint32A(HDC dc, const char* text, int count, SIZE* size) {
+    if (!dc || !text || count < 0 || !size) return 0;
+    size->cx = measure_test_text(text, count);
+    size->cy = 16;
+    return 1;
+}
 
 static HWND GetDlgItem(HWND parent, int id) {
     (void)parent;
@@ -151,6 +194,8 @@ static LRESULT SendMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
     if (hwnd != list_handle) return LB_ERR;
     int index = (int)wParam;
     switch (message) {
+        case WM_GETFONT:
+            return (LRESULT)(uintptr_t)4;
         case LB_GETCOUNT:
             return list_count;
         case LB_GETCURSEL:
@@ -177,6 +222,9 @@ static LRESULT SendMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
                 list_selection = index;
             }
             return list_selection;
+        case LB_SETHORIZONTALEXTENT:
+            list_horizontal_extent = index;
+            return 0;
         default:
             return LB_ERR;
     }
@@ -211,10 +259,18 @@ main = r'''int main(void) {
     tray.notify_groups.active_index = 2;
     snprintf(tray.notify_groups.groups[0].name, sizeof(tray.notify_groups.groups[0].name), "All notifications");
     snprintf(tray.notify_groups.groups[1].name, sizeof(tray.notify_groups.groups[1].name), "Critical only");
-    snprintf(tray.notify_groups.groups[2].name, sizeof(tray.notify_groups.groups[2].name), "None");
+    memset(tray.notify_groups.groups[2].name, 'W', sizeof(tray.notify_groups.groups[2].name) - 1);
+    tray.notify_groups.groups[2].name[sizeof(tray.notify_groups.groups[2].name) - 1] = '\0';
+    tray.notify_groups.groups[2].is_default = true;
     seed_list(0, LB_ERR);
     refresh_notification_group_list(parent, &tray);
     expect_selected_group(2, "initial refresh selects the active group");
+    if (strcmp(list_item_text[2] + strlen(list_item_text[2]) - strlen(" [ACTIVE] (default)"),
+               " [ACTIVE] (default)") != 0 ||
+        list_horizontal_extent < measure_test_text(list_item_text[2], (int)strlen(list_item_text[2])) + 8) {
+        fprintf(stderr, "FAIL: the horizontal extent includes the full rendered long label and suffixes\n");
+        ++failures;
+    }
 
     // Rebuilding an unchanged list must retain the row being configured or activated.
     tray.notify_groups.active_index = 0;
@@ -268,5 +324,5 @@ with tempfile.TemporaryDirectory(prefix="nosleep-notify-selection-") as temp_dir
     )
     subprocess.run([str(executable_path)], check=True)
 
-print("PASS: notification group list refresh preserves a meaningful selection")
+print("PASS: notification group list preserves selection and measures long labels")
 PY

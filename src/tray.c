@@ -4116,6 +4116,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
 
         case WM_DPICHANGED:
             scale_dialog_layout(hwnd, HIWORD(wParam), (const RECT*)lParam);
+            refresh_notification_group_list(hNotifyTab, settings_tray);
             return 0;
 
         case WM_NCDESTROY:
@@ -4230,7 +4231,7 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
 
     // Create group listbox
     CreateWindowEx(WS_EX_CLIENTEDGE, "LISTBOX", NULL,
-        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_HASSTRINGS,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_HASSTRINGS,
         15, 10, 280, 200,
         hwnd_parent, (HMENU)IDC_NOTIFY_GROUP_LIST, hInst, NULL);
 
@@ -4308,6 +4309,11 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
 
     SendMessage(hList, LB_RESETCONTENT, 0, 0);
 
+    HDC hdc = GetDC(hList);
+    HFONT hFont = (HFONT)SendMessage(hList, WM_GETFONT, 0, 0);
+    HGDIOBJ previous_font = hdc && hFont ? SelectObject(hdc, hFont) : NULL;
+    int max_text_width = 0;
+
     for (int i = 0; i < tray->notify_groups.count; i++) {
         NotifyGroup* g = &tray->notify_groups.groups[i];
         char display[256];
@@ -4316,7 +4322,19 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
                  g->name, marker, g->is_default ? " (default)" : "");
         int idx = (int)SendMessage(hList, LB_ADDSTRING, 0, (LPARAM)display);
         SendMessage(hList, LB_SETITEMDATA, (WPARAM)idx, (LPARAM)i);
+
+        if (hdc) {
+            SIZE text_size;
+            if (GetTextExtentPoint32A(hdc, display, (int)strlen(display), &text_size) &&
+                text_size.cx > max_text_width) {
+                max_text_width = (int)text_size.cx;
+            }
+        }
     }
+
+    if (previous_font) SelectObject(hdc, previous_font);
+    if (hdc) ReleaseDC(hList, hdc);
+    SendMessage(hList, LB_SETHORIZONTALEXTENT, (WPARAM)(max_text_width + 8), 0);
 
     // Keep the prior group selected when it survived the refresh. If the list
     // changed structurally or had no selection, show the active group instead.
