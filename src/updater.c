@@ -479,6 +479,40 @@ static char* updater_path_to_utf8(const wchar_t* path) {
     return utf8;
 }
 
+static void position_download_dialog(HWND hwnd_dialog, HWND hwnd_parent) {
+    RECT work_area;
+    BOOL have_work_area = FALSE;
+
+    if (hwnd_parent && IsWindow(hwnd_parent)) {
+        HMONITOR owner_monitor = MonitorFromWindow(hwnd_parent, MONITOR_DEFAULTTONEAREST);
+        if (owner_monitor) {
+            MONITORINFO monitor_info = {0};
+            monitor_info.cbSize = sizeof(monitor_info);
+            if (GetMonitorInfoA(owner_monitor, &monitor_info)) {
+                work_area = monitor_info.rcWork;
+                have_work_area = TRUE;
+            }
+        }
+    }
+
+    if (!have_work_area &&
+        !SystemParametersInfoA(SPI_GETWORKAREA, 0, &work_area, 0)) {
+        work_area.left = 0;
+        work_area.top = 0;
+        work_area.right = GetSystemMetrics(SM_CXSCREEN);
+        work_area.bottom = GetSystemMetrics(SM_CYSCREEN);
+    }
+
+    RECT dialog_rect;
+    if (!GetWindowRect(hwnd_dialog, &dialog_rect)) return;
+
+    int dialog_width = dialog_rect.right - dialog_rect.left;
+    int dialog_height = dialog_rect.bottom - dialog_rect.top;
+    int x = work_area.left + ((work_area.right - work_area.left) - dialog_width) / 2;
+    int y = work_area.top + ((work_area.bottom - work_area.top) - dialog_height) / 2;
+    SetWindowPos(hwnd_dialog, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE);
+}
+
 // Download a new version and perform the update
 static bool updater_download_and_install_utf8(UpdateInfo* info, const char* current_exe_path, HWND hwnd_parent) {
     if (!info || !current_exe_path) return false;
@@ -509,14 +543,7 @@ static bool updater_download_and_install_utf8(UpdateInfo* info, const char* curr
     }
 
     if (dialog.hwnd) {
-        RECT rc;
-        GetWindowRect(dialog.hwnd, &rc);
-        int sw = GetSystemMetrics(SM_CXSCREEN);
-        int sh = GetSystemMetrics(SM_CYSCREEN);
-        SetWindowPos(dialog.hwnd, HWND_TOPMOST,
-            (sw - (rc.right - rc.left)) / 2,
-            (sh - (rc.bottom - rc.top)) / 2,
-            0, 0, SWP_NOSIZE);
+        position_download_dialog(dialog.hwnd, hwnd_parent);
         if (hwnd_parent && IsWindow(hwnd_parent)) EnableWindow(hwnd_parent, FALSE);
         ShowWindow(dialog.hwnd, SW_SHOW);
         UpdateWindow(dialog.hwnd);
