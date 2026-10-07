@@ -16,7 +16,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name):
     definition = re.search(
-        r"\b(?:static\s+)?(?:void|bool)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        r"\b(?:static\s+)?(?:void|bool|size_t)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
     )
@@ -678,6 +678,8 @@ ok_function = control_ids + "\nstatic void settings_ok(HWND hwnd) { do {\n" + ok
 
 source = (
     windows_stubs
+    + "\n"
+    + extract_function("path_segment_comparison_length")
     + "\n"
     + add_app_to_path_test_function
     + "\n"

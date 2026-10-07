@@ -2483,10 +2483,33 @@ static wchar_t* get_exe_path_w(void) {
 
 // Compare bounded UTF-16 PATH segments using Windows ordinal case folding.
 static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n) {
+    // A preserved root separator may use either slash form in PATH.
+    if (n > 0 && (a[n - 1] == L'\\' || a[n - 1] == L'/') &&
+        (b[n - 1] == L'\\' || b[n - 1] == L'/')) {
+        n--;
+    }
     if (n == 0) return true;
     if (n > INT_MAX) return false;
     // A zero API result indicates failure and must never count as a match.
     return CompareStringOrdinal(a, (int)n, b, (int)n, TRUE) == CSTR_EQUAL;
+}
+
+// Ignore optional trailing directory separators during PATH comparisons, but
+// keep drive-root separators so C:\\ does not become the drive-relative C:.
+static size_t path_segment_comparison_length(const wchar_t* path, size_t len) {
+    while (len > 0 && (path[len - 1] == L'\\' || path[len - 1] == L'/')) {
+        bool drive_root = len == 3 && path[1] == L':' &&
+            ((path[0] >= L'A' && path[0] <= L'Z') ||
+             (path[0] >= L'a' && path[0] <= L'z'));
+        bool extended_drive_root = len == 7 && path[0] == L'\\' &&
+            path[1] == L'\\' && path[2] == L'?' && path[3] == L'\\' &&
+            path[5] == L':' &&
+            ((path[4] >= L'A' && path[4] <= L'Z') ||
+             (path[4] >= L'a' && path[4] <= L'z'));
+        if (drive_root || extended_drive_root || len <= 2) break;
+        len--;
+    }
+    return len;
 }
 
 // Get the directory containing the executable
@@ -2616,7 +2639,7 @@ static bool add_app_to_path(void) {
         
         // Check if dir is already in PATH (case-insensitive)
         // Remove trailing spaces and semicolons for clean comparison
-        size_t dir_len = wcslen(dir);
+        size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
         wchar_t* p = new_path;
         bool already_in_path = false;
         while (*p && !already_in_path) {
@@ -2630,6 +2653,8 @@ static bool add_app_to_path(void) {
             
             // Trim trailing spaces
             while (seg_len > 0 && p[seg_len - 1] == ' ') seg_len--;
+
+            seg_len = path_segment_comparison_length(p, seg_len);
             
             if (seg_len == dir_len && path_segment_equal(p, dir, dir_len)) {
                 already_in_path = true;
@@ -2749,7 +2774,7 @@ static bool remove_app_from_path(void) {
     }
     current_path[actual_size / sizeof(wchar_t)] = '\0';
     
-    size_t dir_len = wcslen(dir);
+    size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
     bool found = false;
     
     // Build new path by removing all occurrences of dir (handle duplicates)
@@ -2780,6 +2805,8 @@ static bool remove_app_from_path(void) {
         // Trim trailing spaces for comparison
         size_t trimmed_len = remaining;
         while (trimmed_len > 0 && compare_start[trimmed_len - 1] == ' ') trimmed_len--;
+
+        trimmed_len = path_segment_comparison_length(compare_start, trimmed_len);
         
         // Check if this segment matches our directory
         bool is_match = (trimmed_len == dir_len && path_segment_equal(compare_start, dir, dir_len));
