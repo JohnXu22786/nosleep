@@ -71,9 +71,9 @@ refresh = extract_function("refresh_notification_group_list")
 update_actions = extract_function("update_notification_group_actions")
 notifications_tab = extract_function("create_notifications_tab")
 
-assert '"Up to 20 groups can be created; Add Group is\\n"' in notifications_tab and (
-    '"disabled at the limit.' in notifications_tab
-), "the Notifications tab must explain why Add Group is disabled at capacity"
+assert '"Up to 20 groups; Add Group is disabled at the limit.\\n"' in notifications_tab, (
+    "the Notifications tab must explain why Add Group is disabled at capacity"
+)
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>

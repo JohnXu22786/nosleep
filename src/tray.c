@@ -4260,12 +4260,12 @@ static void create_notifications_tab(HWND hwnd_parent, NoSleepTray* tray) {
 
     // Help text for notification groups
     CreateWindowEx(0, "STATIC", 
-        "Groups control which event types produce balloon\n"
-        "messages. Select a group and click Configure... to\n"
-        "customize it. Restore default... recovers a built-in\n"
-        "preset. Up to 20 groups can be created; Add Group is\n"
-        "disabled at the limit. Changes save immediately;\n"
-        "Settings Cancel does not undo group changes.",
+        "Notification groups control which events show balloons.\n"
+        "Select a group and click Configure... to edit it.\n"
+        "Restore default... resets a built-in group's preset.\n"
+        "Up to 20 groups; Add Group is disabled at the limit.\n"
+        "Changes are saved immediately; Settings Cancel does\n"
+        "not undo notification group changes.",
         WS_CHILD | WS_VISIBLE,
         15, 220, 410, 100, hwnd_parent, NULL, hInst, NULL);
 
