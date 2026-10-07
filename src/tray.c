@@ -2997,6 +2997,32 @@ static void settings_read_dword(HKEY hKey, const char* name, DWORD* value, DWORD
     }
 }
 
+static int settings_load_custom_duration(void) {
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return 30;
+
+    DWORD value;
+    settings_read_dword(hKey, "custom_duration_minutes", &value, 30);
+    RegCloseKey(hKey);
+    return value >= 1 && value <= 1440 ? (int)value : 30;
+}
+
+static void settings_save_custom_duration(int duration) {
+    if (duration < 1 || duration > 1440) return;
+
+    HKEY hKey;
+    LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+        0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
+    if (result != ERROR_SUCCESS) return;
+
+    DWORD value = (DWORD)duration;
+    RegSetValueEx(hKey, "custom_duration_minutes", 0, REG_DWORD,
+                  (LPBYTE)&value, sizeof(value));
+    RegCloseKey(hKey);
+}
+
 void tray_load_settings(NoSleepTray* tray) {
     if (!tray) return;
     HKEY hKey;
@@ -3440,6 +3466,11 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     // Create a simple input dialog using CreateWindow
     HINSTANCE hInstance = GetModuleHandle(NULL);
     static int last_custom_duration = 30;
+    static bool custom_duration_loaded = false;
+    if (!custom_duration_loaded) {
+        last_custom_duration = settings_load_custom_duration();
+        custom_duration_loaded = true;
+    }
     int result = last_custom_duration;
     
     // Register dialog window class
@@ -3552,6 +3583,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     UnregisterClass("NoSleepInputDialog", hInstance);
     if (result > 0) {
         last_custom_duration = result;
+        settings_save_custom_duration(result);
     }
     
     return result;
