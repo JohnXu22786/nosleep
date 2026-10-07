@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <stdbool.h>
 #include "notify_groups.h"
+#include "tray_session_finished_action.h"
 #include "tray_countdown_icon.h"
 #include "updater_logic.h"
 
@@ -56,14 +57,6 @@ typedef struct TrayUpdateCheckTask TrayUpdateCheckTask;
 
 // Tray icon message ID
 #define TRAY_ICON_MESSAGE_ID 1000
-
-// When finished action enum
-typedef enum {
-    SESSION_FINISHED_NONE = 0,
-    SESSION_FINISHED_SHUTDOWN,
-    SESSION_FINISHED_SLEEP,
-    SESSION_FINISHED_SHUTDOWN_GRACEFUL
-} SessionFinishedAction;
 
 // Menu command IDs
 #define IDM_START_30MIN     1001

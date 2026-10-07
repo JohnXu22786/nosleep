@@ -1935,7 +1935,7 @@ static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction act
 // Stop joins the delayed worker before reporting cancellation or replacing the
 // session. Publish from that worker so a paused duration timer cannot announce
 // an action after cleanup, and never call Shell_NotifyIcon under the action lock.
-static void tray_announce_delayed_action(NoSleepTray* tray, bool shutdown) {
+static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedAction action) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool cancelled = tray->session_action_cancelled || tray->starting_nosleep ||
                      ATOMIC_LOAD_BOOL(&tray->stopping);
@@ -1954,9 +1954,18 @@ static void tray_announce_delayed_action(NoSleepTray* tray, bool shutdown) {
         sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
     }
     char message[512];
-    sprintf(message, "%s\nSystem will %s in 60 seconds...\nUse Cancel %s in the tray menu.",
-            duration_message, shutdown ? "shut down" : "sleep",
-            shutdown ? "shutdown" : "sleep");
+    bool shutdown = action == SESSION_FINISHED_SHUTDOWN ||
+                    action == SESSION_FINISHED_SHUTDOWN_GRACEFUL;
+    if (action == SESSION_FINISHED_SHUTDOWN) {
+        sprintf(message, "%s\nSystem will %s in 60 seconds...\n"
+                        "Unsaved work may be lost because applications will be closed forcibly.\n"
+                        "Use Cancel shutdown in the tray menu.",
+                duration_message, tray_countdown_action_phrase(action));
+    } else {
+        sprintf(message, "%s\nSystem will %s in 60 seconds...\nUse Cancel %s in the tray menu.",
+                duration_message, tray_countdown_action_phrase(action),
+                shutdown ? "shutdown" : "sleep");
+    }
     tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
                            "Time's up!", message, true);
 }
@@ -1966,7 +1975,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
 
     DEBUG_LOG("delayed_sleep_thread: waiting 60 seconds before sleep");
     
-    tray_announce_delayed_action(tray, false);
+    tray_announce_delayed_action(tray, SESSION_FINISHED_SLEEP);
 
     ULONGLONG start_tick64 = GetTickCount64();
     // Dispatch and display share the same 60-second timing target.
@@ -2026,12 +2035,13 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
 
     DEBUG_LOG("delayed_shutdown_thread: waiting 60 seconds before shutdown");
     
-    tray_announce_delayed_action(tray, true);
-
-    // Start countdown display
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     SessionFinishedAction action = tray->shutdown_action;
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+
+    tray_announce_delayed_action(tray, action);
+
+    // Start countdown display
     ULONGLONG start_tick64 = GetTickCount64();
     // Dispatch and display share the same 60-second timing target.
     tray_start_countdown(tray, action, start_tick64);
@@ -2273,8 +2283,7 @@ void tray_update_icon(NoSleepTray* tray) {
         // Update tooltip with remaining seconds
         char tip[128];
         tray_format_countdown_tooltip(tip, sizeof(tip),
-                                      (tray->countdown_action == SESSION_FINISHED_SHUTDOWN ||
-                                       tray->countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL),
+                                      tray->countdown_action,
                                       countdown_seconds);
         strcpy(tray->nid.szTip, tip);
         

@@ -94,8 +94,15 @@ shutdown_thread = extract_function("delayed_shutdown_thread")
 assert re.search(r"tray_start_countdown\(tray,\s*SESSION_FINISHED_SLEEP,\s*start_tick64\)", sleep_thread), (
     "the delayed sleep thread must identify its scheduled action"
 )
-assert re.search(r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;[\s\S]*?tray_start_countdown\(tray,\s*action,\s*start_tick64\)", shutdown_thread), (
-    "the delayed shutdown thread must identify its scheduled action"
+assert re.search(
+    r"SessionFinishedAction\s+action\s*=\s*tray->shutdown_action;"
+    r"[\s\S]*?tray_announce_delayed_action\(tray,\s*action\);"
+    r"[\s\S]*?tray_start_countdown\(tray,\s*action,\s*start_tick64\)"
+    r"[\s\S]*?trigger_system_shutdown\(tray,\s*action\)",
+    shutdown_thread,
+), "the delayed shutdown thread must reuse one captured action for its notice, countdown, and dispatch"
+assert shutdown_thread.count("SessionFinishedAction action = tray->shutdown_action;") == 1, (
+    "the delayed shutdown thread must capture its scheduled action only once"
 )
 
 update = extract_function("tray_update_icon")
@@ -105,11 +112,10 @@ countdown_display = update.split("// Handle delayed sleep countdown display", 1)
 )[0]
 assert re.search(
     r"tray_format_countdown_tooltip\(tip,\s*sizeof\(tip\),\s*"
-    r"\(tray->countdown_action\s*==\s*SESSION_FINISHED_SHUTDOWN\s*\|\|\s*"
-    r"tray->countdown_action\s*==\s*SESSION_FINISHED_SHUTDOWN_GRACEFUL\),\s*"
+    r"tray->countdown_action,\s*"
     r"countdown_seconds\)",
     countdown_display,
-), "the countdown tooltip must use the action captured for this countdown"
+), "the countdown tooltip must distinguish the action captured for this countdown"
 assert "tray->session_finished_action" not in countdown_display, (
     "changing the When finished preference must not relabel an existing countdown"
 )
@@ -121,6 +127,12 @@ assert re.search(
     r"elapsed_ms\s*>=\s*total_duration_ms[\s\S]*?ATOMIC_STORE_INT\(&tray->countdown_seconds,\s*0\)",
     countdown_thread,
 ), "an expired countdown must still set its displayed seconds to zero"
+announce = extract_function("tray_announce_delayed_action")
+assert re.search(
+    r"tray_announce_delayed_action\(NoSleepTray\s*\*\s*tray,\s*"
+    r"SessionFinishedAction\s+action\)",
+    announce,
+), "the delayed action announcement must receive its captured action"
 
 harness = r'''#include <stdbool.h>
 #include <stdio.h>
@@ -128,19 +140,19 @@ harness = r'''#include <stdbool.h>
 #include "tray_countdown_tooltip.h"
 
 static int expect_tooltip_after_preference_change(const char* scenario,
-                                                   bool scheduled_shutdown,
-                                                   bool new_preference_shutdown,
+                                                   SessionFinishedAction scheduled_action,
+                                                   SessionFinishedAction new_preference_action,
                                                    const char* expected) {
-    bool countdown_action_shutdown = scheduled_shutdown;
-    bool session_finished_action_shutdown = scheduled_shutdown;
-    session_finished_action_shutdown = new_preference_shutdown;
-    if (session_finished_action_shutdown == countdown_action_shutdown) {
+    SessionFinishedAction countdown_action = scheduled_action;
+    SessionFinishedAction session_finished_action = scheduled_action;
+    session_finished_action = new_preference_action;
+    if (session_finished_action == countdown_action) {
         fprintf(stderr, "FAIL: %s did not change the current preference\n", scenario);
         return 1;
     }
 
     char tip[128];
-    tray_format_countdown_tooltip(tip, sizeof(tip), countdown_action_shutdown, 27);
+    tray_format_countdown_tooltip(tip, sizeof(tip), countdown_action, 27);
     if (strcmp(tip, expected) != 0) {
         fprintf(stderr, "FAIL: %s produced '%s'\n", scenario, tip);
         return 1;
@@ -153,7 +165,8 @@ static int expect_tooltip_for_remaining_time(const char* scenario,
                                              const char* expected) {
     int countdown_seconds = tray_countdown_display_seconds(remaining_ms);
     char tip[128];
-    tray_format_countdown_tooltip(tip, sizeof(tip), false, countdown_seconds);
+    tray_format_countdown_tooltip(tip, sizeof(tip), SESSION_FINISHED_SLEEP,
+                                  countdown_seconds);
     if (strcmp(tip, expected) != 0) {
         fprintf(stderr, "FAIL: %s produced '%s'\n", scenario, tip);
         return 1;
@@ -164,11 +177,17 @@ static int expect_tooltip_for_remaining_time(const char* scenario,
 int main(void) {
     int failures = 0;
     failures += expect_tooltip_after_preference_change(
-        "sleep countdown changed to shutdown", false, true,
+        "sleep countdown changed to forced shutdown",
+        SESSION_FINISHED_SLEEP, SESSION_FINISHED_SHUTDOWN,
         "nosleep - System will sleep in 27 seconds");
     failures += expect_tooltip_after_preference_change(
-        "shutdown countdown changed to sleep", true, false,
-        "nosleep - System will shut down in 27 seconds");
+        "forced shutdown countdown changed to sleep",
+        SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SLEEP,
+        "nosleep - System will forcibly shut down in 27 seconds");
+    failures += expect_tooltip_after_preference_change(
+        "graceful shutdown countdown changed to forced shutdown",
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL, SESSION_FINISHED_SHUTDOWN,
+        "nosleep - System will gracefully shut down in 27 seconds");
     failures += expect_tooltip_for_remaining_time(
         "positive sub-second sleep countdown", 1,
         "nosleep - System will sleep in 1 second");
@@ -176,7 +195,7 @@ int main(void) {
         "zero remaining sleep countdown", 0,
         "nosleep - System will sleep in 0 seconds");
     if (failures) return 1;
-    puts("PASS: countdown tooltip preserves scheduled action and rounds positive time up");
+    puts("PASS: countdown tooltip distinguishes scheduled actions and rounds positive time up");
     return 0;
 }
 '''
@@ -193,6 +212,97 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run([str(binary)], check=True)
 
 print("PASS: countdown startup and tray update use the scheduled action snapshot")
+
+announcement_harness = r'''#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include "tray_countdown_tooltip.h"
+
+typedef unsigned long long ULONGLONG;
+typedef struct { int unused; } SRWLOCK;
+typedef enum { NOTIFY_EVENT_TIMER_EXPIRED = 1 } NotifyEventId;
+typedef struct NoSleepTray {
+    SRWLOCK delayed_action_lock;
+    bool session_action_cancelled;
+    bool starting_nosleep;
+    bool stopping;
+    ULONGLONG start_tick64;
+} NoSleepTray;
+
+#define ATOMIC_LOAD_BOOL(value) (*(value))
+#define DEBUG_LOG(...) ((void)0)
+static int notification_count;
+static NotifyEventId notification_event;
+static char notification_title[128];
+static char notification_message[512];
+
+void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
+    (void)start_tick64;
+    return 0;
+}
+void tray_show_notification(NoSleepTray *tray, NotifyEventId event,
+                            const char *title, const char *message,
+                            bool critical) {
+    (void)tray;
+    (void)critical;
+    ++notification_count;
+    notification_event = event;
+    snprintf(notification_title, sizeof(notification_title), "%s", title);
+    snprintf(notification_message, sizeof(notification_message), "%s", message);
+}
+
+''' + announce + r'''
+
+static int expect_notice(SessionFinishedAction action, const char *expected) {
+    NoSleepTray tray = {0};
+    notification_count = 0;
+    tray_announce_delayed_action(&tray, action);
+    if (notification_count != 1 || notification_event != NOTIFY_EVENT_TIMER_EXPIRED ||
+        strcmp(notification_title, "Time's up!") != 0 ||
+        strcmp(notification_message, expected) != 0) {
+        fprintf(stderr, "FAIL: action %d produced '%s': '%s' (%d notices)\n",
+                action, notification_title, notification_message, notification_count);
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    int failures = 0;
+    failures += expect_notice(
+        SESSION_FINISHED_SHUTDOWN,
+        "Sleep prevention stopped\nDuration: 0m 0s\n"
+        "System will forcibly shut down in 60 seconds...\n"
+        "Unsaved work may be lost because applications will be closed forcibly.\n"
+        "Use Cancel shutdown in the tray menu.");
+    failures += expect_notice(
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL,
+        "Sleep prevention stopped\nDuration: 0m 0s\n"
+        "System will gracefully shut down in 60 seconds...\n"
+        "Use Cancel shutdown in the tray menu.");
+    failures += expect_notice(
+        SESSION_FINISHED_SLEEP,
+        "Sleep prevention stopped\nDuration: 0m 0s\n"
+        "System will sleep in 60 seconds...\n"
+        "Use Cancel sleep in the tray menu.");
+    if (failures) return 1;
+    puts("PASS: delayed action notices distinguish shutdown modes and preserve sleep wording");
+    return 0;
+}
+'''
+
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "test_tray_delayed_action_notice.c"
+    binary = Path(tmp) / "test_tray_delayed_action_notice"
+    source.write_text(announcement_harness)
+    command = shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c99", "-Wall", "-Wextra", f"-I{root / 'src'}",
+        str(source), "-o", str(binary),
+    ]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)
 
 startup_failure_harness = r'''#include <stdbool.h>
 #include <stddef.h>
