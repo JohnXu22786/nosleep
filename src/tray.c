@@ -1935,8 +1935,9 @@ static void tray_announce_delayed_action(NoSleepTray* tray, bool shutdown) {
         sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
     }
     char message[512];
-    sprintf(message, "%s\nSystem will %s in 60 seconds...", duration_message,
-            shutdown ? "shut down" : "sleep");
+    sprintf(message, "%s\nSystem will %s in 60 seconds...\nUse Cancel %s in the tray menu.",
+            duration_message, shutdown ? "shut down" : "sleep",
+            shutdown ? "shutdown" : "sleep");
     tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
                            "Time's up!", message, true);
 }
