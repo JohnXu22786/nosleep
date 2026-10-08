@@ -84,6 +84,7 @@ typedef struct TrayUpdateCheckTask TrayUpdateCheckTask;
 typedef struct NoSleepTray {
     HWND hwnd;                  // Window handle for tray icon
     HMENU hmenu;                // Right-click menu
+    bool menu_invoked_by_keyboard; // Avoid stale cursor placement for keyboard tray activation
     NOTIFYICONDATA nid;         // Tray icon data
     bool is_running;            // Whether nosleep is active - accessed atomically
     bool duration_expired;      // Whether the timer duration has expired (to show correct notification) - accessed atomically

@@ -4997,6 +4997,79 @@ static void tray_set_update_check_visible(NoSleepTray* tray, bool checking) {
     }
 }
 
+typedef struct TrayNotifyIconIdentifier {
+    DWORD cbSize;
+    HWND hWnd;
+    UINT uID;
+    GUID guidItem;
+} TrayNotifyIconIdentifier;
+
+typedef HRESULT (WINAPI *ShellNotifyIconGetRectFn)(
+    const TrayNotifyIconIdentifier* identifier, RECT* icon_rect);
+
+static HMONITOR tray_get_icon_monitor(HWND hwnd_owner, UINT icon_id) {
+    if (!hwnd_owner || !icon_id) return NULL;
+
+    HMODULE shell32 = GetModuleHandle("shell32.dll");
+    ShellNotifyIconGetRectFn get_icon_rect = shell32
+        ? (ShellNotifyIconGetRectFn)GetProcAddress(shell32, "Shell_NotifyIconGetRect")
+        : NULL;
+    if (!get_icon_rect) return NULL;
+
+    TrayNotifyIconIdentifier identifier = {0};
+    identifier.cbSize = sizeof(identifier);
+    identifier.hWnd = hwnd_owner;
+    identifier.uID = icon_id;
+    RECT icon_rect;
+    if (FAILED(get_icon_rect(&identifier, &icon_rect))) return NULL;
+
+    return MonitorFromRect(&icon_rect, MONITOR_DEFAULTTONEAREST);
+}
+
+static void center_about_dialog_on_invoking_monitor(HWND hwnd, HWND hwnd_owner,
+                                                    UINT icon_id, BOOL keyboard_invoked) {
+    HMONITOR monitor = tray_get_icon_monitor(hwnd_owner, icon_id);
+    MONITORINFO monitor_info = {0};
+    monitor_info.cbSize = sizeof(monitor_info);
+    RECT work_area;
+    BOOL have_monitor_work_area = monitor && GetMonitorInfo(monitor, &monitor_info);
+
+    // Keyboard tray activation can leave the mouse on a different monitor.
+    if (!have_monitor_work_area && !keyboard_invoked) {
+        POINT invocation_point;
+        if (GetCursorPos(&invocation_point)) {
+            monitor = MonitorFromPoint(invocation_point, MONITOR_DEFAULTTONEAREST);
+            have_monitor_work_area = monitor && GetMonitorInfo(monitor, &monitor_info);
+        }
+    }
+
+    if (!have_monitor_work_area && hwnd_owner) {
+        monitor = MonitorFromWindow(hwnd_owner, MONITOR_DEFAULTTONEAREST);
+        have_monitor_work_area = monitor && GetMonitorInfo(monitor, &monitor_info);
+    }
+
+    if (have_monitor_work_area) {
+        work_area = monitor_info.rcWork;
+    } else if (!SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0)) {
+        work_area = (RECT){0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    }
+
+    RECT rc;
+    if (!GetWindowRect(hwnd, &rc)) return;
+    int width = rc.right - rc.left;
+    int height = rc.bottom - rc.top;
+    int work_width = work_area.right - work_area.left;
+    int work_height = work_area.bottom - work_area.top;
+    int x = work_area.left + (work_width - width) / 2;
+    int y = work_area.top + (work_height - height) / 2;
+    if (width > work_width || x < work_area.left) x = work_area.left;
+    else if (x + width > work_area.right) x = work_area.right - width;
+    if (height > work_height || y < work_area.top) y = work_area.top;
+    else if (y + height > work_area.bottom) y = work_area.bottom - height;
+
+    SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     static NoSleepTray* about_tray = NULL;
 
@@ -5053,13 +5126,13 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)aboutFont);
             }
 
-            RECT rc;
-            GetWindowRect(hwnd, &rc);
-            int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-            int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-            int x = (screenWidth - (rc.right - rc.left)) / 2;
-            int yy = (screenHeight - (rc.bottom - rc.top)) / 2;
-            SetWindowPos(hwnd, NULL, x, yy, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+            BOOL keyboard_invoked = about_tray && about_tray->menu_invoked_by_keyboard;
+            if (about_tray) about_tray->menu_invoked_by_keyboard = false;
+            center_about_dialog_on_invoking_monitor(
+                hwnd,
+                about_tray ? about_tray->hwnd : NULL,
+                about_tray ? about_tray->nid.uID : 0,
+                keyboard_invoked);
 
             return 0;
         }
@@ -5384,6 +5457,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         if (lParam == WM_RBUTTONUP || lParam == NIN_KEYSELECT) {
             // Show context menu
             DEBUG_LOG("tray_window_proc: Right-click detected, showing menu");
+            tray->menu_invoked_by_keyboard = lParam == NIN_KEYSELECT;
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(hwnd); // Required for menu to disappear properly
@@ -5563,6 +5637,8 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             {
                 DEBUG_LOG("tray_window_proc: WM_CONTEXTMENU received");
                 if (tray && tray->hmenu) {
+                    tray->menu_invoked_by_keyboard =
+                        LOWORD(lParam) == (WORD)-1 && HIWORD(lParam) == (WORD)-1;
                     POINT pt;
                     GetCursorPos(&pt);
                     SetForegroundWindow(hwnd);
