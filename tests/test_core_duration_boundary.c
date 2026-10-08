@@ -218,11 +218,33 @@ static void test_null_end_time_conversion_does_not_crash(void) {
     CloseHandle(external_stop_event);
 }
 
+static void test_null_start_time_conversion_does_not_crash(void) {
+    reset_fake_clock();
+    fail_gmtime_call = 1;
+
+    NoSleep *ns = nosleep_create();
+    assert(ns != NULL);
+    HANDLE external_stop_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    signal_external_on_wait = TRUE;
+
+    int result = nosleep_run(ns, INT_MAX, 1, FALSE, FALSE, FALSE,
+                             external_stop_event);
+
+    assert(result == 0);
+    assert(gmtime_call_count == 1);
+    assert(ns->refresh_count == 1);
+    assert(!ns->running);
+
+    nosleep_destroy(ns);
+    CloseHandle(external_stop_event);
+}
+
 int main(void) {
     test_short_duration_caps_long_refresh_wait();
     test_indefinite_long_wait_remains_interruptible();
     test_refresh_failures_restore_sleep_and_return_failure();
     test_null_end_time_conversion_does_not_crash();
+    test_null_start_time_conversion_does_not_crash();
     puts("PASS: duration boundaries, time conversion failures, external stops, and refresh failure cleanup are handled");
     return 0;
 }
