@@ -16,10 +16,18 @@ proc = tray[tray.index("static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd
 start = proc.index("// Calculate dialog size based on number of events")
 end = proc.index("return 0;", start)
 layout = proc[start:end]
-scale = tray[tray.index("static void scale_dialog_layout("):]
-size_start = scale.index("    RECT r =")
-size_end = scale.index("    InvalidateRect", size_start)
-sizing = scale[size_start:size_end]
+size_start = tray.index("static BOOL dialog_window_bounds_for_dpi(")
+size_brace = tray.index("{", size_start)
+size_depth = 0
+for size_end in range(size_brace, len(tray)):
+    if tray[size_end] == "{":
+        size_depth += 1
+    elif tray[size_end] == "}":
+        size_depth -= 1
+        if size_depth == 0:
+            size_end += 1
+            break
+sizing = tray[size_start:size_end]
 
 count = int(re.search(r"NOTIFY_EVENT_COUNT\s*=\s*(\d+)", (root / "src/notify_groups.h").read_text()).group(1))
 harness = r"""
@@ -30,32 +38,34 @@ typedef int HWND;
 typedef int HINSTANCE;
 typedef intptr_t HMENU;
 typedef struct { int left, top, right, bottom; } RECT;
+typedef RECT* LPRECT;
+typedef unsigned int UINT;
+typedef int BOOL;
 #define WS_CHILD 1
 #define WS_VISIBLE 2
 #define WS_TABSTOP 4
 #define BS_DEFPUSHBUTTON 8
 #define IDC_NOTIFY_GROUP_EDIT_OK 101
 #define IDC_NOTIFY_GROUP_EDIT_CANCEL 102
-#define GWL_STYLE (-16)
-#define GWL_EXSTYLE (-20)
-#define SWP_NOMOVE 1
-#define SWP_NOZORDER 2
+#define WINAPI
+#define TRUE 1
 #define FALSE 0
-#define SWP_NOACTIVATE 4
 typedef unsigned long DWORD;
 static int MulDiv(int value, int numerator, int denominator) { return value * numerator / denominator; }
 #define NOTIFY_EVENT_COUNT __COUNT__
 static int frame_x, frame_y, client_width, client_height, buttons;
 static int button_right[2], button_bottom[2];
-static int GetWindowLongPtr(HWND hwnd, int index) { (void)hwnd; return index == GWL_STYLE ? 0x123 : 0x456; }
-static void* GetMenu(HWND hwnd) { (void)hwnd; return 0; }
-static int AdjustWindowRectEx(RECT* rc, unsigned long style, int menu, unsigned long exstyle) {
+static void* GetModuleHandle(const char* name) { (void)name; return NULL; }
+static void* GetProcAddress(void* module, const char* name) {
+    (void)module; (void)name; return NULL;
+}
+static int AdjustWindowRectEx(RECT* rc, DWORD style, BOOL menu, DWORD exstyle) {
     if (style != 0x123 || exstyle != 0x456 || menu != 0) exit(2);
     rc->left -= frame_x; rc->right += frame_x;
     rc->top -= frame_y; rc->bottom += frame_x;
     return 1;
 }
-static int GetWindowRect(HWND hwnd, RECT* rc) { (void)hwnd; *rc = (RECT){0,0,460,326}; return 1; }
+__SIZING__
 static int CreateWindowEx(int exstyle, const char* cls, const char* text, int style,
                          int x, int y, int w, int h, HWND hwnd, HMENU id, HINSTANCE inst, void* param) {
     (void)exstyle; (void)cls; (void)text; (void)style; (void)hwnd; (void)inst; (void)param;
@@ -63,26 +73,19 @@ static int CreateWindowEx(int exstyle, const char* cls, const char* text, int st
     button_right[buttons] = x + w; button_bottom[buttons++] = y + h;
     return 1;
 }
-static int SetWindowPos(HWND hwnd, void* after, int x, int y, int w, int h, int flags) {
-    (void)hwnd; (void)after; (void)x; (void)y; (void)flags;
-    client_width = w - 2 * frame_x; client_height = h - frame_y - frame_x;
-    return 1;
-}
 static int initialize_dialog_layout(HWND hwnd, int width, int height) {
-    // The sizing block reads the stored logical client dimensions.
-    struct LayoutDimensions { int width, height; };
-    struct LayoutDimensions saved = {width, height};
-    struct LayoutDimensions* layout = &saved;
-    unsigned dpi = 96;
-    const RECT* suggested = NULL;
-    int (*adjust)(RECT*, DWORD, int, DWORD, unsigned) = NULL;
-    __SIZING__
+    (void)hwnd;
+    RECT bounds;
+    if (!dialog_window_bounds_for_dpi(width, height, 96, 96, 0x123, 0x456, &bounds)) return 0;
+    client_width = bounds.right - bounds.left - 2 * frame_x;
+    client_height = bounds.bottom - bounds.top - frame_y - frame_x;
     return 1;
 }
-static void layout(void) {
+static int layout(void) {
     HWND hwnd = 1; HINSTANCE hInst = 1;
     int y = 122;
     __LAYOUT__
+    return 0;
 }
 int main(void) {
     const int frames[][2] = {{4,27},{8,31},{12,45}};

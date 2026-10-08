@@ -50,6 +50,9 @@ jobs:
       - name: Test General tab keyboard navigation
         run: ./test_tray_general_tab_keyboard_navigation.sh
 
+      - name: Test settings dialog work-area fitting
+        run: ./test_tray_settings_dialog_work_area.sh
+
       - name: Test custom duration registry persistence
         run: ./test_tray_custom_duration_settings.sh
 

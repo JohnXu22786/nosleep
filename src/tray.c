@@ -3809,33 +3809,119 @@ static void free_dialog_layout(HWND hwnd) {
     free(layout);
 }
 
+// Keep the window frame at monitor DPI while fitting client geometry to the work area.
+static BOOL dialog_window_bounds_for_dpi(int width, int height, UINT layout_dpi,
+                                         UINT window_dpi, DWORD style, DWORD ex_style,
+                                         RECT* bounds) {
+    if (!layout_dpi || !window_dpi || !bounds) return FALSE;
+    RECT rect = {0, 0, MulDiv(width, layout_dpi, 96), MulDiv(height, layout_dpi, 96)};
+    typedef BOOL (WINAPI *AdjustWindowRectExForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    AdjustWindowRectExForDpiFn adjust = (AdjustWindowRectExForDpiFn)GetProcAddress(
+        GetModuleHandle("user32.dll"), "AdjustWindowRectExForDpi");
+    if (!adjust || !adjust(&rect, style, FALSE, ex_style, window_dpi)) {
+        if (!AdjustWindowRectEx(&rect, style, FALSE, ex_style)) return FALSE;
+    }
+    *bounds = rect;
+    return TRUE;
+}
+
+static UINT fit_dialog_dpi(UINT dpi, int width, int height, int available_width,
+                           int available_height, DWORD style, DWORD ex_style) {
+    if (!dpi) dpi = 96;
+    if (available_width <= 0 || available_height <= 0) return dpi;
+
+    UINT low = 1;
+    UINT high = dpi;
+    UINT fitted = 0;
+    while (low <= high) {
+        UINT candidate = low + (high - low) / 2;
+        RECT bounds;
+        if (!dialog_window_bounds_for_dpi(width, height, candidate, dpi,
+                                           style, ex_style, &bounds)) {
+            return dpi;
+        }
+        int window_width = bounds.right - bounds.left;
+        int window_height = bounds.bottom - bounds.top;
+        if (window_width <= available_width && window_height <= available_height) {
+            fitted = candidate;
+            if (candidate == dpi) break;
+            low = candidate + 1;
+        } else {
+            if (candidate == 1) break;
+            high = candidate - 1;
+        }
+    }
+    return fitted ? fitted : 1;
+}
+
+static BOOL dialog_work_area(HWND hwnd, const RECT* suggested, RECT* work_area) {
+    RECT anchor;
+    if (suggested) {
+        anchor = *suggested;
+    } else if (!GetWindowRect(hwnd, &anchor)) {
+        return FALSE;
+    }
+
+    MONITORINFO monitor = {0};
+    monitor.cbSize = sizeof(monitor);
+    HMONITOR target = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+    if (target && GetMonitorInfo(target, &monitor)) {
+        *work_area = monitor.rcWork;
+        return TRUE;
+    }
+    if (SystemParametersInfo(SPI_GETWORKAREA, 0, work_area, 0)) return TRUE;
+
+    *work_area = (RECT){0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    return work_area->right > work_area->left && work_area->bottom > work_area->top;
+}
+
 static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
     DialogLayout* layout = (DialogLayout*)GetProp(hwnd, "NoSleepDialogLayout");
     if (!layout || !dpi) return;
+    RECT current = {0};
+    BOOL have_current = GetWindowRect(hwnd, &current);
+    RECT work_area;
+    if (!dialog_work_area(hwnd, suggested, &work_area)) {
+        return;
+    }
+    int available_width = work_area.right - work_area.left;
+    int available_height = work_area.bottom - work_area.top;
+    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    UINT layout_dpi = fit_dialog_dpi(dpi, layout->width, layout->height,
+        available_width, available_height, style, ex_style);
+    RECT bounds;
+    if (!dialog_window_bounds_for_dpi(layout->width, layout->height, layout_dpi,
+                                      dpi, style, ex_style, &bounds)) return;
+    int window_width = bounds.right - bounds.left;
+    int window_height = bounds.bottom - bounds.top;
     for (DialogControlLayout* control = layout->controls; control; control = control->next) {
         RECT* r = &control->bounds;
-        MoveWindow(control->hwnd, MulDiv(r->left, dpi, 96), MulDiv(r->top, dpi, 96),
-            MulDiv(r->right - r->left, dpi, 96), MulDiv(r->bottom - r->top, dpi, 96), TRUE);
+        MoveWindow(control->hwnd, MulDiv(r->left, layout_dpi, 96),
+            MulDiv(r->top, layout_dpi, 96),
+            MulDiv(r->right - r->left, layout_dpi, 96),
+            MulDiv(r->bottom - r->top, layout_dpi, 96), TRUE);
     }
-    HFONT replacement = create_dialog_font(MulDiv(14, dpi, 96));
+    HFONT replacement = create_dialog_font(MulDiv(14, layout_dpi, 96));
     if (replacement) {
         EnumChildWindows(hwnd, set_child_font_proc, (LPARAM)replacement);
         HFONT previous = (HFONT)GetWindowLongPtr(hwnd, GWLP_USERDATA);
         SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)replacement);
         if (previous) DeleteObject(previous);
     }
-    typedef BOOL (WINAPI *AdjustForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
-    AdjustForDpiFn adjust = (AdjustForDpiFn)GetProcAddress(
-        GetModuleHandle("user32.dll"), "AdjustWindowRectExForDpi");
-    RECT r = {0, 0, MulDiv(layout->width, dpi, 96), MulDiv(layout->height, dpi, 96)};
-    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
-    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-    if (!adjust || !adjust(&r, style, FALSE, ex_style, dpi)) {
-        AdjustWindowRectEx(&r, style, FALSE, ex_style);
-    }
-    SetWindowPos(hwnd, NULL, suggested ? suggested->left : 0, suggested ? suggested->top : 0,
-        r.right - r.left, r.bottom - r.top,
-        SWP_NOZORDER | SWP_NOACTIVATE | (suggested ? 0 : SWP_NOMOVE));
+    int x = suggested ? suggested->left : current.left;
+    int y = suggested ? suggested->top : current.top;
+    int max_x = work_area.right - window_width;
+    int max_y = work_area.bottom - window_height;
+    if (max_x < work_area.left) max_x = work_area.left;
+    if (max_y < work_area.top) max_y = work_area.top;
+    if (x < work_area.left) x = work_area.left;
+    if (x > max_x) x = max_x;
+    if (y < work_area.top) y = work_area.top;
+    if (y > max_y) y = max_y;
+    UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
+    if (!suggested && !have_current) flags |= SWP_NOMOVE;
+    SetWindowPos(hwnd, NULL, x, y, window_width, window_height, flags);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
