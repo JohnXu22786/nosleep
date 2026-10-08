@@ -124,20 +124,22 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         time_t rawtime;
         time(&rawtime);
         struct tm* start_tm = gmtime(&rawtime);
-        int start_year = start_tm->tm_year;
-        int start_yday = start_tm->tm_yday;
-        rawtime += (time_t)duration_minutes * 60;
-        struct tm* end_tm = gmtime(&rawtime);
-        if (end_tm) {
-            char time_str[64];
-            const char* time_format = start_year != end_tm->tm_year ||
-                                      start_yday != end_tm->tm_yday
-                ? "%Y-%m-%d %H:%M:%S UTC"
-                : "%H:%M:%S UTC";
-            strftime(time_str, sizeof(time_str), time_format, end_tm);
-            nosleep_log_info("Will run for %d minutes (until %s)", duration_minutes, time_str);
-        } else {
-            nosleep_log_info("Will run for %d minutes (end time unavailable)", duration_minutes);
+        if (start_tm) {
+            int start_year = start_tm->tm_year;
+            int start_yday = start_tm->tm_yday;
+            rawtime += (time_t)duration_minutes * 60;
+            struct tm* end_tm = gmtime(&rawtime);
+            if (end_tm) {
+                char time_str[64];
+                const char* time_format = start_year != end_tm->tm_year ||
+                                          start_yday != end_tm->tm_yday
+                    ? "%Y-%m-%d %H:%M:%S UTC"
+                    : "%H:%M:%S UTC";
+                strftime(time_str, sizeof(time_str), time_format, end_tm);
+                nosleep_log_info("Will run for %d minutes (until %s)", duration_minutes, time_str);
+            } else {
+                nosleep_log_info("Will run for %d minutes (end time unavailable)", duration_minutes);
+            }
         }
     }
     
