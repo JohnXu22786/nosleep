@@ -7,8 +7,10 @@
 #include "updater_logic.h"
 
 // Check for updates against GitHub releases
-// Returns true if check was successful (result in info)
-// silent: if true, don't show error notifications
+// Returns true when a release response is fetched and parsed into info, even if
+// no usable Windows installer is available. info->update_available reports
+// installer availability.
+// Returns false if info is NULL, the request fails, or the response cannot be parsed.
 bool updater_check(UpdateInfo* info, HWND hwnd_parent);
 
 // Download a new version and perform the update
