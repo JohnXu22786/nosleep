@@ -2477,16 +2477,31 @@ void tray_update_icon(NoSleepTray* tray) {
 void tray_update_stop_menu_item(NoSleepTray* tray) {
     if (!tray || !tray->hmenu) return;
     
-    // Get current state
+    // Countdown startup can fail while its delayed action is still pending.
+    // Read the action handles under their lock so the menu still offers the
+    // matching cancellation command when the display flag is clear.
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
     bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+    bool sleep_pending = tray->sleep_timer != NULL && !tray->sleep_action_claimed;
+    bool shutdown_pending = tray->shutdown_timer != NULL && !tray->shutdown_action_claimed;
+    bool delayed_action_pending = delayed_sleep_countdown_active || sleep_pending || shutdown_pending;
+    SessionFinishedAction pending_action = tray->countdown_action;
+    bool saved_action_matches_pending =
+        ((pending_action == SESSION_FINISHED_SHUTDOWN ||
+          pending_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) && shutdown_pending) ||
+        (pending_action == SESSION_FINISHED_SLEEP && sleep_pending);
+    if ((sleep_pending || shutdown_pending) && !saved_action_matches_pending) {
+        // The pending handle identifies the action if the countdown type is stale.
+        pending_action = shutdown_pending ? tray->shutdown_action : SESSION_FINISHED_SLEEP;
+    }
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     // Determine menu text based on state
     const char* stop_text = NULL;
-    if (delayed_sleep_countdown_active) {
-        // Check if it's shutdown or sleep countdown
-        if (tray->countdown_action == SESSION_FINISHED_SHUTDOWN ||
-            tray->countdown_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) {
+    if (delayed_action_pending) {
+        if (pending_action == SESSION_FINISHED_SHUTDOWN ||
+            pending_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) {
             stop_text = "Cancel shutdown";
         } else {
             stop_text = "Cancel sleep";

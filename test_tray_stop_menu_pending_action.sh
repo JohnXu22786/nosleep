@@ -1,0 +1,200 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+python3 - "$SCRIPT_DIR" "$TMP_DIR/test_tray_stop_menu_pending_action.c" <<'PY'
+from pathlib import Path
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+root = Path(sys.argv[1])
+output = Path(sys.argv[2])
+tray = (root / "src/tray.c").read_text()
+
+definition = re.search(
+    r"\bvoid\s+tray_update_stop_menu_item\s*\([^;]*?\)\s*\{",
+    tray,
+    re.S,
+)
+assert definition, "could not find definition for tray_update_stop_menu_item"
+start = definition.start()
+opening = definition.end() - 1
+depth = 0
+state = "code"
+i = opening
+while i < len(tray):
+    char = tray[i]
+    next_two = tray[i : i + 2]
+    if state == "code":
+        if next_two == "//":
+            state = "line_comment"
+            i += 2
+            continue
+        if next_two == "/*":
+            state = "block_comment"
+            i += 2
+            continue
+        if char == '"':
+            state = "string"
+        elif char == "'":
+            state = "char"
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                update = tray[start : i + 1]
+                break
+    elif state == "line_comment":
+        if char == "\n":
+            state = "code"
+    elif state == "block_comment":
+        if next_two == "*/":
+            state = "code"
+            i += 2
+            continue
+    elif state in ("string", "char"):
+        if char == "\\":
+            i += 2
+            continue
+        if (state == "string" and char == '"') or (
+            state == "char" and char == "'"
+        ):
+            state = "code"
+    i += 1
+else:
+    raise AssertionError("unterminated function: tray_update_stop_menu_item")
+
+harness = r'''#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef void *HANDLE;
+typedef void *HMENU;
+typedef char *LPSTR;
+typedef enum {
+    SESSION_FINISHED_NONE = 0,
+    SESSION_FINISHED_SHUTDOWN,
+    SESSION_FINISHED_SLEEP,
+    SESSION_FINISHED_SHUTDOWN_GRACEFUL
+} SessionFinishedAction;
+
+typedef struct {
+    unsigned int cbSize;
+    unsigned int fMask;
+    LPSTR dwTypeData;
+} MENUITEMINFO;
+
+typedef struct NoSleepTray {
+    HMENU hmenu;
+    int delayed_action_lock;
+    bool delayed_sleep_countdown_active;
+    bool is_running;
+    HANDLE sleep_timer;
+    HANDLE shutdown_timer;
+    bool sleep_action_claimed;
+    bool shutdown_action_claimed;
+    SessionFinishedAction countdown_action;
+    SessionFinishedAction shutdown_action;
+    SessionFinishedAction session_finished_action;
+} NoSleepTray;
+
+#define MIIM_STRING 1
+#define IDM_STOP 2
+#define FALSE 0
+#define ATOMIC_LOAD_BOOL(value) (*(value))
+#define DEBUG_LOG(...) ((void)0)
+
+static char actual_menu_text[64];
+
+static void AcquireSRWLockExclusive(int *lock) { (void)lock; }
+static void ReleaseSRWLockExclusive(int *lock) { (void)lock; }
+
+static int SetMenuItemInfo(HMENU menu, unsigned int item, bool by_position,
+                           MENUITEMINFO *info) {
+    (void)menu;
+    (void)item;
+    (void)by_position;
+    snprintf(actual_menu_text, sizeof(actual_menu_text), "%s", info->dwTypeData);
+    return 1;
+}
+
+''' + update + r'''
+
+static int expect_menu_text(const char *scenario,
+                            bool countdown_active,
+                            bool is_running,
+                            bool sleep_pending,
+                            bool shutdown_pending,
+                            bool sleep_claimed,
+                            bool shutdown_claimed,
+                            SessionFinishedAction countdown_action,
+                            SessionFinishedAction shutdown_action,
+                            const char *expected) {
+    NoSleepTray tray = {0};
+    tray.hmenu = (HMENU)1;
+    tray.delayed_sleep_countdown_active = countdown_active;
+    tray.is_running = is_running;
+    tray.sleep_timer = sleep_pending ? (HANDLE)2 : NULL;
+    tray.shutdown_timer = shutdown_pending ? (HANDLE)3 : NULL;
+    tray.sleep_action_claimed = sleep_claimed;
+    tray.shutdown_action_claimed = shutdown_claimed;
+    tray.countdown_action = countdown_action;
+    tray.shutdown_action = shutdown_action;
+    actual_menu_text[0] = '\0';
+
+    tray_update_stop_menu_item(&tray);
+    if (strcmp(actual_menu_text, expected) != 0) {
+        fprintf(stderr, "FAIL: %s produced '%s', expected '%s'\n",
+                scenario, actual_menu_text, expected);
+        return 1;
+    }
+    return 0;
+}
+
+int main(void) {
+    int failures = 0;
+    failures += expect_menu_text(
+        "pending sleep after countdown thread creation failure", false, false,
+        true, false, false, false, SESSION_FINISHED_SHUTDOWN,
+        SESSION_FINISHED_NONE, "Cancel sleep");
+    failures += expect_menu_text(
+        "pending shutdown after countdown thread creation failure", false, false,
+        false, true, false, false, SESSION_FINISHED_SLEEP,
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL, "Cancel shutdown");
+    failures += expect_menu_text(
+        "active sleep countdown", true, false, true, false, false, false,
+        SESSION_FINISHED_SLEEP, SESSION_FINISHED_NONE, "Cancel sleep");
+    failures += expect_menu_text(
+        "active shutdown countdown", true, false, false, true, false, false,
+        SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SHUTDOWN,
+        "Cancel shutdown");
+    failures += expect_menu_text(
+        "claimed sleep action is no longer cancellable", false, false,
+        true, false, true, false, SESSION_FINISHED_SLEEP,
+        SESSION_FINISHED_NONE, "Stop");
+    failures += expect_menu_text(
+        "active NoSleep session", false, true, false, false, false, false,
+        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, "Stop nosleep session");
+    failures += expect_menu_text(
+        "idle tray", false, false, false, false, false, false,
+        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, "Stop");
+    if (failures) return 1;
+    puts("PASS: stop menu labels pending delayed actions and active countdowns");
+    return 0;
+}
+'''
+
+output.write_text(harness)
+command = shlex.split(os.environ.get("CC", "cc")) + [
+    "-std=c99", "-Wall", "-Wextra", str(output), "-o", str(output.with_suffix(""))
+]
+subprocess.run(command, check=True)
+subprocess.run([str(output.with_suffix(""))], check=True)
+PY
