@@ -1262,6 +1262,17 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     for (;;) {
         AcquireSRWLockExclusive(&tray->delayed_action_lock);
         if (!ATOMIC_LOAD_BOOL(&tray->stopping) && !tray->starting_nosleep) {
+            bool claimed_delayed_action =
+                (tray->sleep_timer != NULL && tray->sleep_action_claimed) ||
+                (tray->shutdown_timer != NULL && tray->shutdown_action_claimed);
+            if (claimed_delayed_action) {
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                    "Action Already Started",
+                    "The scheduled sleep or shutdown action can no longer be cancelled. Wait for it to finish before starting a new NoSleep session.",
+                    true);
+                return;
+            }
             tray->starting_nosleep = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             break;
@@ -1407,11 +1418,16 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     bool manual_stop_requested = expected_thread_id == 0 &&
                                  !timer_expired &&
                                  !suppress_notification;
-    if (manual_stop_requested &&
-        !tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
-                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                            tray->sleep_timer != NULL && !tray->sleep_action_claimed,
-                            tray->shutdown_timer != NULL && !tray->shutdown_action_claimed)) {
+    bool has_cancellable_work = tray_stop_has_work(
+        ATOMIC_LOAD_BOOL(&tray->is_running),
+        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+        tray->sleep_timer != NULL && !tray->sleep_action_claimed,
+        tray->shutdown_timer != NULL && !tray->shutdown_action_claimed);
+    bool has_claimed_delayed_action =
+        (tray->sleep_timer != NULL && tray->sleep_action_claimed) ||
+        (tray->shutdown_timer != NULL && tray->shutdown_action_claimed);
+    if (manual_stop_requested && has_claimed_delayed_action &&
+        !has_cancellable_work) {
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         DEBUG_LOG("tray_stop_nosleep: no cancellable work remains");
         return false;
