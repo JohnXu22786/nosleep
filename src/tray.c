@@ -280,7 +280,7 @@ void tray_destroy(NoSleepTray* tray) {
     tray->starting_nosleep = true;
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
-    tray_stop_nosleep(tray, false, false);
+    tray_stop_nosleep(tray, false, true); // suppress notification during teardown
     // Join the countdown worker even if it already cleared its active flag.
     tray_stop_countdown(tray);
 
@@ -1401,6 +1401,22 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
 
     tray_wait_for_delayed_countdown_start(tray);
 
+    // A Stop command can outlive the menu state that was visible when it opened.
+    // Recheck under the action lock so it never joins an action that can no
+    // longer be cancelled.
+    bool manual_stop_requested = expected_thread_id == 0 &&
+                                 !timer_expired &&
+                                 !suppress_notification;
+    if (manual_stop_requested &&
+        !tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
+                            tray->sleep_timer != NULL && !tray->sleep_action_claimed,
+                            tray->shutdown_timer != NULL && !tray->shutdown_action_claimed)) {
+        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        DEBUG_LOG("tray_stop_nosleep: no cancellable work remains");
+        return false;
+    }
+
     if (is_nosleep_thread) {
         ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
     }
@@ -1616,8 +1632,8 @@ static bool tray_has_stop_work(NoSleepTray* tray) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
                                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
-                                       tray->sleep_timer != NULL,
-                                       tray->shutdown_timer != NULL);
+                                       tray->sleep_timer != NULL && !tray->sleep_action_claimed,
+                                       tray->shutdown_timer != NULL && !tray->shutdown_action_claimed);
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     return has_work;
 }
@@ -2114,6 +2130,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             // cleanup to join, and release the lock before OS power callbacks.
             tray->sleep_action_claimed = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+            tray_update_stop_menu_item(tray);
             DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
             trigger_system_sleep(tray);
 
@@ -2183,6 +2200,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             // cleanup to join, and release the lock before OS power callbacks.
             tray->shutdown_action_claimed = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+            tray_update_stop_menu_item(tray);
             DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
             trigger_system_shutdown(tray, action);
 
