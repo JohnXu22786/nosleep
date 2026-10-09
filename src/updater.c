@@ -1356,6 +1356,7 @@ static bool create_update_batch_script(const char* current_exe_path,
         ":START\r\n"
         "echo Starting updated nosleep...\r\n"
         "start /wait \"\" \"%s\" %s \"%s\"\r\n"
+        "if errorlevel 2 goto STARTUP_STOP_FAILED\r\n"
         "if not \"%%errorlevel%%\"==\"0\" goto START_FAILED\r\n"
         "echo Update complete! Cleaning up...\r\n"
         "del \"%s.backup\" > nul 2>&1\r\n"
@@ -1368,6 +1369,11 @@ static bool create_update_batch_script(const char* current_exe_path,
         "move /Y \"%s.backup\" \"%s\" > nul\r\n"
         "if errorlevel 1 echo Restore failed. The original executable is retained with a .backup suffix.\r\n"
         "echo Recovery files have been retained. Please start nosleep manually.\r\n"
+        "pause\r\n"
+        "exit /b 1\r\n"
+        ":STARTUP_STOP_FAILED\r\n"
+        "echo The updated application could not be stopped. No rollback was attempted.\r\n"
+        "echo The original executable remains in a .backup file. Close the updated application and restore the backup manually.\r\n"
         "pause\r\n"
         "exit /b 1\r\n",
         (unsigned long)GetCurrentProcessId(), // wait only for the updating process

@@ -364,12 +364,33 @@ static int relaunch_from_command_line_file(const wchar_t* arguments_path) {
     }
 
     HANDLE startup_handles[] = {startup_ready_event, process_info.hProcess};
-    DWORD startup_result = WaitForMultipleObjects(2, startup_handles, FALSE, INFINITE);
+    const DWORD startup_timeout_ms = 30000;
+    const DWORD termination_wait_ms = 5000;
+    DWORD startup_result = WaitForMultipleObjects(2, startup_handles, FALSE,
+                                                  startup_timeout_ms);
+    BOOL startup_process_stopped = TRUE;
+    const wchar_t* startup_cleanup_error = NULL;
+    if (startup_result == WAIT_TIMEOUT) {
+        BOOL termination_requested = TerminateProcess(process_info.hProcess, 1);
+        DWORD termination_wait_result = WaitForSingleObject(process_info.hProcess,
+                                                            termination_wait_ms);
+        startup_process_stopped = termination_wait_result == WAIT_OBJECT_0;
+        if (!startup_process_stopped) {
+            startup_cleanup_error = termination_requested
+                ? L"The updated application could not be stopped. The original executable is retained in a .backup file. Close the updated application and restore the backup manually."
+                : L"Windows could not request termination of the updated application. The original executable is retained in a .backup file. Close the updated application and restore the backup manually.";
+        }
+    }
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
     CloseHandle(startup_ready_event);
+    if (!startup_process_stopped) {
+        MessageBoxW(NULL, startup_cleanup_error, L"Update Failed",
+                    MB_OK | MB_ICONERROR | MB_TOPMOST);
+        return 2;
+    }
     if (startup_result != WAIT_OBJECT_0) {
-        MessageBoxW(NULL, L"The updated application exited before completing startup. Please start nosleep manually.",
+        MessageBoxW(NULL, L"The updated application did not complete startup. Please start nosleep manually.",
                     L"Update Failed", MB_OK | MB_ICONERROR | MB_TOPMOST);
         return 1;
     }

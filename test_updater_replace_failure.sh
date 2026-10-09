@@ -28,7 +28,7 @@ labels = {line[1:]: i for i, line in enumerate(lines) if line.startswith(':')}
 current = r'C:\app\nosleep.exe'
 download = r'C:\temp\download.exe'
 
-def run(failure=None, collision=None):
+def run(failure=None, collision=None, relay_status=0):
     files = {current: b'old executable', download: b'new executable', 'args': b'args'}
     if collision:
         files[current + collision] = b'existing unrelated file'
@@ -42,9 +42,12 @@ def run(failure=None, collision=None):
         if match:
             if match[1] in files: pc = labels[match[2]]
             continue
-        match = re.match(r'if errorlevel 1 goto (\w+)', line, re.I)
+        match = re.match(r'if errorlevel (\d+) goto (\w+)', line, re.I)
         if match:
-            if status: pc = labels[match[1]]
+            if status >= int(match[1]): pc = labels[match[2]]
+            continue
+        if line.startswith('if not "%%errorlevel%%"=="0" goto '):
+            if status != 0: pc = labels[line.split()[-1]]
             continue
         match = re.match(r'goto (\w+)', line, re.I)
         if match:
@@ -71,7 +74,7 @@ def run(failure=None, collision=None):
             files.pop(match[1], None)
             continue
         if line.startswith('start '):
-            status = 0  # Simulate a successful relay before cleanup.
+            status = relay_status
             continue
         if line.startswith('exit /b'): break
     return files
@@ -90,5 +93,8 @@ for suffix in ('.update', '.backup'):
 files = run()
 assert files[current] == b'new executable', 'successful install did not replace executable'
 assert current + '.backup' not in files, 'successful install retained backup'
+files = run(relay_status=2)
+assert files[current] == b'new executable', 'failed child stop attempted a rollback over a running process'
+assert files.get(current + '.backup') == b'old executable', 'failed child stop discarded the rollback backup'
 print('PASS: generated updater preserves executable across copy/install/rollback failures and collisions')
 PY
