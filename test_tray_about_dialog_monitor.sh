@@ -17,7 +17,12 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(signature):
     start = tray.index(signature)
-    brace = tray.index("{", start)
+    while True:
+        brace = tray.index("{", start)
+        declaration_end = tray.find(";", start, brace)
+        if declaration_end == -1:
+            break
+        start = tray.index(signature, brace)
     depth = 0
     for index in range(brace, len(tray)):
         if tray[index] == "{":
