@@ -1262,6 +1262,17 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     for (;;) {
         AcquireSRWLockExclusive(&tray->delayed_action_lock);
         if (!ATOMIC_LOAD_BOOL(&tray->stopping) && !tray->starting_nosleep) {
+            bool claimed_delayed_action =
+                (tray->sleep_timer != NULL && tray->sleep_action_claimed) ||
+                (tray->shutdown_timer != NULL && tray->shutdown_action_claimed);
+            if (claimed_delayed_action) {
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+                    "Action Already Started",
+                    "The scheduled sleep or shutdown action can no longer be cancelled. Wait for it to finish before starting a new NoSleep session.",
+                    true);
+                return;
+            }
             tray->starting_nosleep = true;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             break;
