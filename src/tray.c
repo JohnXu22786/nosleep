@@ -2136,7 +2136,8 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             // Stop the display before deciding atomically whether to trigger sleep.
             tray_stop_countdown(tray);
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
-            if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
+            if (ATOMIC_LOAD_BOOL(&tray->stopping) || tray->starting_nosleep ||
+                WaitForSingleObject(tray->sleep_stop_event, 0) == WAIT_OBJECT_0) {
                 DEBUG_LOG("delayed_sleep_thread: cancelled before sleep could start");
                 ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                 break;
@@ -2206,7 +2207,8 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             // Stop the display before deciding atomically whether to trigger shutdown.
             tray_stop_countdown(tray);
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
-            if (ATOMIC_LOAD_BOOL(&tray->stopping) || WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
+            if (ATOMIC_LOAD_BOOL(&tray->stopping) || tray->starting_nosleep ||
+                WaitForSingleObject(tray->shutdown_stop_event, 0) == WAIT_OBJECT_0) {
                 DEBUG_LOG("delayed_shutdown_thread: cancelled before shutdown could start");
                 ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                 break;
