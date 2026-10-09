@@ -56,6 +56,9 @@ jobs:
       - name: Test About dialog monitor positioning
         run: ./test_tray_about_dialog_monitor.sh
 
+      - name: Test custom duration dialog monitor selection
+        run: ./test_tray_custom_dialog_monitor.sh
+
       - name: Test custom duration registry persistence
         run: ./test_tray_custom_duration_settings.sh
 

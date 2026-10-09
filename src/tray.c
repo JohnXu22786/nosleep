@@ -88,6 +88,7 @@ static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
 static void tray_create_icons(NoSleepTray* tray);
 static void tray_destroy_icons(NoSleepTray* tray);
 static void tray_create_menu(NoSleepTray* tray);
+static HMONITOR tray_get_icon_monitor(HWND hwnd_owner, UINT icon_id);
 static DWORD WINAPI tray_duration_timer(LPVOID lpParam);
 static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam);
 static bool tray_wait_for_worker_threads(NoSleepTray* tray);
@@ -3711,10 +3712,18 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
     }
 
     // Use the tray interaction's monitor, including its taskbar work-area inset.
+    BOOL keyboard_invoked = tray->menu_invoked_by_keyboard;
+    tray->menu_invoked_by_keyboard = false;
     POINT cursor;
-    HMONITOR monitor = GetCursorPos(&cursor)
-        ? MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST)
-        : MonitorFromWindow(tray->hwnd, MONITOR_DEFAULTTONEAREST);
+    HMONITOR monitor = keyboard_invoked
+        ? tray_get_icon_monitor(tray->hwnd, tray->nid.uID)
+        : NULL;
+    if (!monitor && !keyboard_invoked && GetCursorPos(&cursor)) {
+        monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    }
+    if (!monitor) {
+        monitor = MonitorFromWindow(tray->hwnd, MONITOR_DEFAULTTONEAREST);
+    }
     MONITORINFO monitor_info = {0};
     monitor_info.cbSize = sizeof(monitor_info);
     RECT work_area;
