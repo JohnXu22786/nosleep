@@ -128,6 +128,7 @@ typedef struct NoSleepTray {
     SRWLOCK tray_icon_lock;
     UINT uTrayMessage;
     UINT uTaskbarCreatedMessage;
+    UINT_PTR taskbar_restore_timer_id;
     NotifyGroupManager notify_groups;
 } NoSleepTray;
 
@@ -182,6 +183,10 @@ static int module_handle;
 static int cursor_handle;
 
 static void tray_create_menu(NoSleepTray *tray);
+static bool tray_add_icon_to_shell(NoSleepTray *tray);
+static bool tray_restore_taskbar_icon(NoSleepTray *tray) {
+    return tray_add_icon_to_shell(tray);
+}
 
 static LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     (void)hwnd; (void)msg; (void)wParam; (void)lParam;
@@ -193,6 +198,7 @@ static HCURSOR LoadCursor(HINSTANCE instance, const char *name) {
 }
 static void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 static void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+static DWORD GetLastError(void) { return 5; }
 static UINT RegisterClass(const WNDCLASS *wc) { (void)wc; return 1; }
 static HWND CreateWindowEx(DWORD ex_style, const char *class_name,
                            const char *window_name, DWORD style,

@@ -461,12 +461,17 @@ bool tray_init(NoSleepTray* tray) {
     
     DEBUG_PRINT("tray_init: Adding tray icon...\n");
     DEBUG_PRINT("tray_init: hWnd=%p, uID=%u, uCallbackMessage=%u\n", tray->hwnd, tray->nid.uID, tray->nid.uCallbackMessage);
-    if (!tray_add_icon_to_shell(tray)) {
+    bool tray_icon_added = tray_restore_taskbar_icon(tray);
+    if (!tray_icon_added && !tray->taskbar_restore_timer_id) {
         DestroyWindow(tray->hwnd);
         return false;
     }
-    DEBUG_PRINT("tray_init: Tray icon added successfully\n");
-    DEBUG_PRINT("tray_init: Icon added with hWnd=%p, uID=%u, uCallbackMessage=%u\n", tray->nid.hWnd, tray->nid.uID, tray->nid.uCallbackMessage);
+    if (tray_icon_added) {
+        DEBUG_PRINT("tray_init: Tray icon added successfully\n");
+        DEBUG_PRINT("tray_init: Icon added with hWnd=%p, uID=%u, uCallbackMessage=%u\n", tray->nid.hWnd, tray->nid.uID, tray->nid.uCallbackMessage);
+    } else {
+        DEBUG_PRINT("tray_init: Tray icon add failed; retry timer scheduled\n");
+    }
     
     // Read startup state from registry
     tray->start_on_startup = is_startup_enabled();

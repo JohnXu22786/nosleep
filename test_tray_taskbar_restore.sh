@@ -75,9 +75,14 @@ assert re.search(
     r'tray->uTaskbarCreatedMessage\s*=\s*RegisterWindowMessage\("TaskbarCreated"\)',
     tray_init,
 ), "tray_init must register the shell TaskbarCreated message"
-assert "tray_add_icon_to_shell(tray)" in tray_init, (
-    "initialization and Explorer recovery must use the same tray-icon add path"
-)
+assert re.search(
+    r"bool\s+tray_icon_added\s*=\s*tray_restore_taskbar_icon\(tray\)",
+    tray_init,
+), "tray_init must route initial icon registration through the retry helper"
+assert re.search(
+    r"if\s*\(\s*!tray_icon_added\s*&&\s*!tray->taskbar_restore_timer_id\s*\)",
+    tray_init,
+), "tray_init must continue when a failed initial add has a retry timer"
 assert re.search(
     r"tray_handle_taskbar_created\s*\(\s*tray\s*,\s*msg\s*\)", window_proc
 ), "tray_window_proc must dispatch the registered shell restart message"
@@ -233,7 +238,7 @@ int main(void) {
     add_results[2] = 1;
     set_timer_calls = 0;
     kill_timer_calls = 0;
-    assert(tray_handle_taskbar_created(&tray, tray.uTaskbarCreatedMessage));
+    assert(!tray_restore_taskbar_icon(&tray));
     assert(shell_call_count == 1 && shell_calls[0].operation == NIM_ADD);
     assert(lock_depth == 0);
     assert(set_timer_calls == 1);
@@ -250,6 +255,24 @@ int main(void) {
     assert(kill_timer_calls == 1);
     assert(tray.taskbar_restore_timer_id == 0);
     assert(!tray_handle_taskbar_restore_retry(&tray, TIMER_ID_TASKBAR_RESTORE));
+
+    shell_call_count = 0;
+    add_attempt_count = 0;
+    add_result_count = 2;
+    add_results[0] = 0;
+    add_results[1] = 1;
+    set_timer_calls = 0;
+    kill_timer_calls = 0;
+    fail_set_timer = 0;
+    assert(tray_handle_taskbar_created(&tray, tray.uTaskbarCreatedMessage));
+    assert(shell_call_count == 1 && shell_calls[0].operation == NIM_ADD);
+    assert(set_timer_calls == 1);
+    assert(tray.taskbar_restore_timer_id == TIMER_ID_TASKBAR_RESTORE);
+    assert(tray_handle_taskbar_restore_retry(&tray, TIMER_ID_TASKBAR_RESTORE));
+    assert(shell_calls[1].operation == NIM_ADD);
+    assert(shell_calls[2].operation == NIM_SETVERSION);
+    assert(kill_timer_calls == 1);
+    assert(tray.taskbar_restore_timer_id == 0);
 
     shell_call_count = 0;
     add_attempt_count = 0;
