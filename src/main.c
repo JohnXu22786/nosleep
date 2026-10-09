@@ -124,7 +124,7 @@ static int run_tray_mode(const CLIOptions* opts, HANDLE startup_ready_event);
 static int run_configure_mode(const CLIOptions* opts);
 
 // Preserve inherited CRT streams (including redirected files and pipes).
-static void prepare_cli_output(void) {
+static void prepare_cli_output(bool ignore_ctrl_c) {
     int stdout_fd = _fileno(stdout);
     int stderr_fd = _fileno(stderr);
     bool has_stdout = stdout_fd >= 0 && _get_osfhandle(stdout_fd) != -1;
@@ -135,6 +135,11 @@ static void prepare_cli_output(void) {
         else freopen("CONOUT$", "w", stdout);
         if (has_stderr) SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(stderr_fd));
         else freopen("CONOUT$", "w", stderr);
+    }
+
+    if (ignore_ctrl_c) {
+        // Tray mode is controlled from its menu, even when attached to a console.
+        SetConsoleCtrlHandler(NULL, TRUE);
     }
 }
 
@@ -440,7 +445,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (parse_result == 1) {
         // Error parsing arguments - output to console
-        prepare_cli_output();
+        prepare_cli_output(false);
         print_cli_parse_error(&parse_error);
         LocalFree(argv);
         return 1;
@@ -450,7 +455,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     if (parse_result == 2) {
         // Help requested - output to console
-        prepare_cli_output();
+        prepare_cli_output(false);
         printf("%s", HELP_TEXT);
         return 0;
     }
@@ -462,7 +467,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     // --version mode: show version and exit
     if (opts.show_version) {
-        prepare_cli_output();
+        prepare_cli_output(false);
         printf("nosleep v" CURRENT_VERSION "\n");
         return 0;
     }
@@ -473,7 +478,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (opts.session_finished == CLI_UNSET && opts.auto_start == CLI_UNSET &&
             opts.notification_mode == CLI_UNSET && opts.auto_check_interval == CLI_UNSET &&
             opts.check_updates_startup == CLI_UNSET && opts.add_to_path == CLI_UNSET) {
-            prepare_cli_output();
+            prepare_cli_output(false);
             fprintf(stderr, "nosleep: No settings provided with --configure. Use --help for usage.\n");
             return 1;
         }
@@ -682,7 +687,7 @@ static int parse_arguments(int argc, wchar_t* argv[], CLIOptions* opts,
 
 static int run_configure_mode(const CLIOptions* opts) {
     // Attach to parent console for status output
-    prepare_cli_output();
+    prepare_cli_output(false);
     
     bool success = tray_save_settings_cli(opts->session_finished, opts->auto_start,
                            opts->notification_mode, opts->auto_check_interval,
@@ -707,7 +712,7 @@ static bool signal_updater_startup_ready_event(HANDLE startup_ready_event) {
 }
 
 static int run_tray_mode(const CLIOptions* opts, HANDLE startup_ready_event) {
-    prepare_cli_output();
+    prepare_cli_output(true);
 
     const char* debug = getenv("NOSLEEP_DEBUG");
     if (debug && strcmp(debug, "1") == 0) {
