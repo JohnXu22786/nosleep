@@ -2583,6 +2583,11 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
         stop_text = "Stop"; // Default when not active
     }
     
+    // Keep the visible menu state in sync, including a menu that is already open.
+    bool stop_enabled = delayed_action_pending || is_running;
+    EnableMenuItem(tray->hmenu, IDM_STOP,
+                   MF_BYCOMMAND | (stop_enabled ? MF_ENABLED : MF_GRAYED));
+
     // Update the menu item text
     MENUITEMINFO mii = {0};
     mii.cbSize = sizeof(MENUITEMINFO);

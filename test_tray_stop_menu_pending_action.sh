@@ -108,6 +108,9 @@ typedef struct NoSleepTray {
 #define MIIM_STRING 1
 #define IDM_STOP 2
 #define FALSE 0
+#define MF_BYCOMMAND 0
+#define MF_ENABLED 0
+#define MF_GRAYED 1
 #define ATOMIC_LOAD_BOOL(value) (*(value))
 #define DEBUG_LOG(...) ((void)0)
 
@@ -115,6 +118,13 @@ static char actual_menu_text[64];
 
 static void AcquireSRWLockExclusive(int *lock) { (void)lock; }
 static void ReleaseSRWLockExclusive(int *lock) { (void)lock; }
+
+static int EnableMenuItem(HMENU menu, unsigned int item, unsigned int flags) {
+    (void)menu;
+    (void)item;
+    (void)flags;
+    return 1;
+}
 
 static int SetMenuItemInfo(HMENU menu, unsigned int item, bool by_position,
                            MENUITEMINFO *info) {
