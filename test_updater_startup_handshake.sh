@@ -49,8 +49,8 @@ typedef struct { HANDLE hProcess; HANDLE hThread; } PROCESS_INFORMATION;
 #define EVENT_MODIFY_STATE 2
 #define ERROR_ALREADY_EXISTS 183
 #define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 258
 #define WAIT_FAILED ((DWORD)-1)
-#define INFINITE ((DWORD)-1)
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
 
 static const wchar_t saved_command_line[] = L"nosleep.exe --duration 20";
@@ -61,10 +61,14 @@ static const HANDLE child_thread_handle = (HANDLE)(uintptr_t)0x44;
 static wchar_t created_event_name[128];
 static wchar_t launched_command_line[UPDATER_MAX_WINDOWS_COMMAND_LINE_CHARS];
 static DWORD requested_wait_result;
+static DWORD termination_wait_result;
 static unsigned int wait_calls;
+static unsigned int terminate_calls;
+static unsigned int termination_wait_calls;
 static unsigned int create_process_calls;
 static unsigned int error_dialog_calls;
 static BOOL launch_succeeds;
+static BOOL terminate_succeeds;
 static DWORD last_error;
 
 HANDLE CreateFileW(const wchar_t *path, DWORD access, DWORD sharing,
@@ -140,9 +144,23 @@ DWORD WaitForMultipleObjects(DWORD count, const HANDLE *handles, BOOL wait_all,
     assert(handles[0] == ready_event_handle);
     assert(handles[1] == child_process_handle);
     assert(wait_all == FALSE);
-    assert(timeout == INFINITE);
+    assert(timeout == 30000);
     ++wait_calls;
     return requested_wait_result;
+}
+
+BOOL TerminateProcess(HANDLE process, DWORD exit_code) {
+    assert(process == child_process_handle);
+    assert(exit_code == 1);
+    ++terminate_calls;
+    return terminate_succeeds;
+}
+
+DWORD WaitForSingleObject(HANDLE handle, DWORD timeout) {
+    assert(handle == child_process_handle);
+    assert(timeout == 5000);
+    ++termination_wait_calls;
+    return termination_wait_result;
 }
 
 BOOL CloseHandle(HANDLE handle) {
@@ -164,10 +182,14 @@ static void reset(void) {
     created_event_name[0] = L'\0';
     launched_command_line[0] = L'\0';
     requested_wait_result = WAIT_OBJECT_0;
+    termination_wait_result = WAIT_OBJECT_0;
     wait_calls = 0;
+    terminate_calls = 0;
+    termination_wait_calls = 0;
     create_process_calls = 0;
     error_dialog_calls = 0;
     launch_succeeds = TRUE;
+    terminate_succeeds = TRUE;
     last_error = 0;
 }
 
@@ -176,6 +198,8 @@ int main(void) {
     assert(relaunch_from_command_line_file(L"arguments.dat") == 0);
     assert(create_process_calls == 1);
     assert(wait_calls == 1);
+    assert(terminate_calls == 0);
+    assert(termination_wait_calls == 0);
     assert(error_dialog_calls == 0);
     assert(wcscmp(created_event_name, L"Local\\NoSleepUpdaterReady-4242") == 0);
     assert(wcsstr(launched_command_line,
@@ -186,6 +210,34 @@ int main(void) {
     requested_wait_result = WAIT_OBJECT_0 + 1;
     assert(relaunch_from_command_line_file(L"arguments.dat") == 1);
     assert(wait_calls == 1);
+    assert(terminate_calls == 0);
+    assert(error_dialog_calls == 1);
+
+    reset();
+    requested_wait_result = WAIT_TIMEOUT;
+    assert(relaunch_from_command_line_file(L"arguments.dat") == 1);
+    assert(wait_calls == 1);
+    assert(terminate_calls == 1);
+    assert(termination_wait_calls == 1);
+    assert(error_dialog_calls == 1);
+
+    reset();
+    requested_wait_result = WAIT_TIMEOUT;
+    termination_wait_result = WAIT_TIMEOUT;
+    assert(relaunch_from_command_line_file(L"arguments.dat") == 2);
+    assert(wait_calls == 1);
+    assert(terminate_calls == 1);
+    assert(termination_wait_calls == 1);
+    assert(error_dialog_calls == 1);
+
+    reset();
+    requested_wait_result = WAIT_TIMEOUT;
+    terminate_succeeds = FALSE;
+    termination_wait_result = WAIT_TIMEOUT;
+    assert(relaunch_from_command_line_file(L"arguments.dat") == 2);
+    assert(wait_calls == 1);
+    assert(terminate_calls == 1);
+    assert(termination_wait_calls == 1);
     assert(error_dialog_calls == 1);
 
     reset();
