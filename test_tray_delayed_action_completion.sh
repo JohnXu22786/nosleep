@@ -247,6 +247,9 @@ void tray_stop_countdown(NoSleepTray *tray) {
         pthread_mutex_unlock(&tray->delayed_action_lock);
     }
 }
+void tray_update_stop_menu_item(NoSleepTray *tray) {
+    (void)tray;
+}
 void trigger_system_sleep(NoSleepTray *tray) {
     (void)tray;
     ++sleep_action_calls;
