@@ -117,7 +117,6 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
     ResetEvent(ns->stop_event);
     
     nosleep_log_info("nosleep started - preventing system sleep");
-    printf("Press Ctrl+C to stop and allow sleep\n");
     
     if (duration_minutes > 0) {
         // Compute approximate end time for display using time() (UTC)
