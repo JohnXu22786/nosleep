@@ -25,6 +25,8 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 
 // Timer ID for auto-start debug feature
 #define TIMER_ID_AUTO_START 1000
+#define TIMER_ID_TASKBAR_RESTORE 1003
+#define TASKBAR_RESTORE_RETRY_INTERVAL_MS 1000
 #define WM_TRAY_UPDATE_CHECK_COMPLETE (WM_APP + 2)
 
 // Notify Icon Notification codes (for NOTIFYICON_VERSION_4)
@@ -343,13 +345,46 @@ static bool tray_add_icon_to_shell(NoSleepTray* tray) {
     return true;
 }
 
+static bool tray_restore_taskbar_icon(NoSleepTray* tray) {
+    if (!tray) return false;
+
+    if (tray_add_icon_to_shell(tray)) {
+        if (tray->taskbar_restore_timer_id) {
+            KillTimer(tray->hwnd, tray->taskbar_restore_timer_id);
+            tray->taskbar_restore_timer_id = 0;
+        }
+        return true;
+    }
+
+    if (!tray->taskbar_restore_timer_id && tray->hwnd) {
+        tray->taskbar_restore_timer_id = SetTimer(
+            tray->hwnd, TIMER_ID_TASKBAR_RESTORE,
+            TASKBAR_RESTORE_RETRY_INTERVAL_MS, NULL);
+        if (!tray->taskbar_restore_timer_id) {
+            DEBUG_PRINT("tray_restore_taskbar_icon: could not schedule icon restore retry\n");
+            return tray_add_icon_to_shell(tray);
+        }
+    }
+    return false;
+}
+
+static bool tray_handle_taskbar_restore_retry(NoSleepTray* tray, WPARAM timer_id) {
+    if (!tray || !tray->taskbar_restore_timer_id ||
+        timer_id != tray->taskbar_restore_timer_id) {
+        return false;
+    }
+
+    tray_restore_taskbar_icon(tray);
+    return true;
+}
+
 static bool tray_handle_taskbar_created(NoSleepTray* tray, UINT msg) {
     if (!tray || !tray->uTaskbarCreatedMessage || msg != tray->uTaskbarCreatedMessage) {
         return false;
     }
 
     DEBUG_PRINT("tray_window_proc: Explorer restarted; restoring tray icon\n");
-    tray_add_icon_to_shell(tray);
+    tray_restore_taskbar_icon(tray);
     return true;
 }
 
@@ -5573,7 +5608,9 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
             break;
             
         case WM_TIMER:
-            if (wParam == TIMER_ID_AUTO_START) {
+            if (tray_handle_taskbar_restore_retry(tray, wParam)) {
+                // The periodic timer remains active until the shell accepts the icon.
+            } else if (wParam == TIMER_ID_AUTO_START) {
                 KillTimer(hwnd, TIMER_ID_AUTO_START);
                 DEBUG_PRINT("Auto-starting 1 minute nosleep (testing)\n");
                 tray_start_nosleep(tray, 1); // 1 minute for testing

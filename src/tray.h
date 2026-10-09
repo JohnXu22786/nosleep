@@ -142,6 +142,7 @@ typedef struct NoSleepTray {
     HICON hIconCountdownBlank;  // Blank icon for blinking (optional, can use hIconDefault)
     UINT uTrayMessage;          // Registered tray message ID
     UINT uTaskbarCreatedMessage; // Registered shell notification-area restart message
+    UINT_PTR taskbar_restore_timer_id; // Retry timer for failed Explorer icon restoration
     bool start_on_startup;      // Whether to auto-start at Windows logon
     bool check_updates_on_startup; // Whether to check for updates on startup
     int auto_check_interval;    // 0=Never, 1=Daily, 2=Weekly
