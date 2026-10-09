@@ -230,12 +230,15 @@ announcement_harness = r'''#include <stdbool.h>
 
 typedef unsigned long long ULONGLONG;
 typedef struct { int unused; } SRWLOCK;
+typedef struct { int unused; } CONDITION_VARIABLE;
 typedef enum { NOTIFY_EVENT_TIMER_EXPIRED = 1 } NotifyEventId;
 typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
+    CONDITION_VARIABLE stop_condition;
     bool session_action_cancelled;
     bool starting_nosleep;
     bool stopping;
+    bool delayed_countdown_starting;
     ULONGLONG start_tick64;
 } NoSleepTray;
 
@@ -248,6 +251,7 @@ static char notification_message[512];
 
 void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+void WakeAllConditionVariable(CONDITION_VARIABLE *condition) { (void)condition; }
 ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
     (void)start_tick64;
     return 0;
@@ -462,6 +466,150 @@ with tempfile.TemporaryDirectory() as tmp:
     source.write_text(startup_failure_harness)
     command = shlex.split(os.environ.get("CC", "cc")) + [
         "-std=c99", "-Wall", "-Wextra", str(source), "-o", str(binary),
+    ]
+    subprocess.run(command, check=True)
+    subprocess.run([str(binary)], check=True)
+
+wait_for_countdown_start = extract_function("tray_wait_for_delayed_countdown_start")
+race_harness = r'''#define _POSIX_C_SOURCE 200809L
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include "tray_countdown_tooltip.h"
+
+typedef unsigned long DWORD;
+typedef unsigned long ULONG;
+typedef unsigned long long ULONGLONG;
+typedef pthread_mutex_t SRWLOCK;
+typedef pthread_cond_t CONDITION_VARIABLE;
+typedef struct NoSleepTray {
+    SRWLOCK delayed_action_lock;
+    CONDITION_VARIABLE stop_condition;
+    bool session_action_cancelled;
+    bool starting_nosleep;
+    bool stopping;
+    bool delayed_countdown_starting;
+    ULONGLONG start_tick64;
+} NoSleepTray;
+
+enum { NOTIFY_EVENT_TIMER_EXPIRED = 1 };
+#define INFINITE 0xffffffffUL
+#define ATOMIC_LOAD_BOOL(value) (*(value))
+#define DEBUG_LOG(...) ((void)0)
+
+static pthread_mutex_t test_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t test_condition = PTHREAD_COND_INITIALIZER;
+static NoSleepTray *test_tray;
+static pthread_t stop_thread;
+static bool stop_waiting;
+static bool stop_finished;
+static bool cancelled_when_published;
+static bool stop_thread_start_failed;
+static int notification_count;
+static void *request_stop(void *parameter);
+
+void AcquireSRWLockExclusive(SRWLOCK *lock) {
+    pthread_mutex_lock(lock);
+}
+void ReleaseSRWLockExclusive(SRWLOCK *lock) {
+    pthread_mutex_unlock(lock);
+}
+bool SleepConditionVariableSRW(CONDITION_VARIABLE *condition, SRWLOCK *lock,
+                               DWORD milliseconds, ULONG flags) {
+    (void)milliseconds;
+    (void)flags;
+    pthread_mutex_lock(&test_lock);
+    stop_waiting = true;
+    pthread_cond_broadcast(&test_condition);
+    pthread_mutex_unlock(&test_lock);
+    return pthread_cond_wait(condition, lock) == 0;
+}
+void WakeAllConditionVariable(CONDITION_VARIABLE *condition) {
+    pthread_cond_broadcast(condition);
+}
+ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
+    (void)start_tick64;
+    if (pthread_create(&stop_thread, NULL, request_stop, test_tray) != 0) {
+        stop_thread_start_failed = true;
+        return 0;
+    }
+    pthread_mutex_lock(&test_lock);
+    while (!stop_waiting && !stop_finished) {
+        pthread_cond_wait(&test_condition, &test_lock);
+    }
+    pthread_mutex_unlock(&test_lock);
+    return 0;
+}
+
+''' + wait_for_countdown_start + r'''
+
+static void *request_stop(void *parameter) {
+    NoSleepTray *tray = parameter;
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray_wait_for_delayed_countdown_start(tray);
+    tray->session_action_cancelled = true;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    pthread_mutex_lock(&test_lock);
+    stop_finished = true;
+    pthread_cond_broadcast(&test_condition);
+    pthread_mutex_unlock(&test_lock);
+    return NULL;
+}
+
+void tray_show_notification(NoSleepTray *tray, int event,
+                            const char *title, const char *message,
+                            bool critical) {
+    (void)event;
+    (void)title;
+    (void)message;
+    (void)critical;
+    ++notification_count;
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    cancelled_when_published = tray->session_action_cancelled;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+}
+
+''' + announce + r'''
+
+int main(void) {
+    NoSleepTray tray = {0};
+    pthread_mutex_init(&tray.delayed_action_lock, NULL);
+    pthread_cond_init(&tray.stop_condition, NULL);
+    test_tray = &tray;
+    tray_announce_delayed_action(&tray, SESSION_FINISHED_SLEEP);
+    if (stop_thread_start_failed) {
+        fprintf(stderr, "FAIL: could not start concurrent Stop request\n");
+        return 1;
+    }
+    pthread_join(stop_thread, NULL);
+    if (notification_count != 1) {
+        fprintf(stderr, "FAIL: expected one delayed-action notice, got %d\n",
+                notification_count);
+        return 1;
+    }
+    if (cancelled_when_published) {
+        fprintf(stderr, "FAIL: Stop cancelled the action before its stale notice was published\n");
+        return 1;
+    }
+    if (!tray.session_action_cancelled || tray.delayed_countdown_starting) {
+        fprintf(stderr, "FAIL: concurrent Stop did not complete after notice publication\n");
+        return 1;
+    }
+    pthread_cond_destroy(&tray.stop_condition);
+    pthread_mutex_destroy(&tray.delayed_action_lock);
+    puts("PASS: Stop waits for a delayed-action notice already being published");
+    return 0;
+}
+'''
+
+with tempfile.TemporaryDirectory() as tmp:
+    source = Path(tmp) / "test_tray_announcement_cancellation_race.c"
+    binary = Path(tmp) / "test_tray_announcement_cancellation_race"
+    source.write_text(race_harness)
+    command = shlex.split(os.environ.get("CC", "cc")) + [
+        "-std=c99", "-Wall", "-Wextra", "-pthread", f"-I{root / 'src'}",
+        str(source), "-o", str(binary),
     ]
     subprocess.run(command, check=True)
     subprocess.run([str(binary)], check=True)

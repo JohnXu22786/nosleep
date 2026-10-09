@@ -1384,9 +1384,9 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     tray_update_stop_menu_item(tray);
 }
 
-// Called with delayed_action_lock held. A countdown worker reserves startup
-// under this lock while updating the tray outside it; Stop waits for that
-// update to finish before signaling cancellation.
+// Called with delayed_action_lock held. The delayed worker reserves its
+// notification and countdown tray updates under this lock, then publishes them
+// outside it; Stop waits for an update to finish before signaling cancellation.
 static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray) {
     while (tray->delayed_countdown_starting) {
         SleepConditionVariableSRW(&tray->stop_condition,
@@ -2053,6 +2053,9 @@ static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedActio
     bool cancelled = tray->session_action_cancelled || tray->starting_nosleep ||
                      ATOMIC_LOAD_BOOL(&tray->stopping);
     ULONGLONG start_tick64 = tray->start_tick64;
+    if (!cancelled) {
+        tray->delayed_countdown_starting = true;
+    }
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     if (cancelled) return;
 
@@ -2081,6 +2084,11 @@ static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedActio
     }
     tray_show_notification(tray, NOTIFY_EVENT_TIMER_EXPIRED,
                            "Time's up!", message, true);
+
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray->delayed_countdown_starting = false;
+    WakeAllConditionVariable(&tray->stop_condition);
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 }
 
 static bool tray_start_delayed_countdown(NoSleepTray* tray,
