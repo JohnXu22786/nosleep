@@ -294,6 +294,10 @@ void tray_destroy(NoSleepTray* tray) {
         DEBUG_LOG("tray_destroy: cannot safely wait for update worker");
         return;
     }
+
+    if (tray->hwnd && DestroyWindow(tray->hwnd)) {
+        tray->hwnd = NULL;
+    }
     
     if (tray->stop_event) {
         CloseHandle(tray->stop_event);
@@ -5691,6 +5695,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 AcquireSRWLockExclusive(&tray->tray_icon_lock);
                 Shell_NotifyIcon(NIM_DELETE, &tray->nid);
                 ReleaseSRWLockExclusive(&tray->tray_icon_lock);
+                tray->hwnd = NULL;
             }
             PostQuitMessage(0);
             break;

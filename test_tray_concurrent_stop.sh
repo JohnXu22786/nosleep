@@ -76,6 +76,7 @@ typedef unsigned long ULONG;
 typedef unsigned long long ULONGLONG;
 typedef int BOOL;
 typedef void *HANDLE;
+typedef void *HWND;
 typedef pthread_mutex_t SRWLOCK;
 typedef pthread_cond_t CONDITION_VARIABLE;
 typedef void *HMENU;
@@ -112,6 +113,7 @@ typedef struct TrayUpdateCheckTask {
     __atomic_exchange_n((destination), (value), __ATOMIC_SEQ_CST)
 
 typedef struct NoSleepTray {
+    HWND hwnd;
     SRWLOCK delayed_action_lock;
     CONDITION_VARIABLE stop_condition;
     bool stopping;
@@ -346,6 +348,11 @@ static void tray_destroy_icons(NoSleepTray *tray) {
 
 static BOOL DestroyMenu(HMENU menu) {
     (void)menu;
+    return TRUE;
+}
+
+static BOOL DestroyWindow(HWND hwnd) {
+    (void)hwnd;
     return TRUE;
 }
 

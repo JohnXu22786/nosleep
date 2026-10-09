@@ -74,6 +74,9 @@ jobs:
       - name: Test tray event cleanup on initialization failure
         run: bash test_tray_create_event_cleanup.sh
 
+      - name: Test tray window and shell icon teardown
+        run: bash test_tray_destroy_shell_icon_cleanup.sh
+
       - name: Test tray menu initialization failure cleanup
         run: bash test_tray_menu_init_failure.sh
 
