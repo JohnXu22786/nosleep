@@ -126,6 +126,7 @@ typedef struct NoSleepTray {
     bool add_to_path;
     bool check_updates_on_startup;
     SRWLOCK tray_icon_lock;
+    SRWLOCK notify_groups_lock;
     UINT uTrayMessage;
     UINT uTaskbarCreatedMessage;
     UINT_PTR taskbar_restore_timer_id;
