@@ -16,7 +16,7 @@ tray = (root / "src/tray.c").read_text()
 
 def extract_function(name):
     definition = re.search(
-        r"\b(?:static\s+)?(?:void|bool|size_t|DWORD)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
+        r"\b(?:static\s+)?(?:void|bool|size_t|DWORD|LONG)\s+" + re.escape(name) + r"\s*\([^;]*?\)\s*\{",
         tray,
         re.S,
     )
@@ -80,6 +80,7 @@ typedef long LONG;
 typedef unsigned char BYTE;
 typedef BYTE *LPBYTE;
 typedef void *HKEY;
+typedef void *HANDLE;
 typedef void *HWND;
 typedef intptr_t LPARAM;
 typedef int SessionFinishedAction;
@@ -103,6 +104,9 @@ typedef struct {
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_ACCESS_DENIED 5
 #define ERROR_MORE_DATA 234
+#define ERROR_GEN_FAILURE 31
+#define MAXDWORD ((DWORD)~0U)
+#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
 #define KEY_READ 1
 #define KEY_WRITE 2
 #define REG_SZ 1
@@ -212,7 +216,11 @@ LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
         if (startup_create_result == ERROR_SUCCESS) *key = (HKEY)5;
         return startup_create_result;
     }
-    if (strcmp(path, "Environment") == 0) ++environment_create_count;
+    if (strcmp(path, "Environment") == 0) {
+        ++environment_create_count;
+        if (settings_create_result == ERROR_SUCCESS) *key = (HKEY)4;
+        return settings_create_result;
+    }
     if (settings_create_result == ERROR_SUCCESS) *key = (HKEY)2;
     return settings_create_result;
 }
@@ -320,6 +328,31 @@ LONG RegCreateKeyExW(HKEY root, const wchar_t *path, DWORD reserved, void *class
         "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     return RegCreateKeyEx(root, key_path, reserved, class_name, options, access,
                           security, key, disposition);
+}
+HANDLE CreateTransaction(void *attributes, void *unit, DWORD options,
+                         DWORD isolation, DWORD isolation_flags,
+                         DWORD timeout, const wchar_t *description) {
+    (void)attributes; (void)unit; (void)options; (void)isolation;
+    (void)isolation_flags; (void)timeout; (void)description;
+    return (HANDLE)6;
+}
+int CommitTransaction(HANDLE transaction) { (void)transaction; return 1; }
+int RollbackTransaction(HANDLE transaction) { (void)transaction; return 1; }
+int CloseHandle(HANDLE handle) { (void)handle; return 1; }
+LONG RegOpenKeyTransactedW(HKEY root, const wchar_t *path, DWORD options,
+                           DWORD access, HKEY *key, HANDLE transaction,
+                           void *extended) {
+    (void)transaction; (void)extended;
+    return RegOpenKeyExW(root, path, options, access, key);
+}
+LONG RegCreateKeyTransactedW(HKEY root, const wchar_t *path, DWORD reserved,
+                             const wchar_t *class_name, DWORD options,
+                             DWORD access, void *security, HKEY *key,
+                             DWORD *disposition, HANDLE transaction,
+                             void *extended) {
+    (void)transaction; (void)extended;
+    return RegCreateKeyExW(root, path, reserved, (void *)class_name, options,
+                           access, security, key, disposition);
 }
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, DWORD *reserved, DWORD *type,
                       BYTE *value, DWORD *size) {
@@ -806,6 +839,14 @@ source = (
     + extract_function("path_segment_comparison_length")
     + "\n"
     + extract_function("is_supported_path_registry_type")
+    + "\n"
+    + extract_function("read_path_value")
+    + "\n"
+    + extract_function("path_contains_directory")
+    + "\n"
+    + extract_function("open_user_environment_transaction")
+    + "\n"
+    + extract_function("close_user_environment_transaction")
     + "\n"
     + add_app_to_path_test_function
     + "\n"

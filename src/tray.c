@@ -16,6 +16,7 @@
 #include <wchar.h>
 #include <powrprof.h>
 #include <winhttp.h>
+#include <ktmw32.h>
 #include <commctrl.h>
 #include <ctype.h>
 #include <limits.h>
@@ -2808,7 +2809,151 @@ static wchar_t* get_exe_dir(void) {
     return path; // Caller must free()
 }
 
-// Add nosleep directory to user PATH in registry
+// Read one PATH snapshot, retaining its exact registry type.
+static bool read_path_value(HKEY hKey, wchar_t** path_out, DWORD* type_out,
+                            bool* exists_out) {
+    *path_out = NULL;
+    *type_out = REG_EXPAND_SZ;
+    *exists_out = false;
+
+    DWORD value_size = 0;
+    DWORD value_type = REG_EXPAND_SZ;
+    LONG result = RegQueryValueExW(
+        hKey, L"Path", NULL, &value_type, NULL, &value_size);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        wchar_t* empty_path = (wchar_t*)malloc(sizeof(wchar_t));
+        if (!empty_path) return false;
+        empty_path[0] = L'\0';
+        *path_out = empty_path;
+        return true;
+    }
+    if (result != ERROR_SUCCESS || value_size > MAXDWORD - sizeof(wchar_t)) {
+        return false;
+    }
+
+    size_t query_size = value_size;
+    size_t allocation_size = query_size + sizeof(wchar_t);
+    wchar_t* path = (wchar_t*)malloc(allocation_size);
+    if (!path) return false;
+
+    for (;;) {
+        DWORD actual_size = (DWORD)query_size;
+        DWORD actual_type = value_type;
+        result = RegQueryValueExW(
+            hKey, L"Path", NULL, &actual_type, (LPBYTE)path, &actual_size);
+        if (result == ERROR_MORE_DATA) {
+            if (actual_size > MAXDWORD - sizeof(wchar_t)) {
+                free(path);
+                return false;
+            }
+            size_t new_query_size = actual_size;
+            if (new_query_size <= query_size) {
+                if (query_size == 0) {
+                    new_query_size = sizeof(wchar_t);
+                } else if (query_size >
+                           ((size_t)MAXDWORD - sizeof(wchar_t)) / 2) {
+                    free(path);
+                    return false;
+                } else {
+                    new_query_size = query_size * 2;
+                }
+            }
+            allocation_size = new_query_size + sizeof(wchar_t);
+            wchar_t* grown_path = (wchar_t*)realloc(path, allocation_size);
+            if (!grown_path) {
+                free(path);
+                return false;
+            }
+            path = grown_path;
+            query_size = new_query_size;
+            value_type = actual_type;
+            continue;
+        }
+        if (result == ERROR_FILE_NOT_FOUND) {
+            free(path);
+            wchar_t* empty_path = (wchar_t*)malloc(sizeof(wchar_t));
+            if (!empty_path) return false;
+            empty_path[0] = L'\0';
+            *path_out = empty_path;
+            return true;
+        }
+        if (result != ERROR_SUCCESS || actual_size > query_size ||
+            actual_size % sizeof(wchar_t) != 0) {
+            free(path);
+            return false;
+        }
+
+        path[actual_size / sizeof(wchar_t)] = L'\0';
+        *path_out = path;
+        *type_out = actual_type;
+        *exists_out = true;
+        return true;
+    }
+}
+
+static bool path_contains_directory(const wchar_t* path, const wchar_t* dir) {
+    size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
+    const wchar_t* p = path;
+    while (*p) {
+        while (*p == L' ') p++;
+        if (*p == L'\0') break;
+
+        const wchar_t* next = wcschr(p, L';');
+        size_t segment_len = next ? (size_t)(next - p) : wcslen(p);
+        while (segment_len > 0 && p[segment_len - 1] == L' ') segment_len--;
+        segment_len = path_segment_comparison_length(p, segment_len);
+        if (segment_len == dir_len &&
+            path_segment_equal(p, dir, dir_len)) return true;
+        if (!next) break;
+        p = next + 1;
+    }
+    return false;
+}
+
+static LONG open_user_environment_transaction(bool create_if_missing,
+                                             HANDLE* transaction_out,
+                                             HKEY* key_out) {
+    *transaction_out = INVALID_HANDLE_VALUE;
+    *key_out = NULL;
+
+    HANDLE transaction = CreateTransaction(NULL, NULL, 0, 0, 0, 0, NULL);
+    if (transaction == INVALID_HANDLE_VALUE) return ERROR_GEN_FAILURE;
+
+    LONG result;
+    if (create_if_missing) {
+        DWORD disposition = 0;
+        result = RegCreateKeyTransactedW(HKEY_CURRENT_USER, L"Environment",
+            0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL,
+            key_out, &disposition, transaction, NULL);
+    } else {
+        result = RegOpenKeyTransactedW(HKEY_CURRENT_USER, L"Environment",
+            0, KEY_READ | KEY_WRITE, key_out, transaction, NULL);
+    }
+    if (result != ERROR_SUCCESS) {
+        RollbackTransaction(transaction);
+        CloseHandle(transaction);
+        return result;
+    }
+
+    *transaction_out = transaction;
+    return ERROR_SUCCESS;
+}
+
+static bool close_user_environment_transaction(HANDLE transaction,
+                                               HKEY hKey, bool commit) {
+    bool committed = false;
+    if (commit) {
+        committed = CommitTransaction(transaction) != 0;
+        if (!committed) RollbackTransaction(transaction);
+    } else {
+        RollbackTransaction(transaction);
+    }
+    RegCloseKey(hKey);
+    CloseHandle(transaction);
+    return committed;
+}
+
+// Add nosleep directory to user PATH in registry.
 static bool add_app_to_path(void) {
     wchar_t* dir = get_exe_dir();
     if (!dir) return false;
@@ -2817,341 +2962,209 @@ static bool add_app_to_path(void) {
         free(dir);
         return false;
     }
-    
-    HKEY hKey;
-    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
-        L"Environment", 0, KEY_READ | KEY_WRITE, &hKey);
-    if (result == ERROR_FILE_NOT_FOUND) {
-        result = RegCreateKeyExW(HKEY_CURRENT_USER,
-            L"Environment", 0, NULL, REG_OPTION_NON_VOLATILE,
-            KEY_READ | KEY_WRITE, NULL, &hKey, NULL);
-    }
-    if (result != ERROR_SUCCESS) {
-        free(dir);
-        return false;
-    }
-    
-    // Read current PATH
-    DWORD path_size = 0;
-    DWORD path_type = REG_EXPAND_SZ;
-    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, NULL, &path_size);
-    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    if (result == ERROR_SUCCESS && !is_supported_path_registry_type(path_type)) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    
-    if (result == ERROR_FILE_NOT_FOUND) path_type = REG_EXPAND_SZ;
 
-    if (path_size == 0) {
-        // REG_EXPAND_SZ cannot escape literal percent signs in an install path.
-        if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
-            RegCloseKey(hKey);
+    // TxR rolls back this update if an external, non-transactional writer
+    // changes the Environment key before commit. Retry from a fresh snapshot.
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        HANDLE transaction;
+        HKEY hKey;
+        LONG result = open_user_environment_transaction(
+            true, &transaction, &hKey);
+        if (result != ERROR_SUCCESS) {
             free(dir);
             return false;
         }
-        // PATH is empty or doesn't exist, just set it to our directory
+
+        wchar_t* current_path = NULL;
+        DWORD path_type = REG_EXPAND_SZ;
+        bool current_exists = false;
+        if (!read_path_value(hKey, &current_path, &path_type, &current_exists)) {
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        if (current_exists && !is_supported_path_registry_type(path_type)) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        // Refuse an unsafe addition rather than expanding or rewriting PATH.
+        if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+
+        if (path_contains_directory(current_path, dir)) {
+            free(current_path);
+            if (close_user_environment_transaction(transaction, hKey, true)) {
+                free(dir);
+                return true;
+            }
+            continue;
+        }
+
+        size_t current_len = wcslen(current_path);
+        size_t dir_len = wcslen(dir);
+        if (current_len > (size_t)-1 - dir_len - 2 ||
+            current_len + dir_len + 2 > (size_t)MAXDWORD / sizeof(wchar_t)) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        size_t new_capacity = current_len + dir_len + 2;
+        wchar_t* new_path = (wchar_t*)malloc(new_capacity * sizeof(wchar_t));
+        if (!new_path) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        wcscpy(new_path, current_path);
+        if (current_len > 0 && new_path[current_len - 1] != L';') {
+            wcscat(new_path, L";");
+        }
+        wcscat(new_path, dir);
+
         result = RegSetValueExW(hKey, L"Path", 0, path_type,
-            (LPBYTE)dir, (DWORD)((wcslen(dir) + 1) * sizeof(wchar_t)));
-        RegCloseKey(hKey);
+            (LPBYTE)new_path,
+            (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
+        free(new_path);
+        free(current_path);
+        if (result != ERROR_SUCCESS) {
+            close_user_environment_transaction(transaction, hKey, false);
+            continue;
+        }
+        if (!close_user_environment_transaction(transaction, hKey, true)) {
+            continue;
+        }
         free(dir);
-        
-        if (result != ERROR_SUCCESS) return false;
-        
-        // Notify the system about the environment change
+
         SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
             (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
         return true;
     }
-    
-    // Allocate buffer for current path + new dir + semicolon
-    DWORD buf_size = path_size + (DWORD)((wcslen(dir) + 2) * sizeof(wchar_t)); // +2 for ';' and '\0'
-    wchar_t* new_path = (wchar_t*)malloc(buf_size);
-    if (!new_path) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    new_path[0] = '\0';
-    
-    // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
-    DWORD actual_size = path_size;
-    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)new_path, &actual_size);
-    if (result == ERROR_MORE_DATA) {
-        // PATH grew between calls, reallocate and retry
-        buf_size = actual_size + (DWORD)((wcslen(dir) + 2) * sizeof(wchar_t));
-        wchar_t* realloc_path = (wchar_t*)realloc(new_path, buf_size);
-        if (!realloc_path) {
-            RegCloseKey(hKey);
-            free(new_path);
-            free(dir);
-            return false;
-        }
-        new_path = realloc_path;
-        result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)new_path, &actual_size);
-    }
-    if (result != ERROR_SUCCESS) {
-        RegCloseKey(hKey);
-        free(new_path);
-        free(dir);
-        return false;
-    }
-    // Use the type from the final read; it may have changed since the size query.
-    if (!is_supported_path_registry_type(path_type)) {
-        RegCloseKey(hKey);
-        free(new_path);
-        free(dir);
-        return false;
-    }
-    // Refuse an unsafe addition rather than expanding or rewriting existing PATH.
-    if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
-        RegCloseKey(hKey);
-        free(new_path);
-        free(dir);
-        return false;
-    }
-    // Ensure null-terminated (actual_size is bytes including null in registry strings)
-    if (actual_size >= buf_size || actual_size % sizeof(wchar_t) != 0) {
-        RegCloseKey(hKey);
-        free(new_path);
-        free(dir);
-        return false;
-    }
-    new_path[actual_size / sizeof(wchar_t)] = '\0';
-        
-        // Check if dir is already in PATH (case-insensitive)
-        // Remove trailing spaces and semicolons for clean comparison
-        size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
-        wchar_t* p = new_path;
-        bool already_in_path = false;
-        while (*p && !already_in_path) {
-            // Skip leading spaces
-            while (*p == ' ') p++;
-            if (*p == '\0') break;
-            
-            // Find next semicolon or end
-            wchar_t* next = wcschr(p, ';');
-            size_t seg_len = next ? (size_t)(next - p) : wcslen(p);
-            
-            // Trim trailing spaces
-            while (seg_len > 0 && p[seg_len - 1] == ' ') seg_len--;
 
-            seg_len = path_segment_comparison_length(p, seg_len);
-            
-            if (seg_len == dir_len && path_segment_equal(p, dir, dir_len)) {
-                already_in_path = true;
-                break;
-            }
-            
-            if (next) {
-                p = next + 1;
-            } else {
-                break;
-            }
-        }
-        
-        if (already_in_path) {
-            free(new_path);
-            RegCloseKey(hKey);
-            free(dir);
-            return true; // Already in PATH, consider it success
-        }
-        
-        // Append semicolon if existing path doesn't end with one
-        size_t existing_len = wcslen(new_path);
-        if (existing_len > 0 && new_path[existing_len - 1] != ';') {
-            wcscat(new_path, L";");
-        }
-    
-    // Append new directory
-    wcscat(new_path, dir);
-    
-    // Write back to registry
-    result = RegSetValueExW(hKey, L"Path", 0, path_type,
-        (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
-    
-    RegCloseKey(hKey);
-    free(new_path);
     free(dir);
-    
-    if (result != ERROR_SUCCESS) return false;
-    
-    // Notify the system about the environment change
-    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
-    
-    return true;
+    return false;
 }
 
-// Remove nosleep directory from user PATH in registry
+// Remove nosleep directory from user PATH in registry.
 static bool remove_app_from_path(void) {
     wchar_t* dir = get_exe_dir();
     if (!dir) return false;
-    
-    HKEY hKey;
-    LONG result = RegOpenKeyExW(HKEY_CURRENT_USER,
-        L"Environment", 0, KEY_READ | KEY_WRITE, &hKey);
-    if (result != ERROR_SUCCESS) {
-        free(dir);
-        return result == ERROR_FILE_NOT_FOUND;
-    }
-    
-    // Read current PATH
-    DWORD path_size = 0;
-    DWORD path_type = REG_EXPAND_SZ;
-    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, NULL, &path_size);
-    if (result == ERROR_SUCCESS && !is_supported_path_registry_type(path_type)) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    if (result == ERROR_FILE_NOT_FOUND || (result == ERROR_SUCCESS && path_size == 0)) {
-        RegCloseKey(hKey);
-        free(dir);
-        return true;
-    }
-    if (result != ERROR_SUCCESS) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    
-    wchar_t* current_path = (wchar_t*)malloc(path_size + sizeof(wchar_t));
-    if (!current_path) {
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    
-    // Read PATH data with retry for TOCTOU safety (PATH may have changed between calls)
-    DWORD actual_size = path_size;
-    DWORD buf_size = path_size;
-    result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)current_path, &actual_size);
-    if (result == ERROR_MORE_DATA) {
-        // PATH grew between calls, reallocate and retry
-        buf_size = actual_size;
-        wchar_t* realloc_path = (wchar_t*)realloc(current_path, buf_size + sizeof(wchar_t));
-        if (!realloc_path) {
-            free(current_path);
-            RegCloseKey(hKey);
+
+    size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        HANDLE transaction;
+        HKEY hKey;
+        LONG result = open_user_environment_transaction(
+            false, &transaction, &hKey);
+        if (result != ERROR_SUCCESS) {
+            free(dir);
+            return result == ERROR_FILE_NOT_FOUND;
+        }
+
+        wchar_t* current_path = NULL;
+        DWORD path_type = REG_EXPAND_SZ;
+        bool current_exists = false;
+        if (!read_path_value(hKey, &current_path, &path_type, &current_exists)) {
+            close_user_environment_transaction(transaction, hKey, false);
             free(dir);
             return false;
         }
-        current_path = realloc_path;
-        result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, (LPBYTE)current_path, &actual_size);
-    }
-    if (result == ERROR_FILE_NOT_FOUND) {
-        free(current_path);
-        RegCloseKey(hKey);
-        free(dir);
-        return true;
-    }
-    if (result != ERROR_SUCCESS) {
-        free(current_path);
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    if (!is_supported_path_registry_type(path_type)) {
-        free(current_path);
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    // Ensure null-terminated (registry strings include null terminator in count)
-    if (actual_size > buf_size || actual_size % sizeof(wchar_t) != 0) {
-        free(current_path);
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    current_path[actual_size / sizeof(wchar_t)] = '\0';
-    
-    size_t dir_len = path_segment_comparison_length(dir, wcslen(dir));
-    bool found = false;
-    
-    // Build new path by removing all occurrences of dir (handle duplicates)
-    // Use wcslen(current_path) since the actual data might be larger than path_size from first query
-    size_t new_size = wcslen(current_path) + 1;
-    wchar_t* new_path = (wchar_t*)malloc(new_size * sizeof(wchar_t));
-    if (!new_path) {
-        free(current_path);
-        RegCloseKey(hKey);
-        free(dir);
-        return false;
-    }
-    new_path[0] = '\0';
-    
-    bool kept_segment = false;
-    wchar_t* p = current_path;
-    for (;;) {
-        // Find next semicolon or end (without modifying p yet)
-        wchar_t* seg_start = p;
-        wchar_t* next = wcschr(p, ';');
-        size_t seg_len = next ? (size_t)(next - p) : wcslen(p);
-        
-        // Trim leading spaces for comparison only
-        wchar_t* compare_start = p;
-        while (*compare_start == ' ' && compare_start < p + seg_len) compare_start++;
-        size_t remaining = seg_len - (size_t)(compare_start - p);
-        
-        // Trim trailing spaces for comparison
-        size_t trimmed_len = remaining;
-        while (trimmed_len > 0 && compare_start[trimmed_len - 1] == ' ') trimmed_len--;
+        if (current_exists && !is_supported_path_registry_type(path_type)) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
 
-        trimmed_len = path_segment_comparison_length(compare_start, trimmed_len);
-        
-        // Check if this segment matches our directory
-        bool is_match = (trimmed_len == dir_len && path_segment_equal(compare_start, dir, dir_len));
-        
-        if (!is_match) {
-            // Keep this segment with original formatting
-            if (kept_segment) {
-                wcscat(new_path, L";");
+        size_t current_len = wcslen(current_path);
+        size_t new_capacity = current_len + 1;
+        if (new_capacity > (size_t)MAXDWORD / sizeof(wchar_t)) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        wchar_t* new_path = (wchar_t*)malloc(new_capacity * sizeof(wchar_t));
+        if (!new_path) {
+            free(current_path);
+            close_user_environment_transaction(transaction, hKey, false);
+            free(dir);
+            return false;
+        }
+        new_path[0] = L'\0';
+
+        bool found = false;
+        bool kept_segment = false;
+        const wchar_t* p = current_path;
+        for (;;) {
+            const wchar_t* segment_start = p;
+            const wchar_t* next = wcschr(p, L';');
+            size_t segment_len = next ? (size_t)(next - p) : wcslen(p);
+
+            const wchar_t* compare_start = p;
+            while (*compare_start == L' ' && compare_start < p + segment_len) {
+                compare_start++;
             }
-            wcsncat(new_path, seg_start, seg_len);
-            kept_segment = true;
-        } else {
-            found = true;
-        }
-        
-        if (next) {
+            size_t trimmed_len = segment_len -
+                (size_t)(compare_start - p);
+            while (trimmed_len > 0 && compare_start[trimmed_len - 1] == L' ') {
+                trimmed_len--;
+            }
+            trimmed_len = path_segment_comparison_length(
+                compare_start, trimmed_len);
+            bool is_match = trimmed_len == dir_len &&
+                path_segment_equal(compare_start, dir, dir_len);
+
+            if (!is_match) {
+                if (kept_segment) wcscat(new_path, L";");
+                wcsncat(new_path, segment_start, segment_len);
+                kept_segment = true;
+            } else {
+                found = true;
+            }
+
+            if (!next) break;
             p = next + 1;
-        } else {
-            break;
         }
-    }
-    
-    if (!found) {
-        // Not in PATH, nothing to remove
+
+        if (!found) {
+            free(new_path);
+            free(current_path);
+            if (close_user_environment_transaction(transaction, hKey, true)) {
+                free(dir);
+                return true;
+            }
+            continue;
+        }
+
+        result = RegSetValueExW(hKey, L"Path", 0, path_type,
+            (LPBYTE)new_path,
+            (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
         free(new_path);
         free(current_path);
-        RegCloseKey(hKey);
+        if (result != ERROR_SUCCESS) {
+            close_user_environment_transaction(transaction, hKey, false);
+            continue;
+        }
+        if (!close_user_environment_transaction(transaction, hKey, true)) {
+            continue;
+        }
         free(dir);
+
+        SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
+            (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
         return true;
     }
-    
-    // Write back to registry
-    result = RegSetValueExW(hKey, L"Path", 0, path_type,
-        (LPBYTE)new_path, (DWORD)((wcslen(new_path) + 1) * sizeof(wchar_t)));
-    
-    RegCloseKey(hKey);
-    free(new_path);
-    free(current_path);
+
     free(dir);
-    
-    if (result != ERROR_SUCCESS) return false;
-    
-    // Notify the system about the environment change
-    SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
-        (LPARAM)L"Environment", SMTO_ABORTIFHUNG, 5000, NULL);
-    
-    return true;
+    return false;
 }
 
 static bool apply_path_preference(bool add_to_path) {

@@ -7,7 +7,7 @@ VERSION ?= 0.0.0
 CC = gcc
 RC = windres
 CFLAGS = -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"$(VERSION)\"
-LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
+LDFLAGS = -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lktmw32 -lwinhttp -lcomctl32
 
 Comma := ,
 # windres treats leading-zero resource numbers as octal; keep the display version
