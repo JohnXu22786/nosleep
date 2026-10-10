@@ -3526,11 +3526,15 @@ static bool should_check_for_updates(void) {
     }
 
     ULONGLONG last_check = 0;
+    DWORD value_type = 0;
     DWORD qsize = sizeof(ULONGLONG);
-    result = RegQueryValueEx(hKey, "last_update_check", NULL, NULL, (LPBYTE)&last_check, &qsize);
+    result = RegQueryValueEx(hKey, "last_update_check", NULL, &value_type,
+                             (LPBYTE)&last_check, &qsize);
     RegCloseKey(hKey);
 
-    if (result != ERROR_SUCCESS) return true;
+    if (result != ERROR_SUCCESS || value_type != REG_QWORD || qsize != sizeof(last_check)) {
+        return true;
+    }
 
     FILETIME ft_now;
     GetSystemTimeAsFileTime(&ft_now);
