@@ -6,6 +6,14 @@
 
 static char debug_output[256];
 static int debug_output_calls;
+static int stdout_flush_calls;
+static FILE *last_flushed_stream;
+
+int test_core_fflush(FILE *stream) {
+    stdout_flush_calls++;
+    last_flushed_stream = stream;
+    return 0;
+}
 
 void GetSystemTime(SYSTEMTIME *time) {
     time->wHour = 12;
@@ -30,6 +38,8 @@ void ReleaseSRWLockExclusive(SRWLOCK *lock) {
 int main(void) {
     nosleep_log_verbose("Status: Active for %dm %ds (refresh #%d)", 2, 5, 7);
 
+    assert(stdout_flush_calls == 1);
+    assert(last_flushed_stream == stdout);
     assert(debug_output_calls == 1);
     assert(strcmp(debug_output,
                   "[12:34:56 UTC] INFO - Status: Active for 2m 5s (refresh #7)\n") == 0);
@@ -37,8 +47,18 @@ int main(void) {
     debug_output_calls = 0;
     debug_output[0] = '\0';
     nosleep_log_info("Regular status");
+    assert(stdout_flush_calls == 2);
+    assert(last_flushed_stream == stdout);
     assert(debug_output_calls == 0);
 
-    puts("PASS: verbose logs reach debugger output and ordinary logs do not");
+    nosleep_log_warning("Warning status");
+    assert(stdout_flush_calls == 3);
+    assert(last_flushed_stream == stdout);
+
+    nosleep_log_error("Error status");
+    assert(stdout_flush_calls == 4);
+    assert(last_flushed_stream == stdout);
+
+    puts("PASS: logs flush stdout and verbose logs also reach debugger output");
     return 0;
 }

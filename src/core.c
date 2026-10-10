@@ -300,6 +300,7 @@ static void nosleep_log_info_message(const char* format, va_list args,
     vprintf(format, console_args);
     va_end(console_args);
     printf("\n");
+    fflush(stdout);
 
     ReleaseSRWLockExclusive(&g_log_lock);
 }
@@ -330,6 +331,7 @@ void nosleep_log_warning(const char* format, ...) {
     printf("[%02d:%02d:%02d UTC] WARNING - ", now.wHour, now.wMinute, now.wSecond);
     vprintf(format, args);
     printf("\n");
+    fflush(stdout);
     
     va_end(args);
     
@@ -348,6 +350,7 @@ void nosleep_log_error(const char* format, ...) {
     printf("[%02d:%02d:%02d UTC] ERROR - ", now.wHour, now.wMinute, now.wSecond);
     vprintf(format, args);
     printf("\n");
+    fflush(stdout);
     
     va_end(args);
     
