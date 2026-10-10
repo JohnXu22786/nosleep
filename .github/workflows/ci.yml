@@ -53,6 +53,9 @@ jobs:
       - name: Test settings dialog work-area fitting
         run: ./test_tray_settings_dialog_work_area.sh
 
+      - name: Test custom duration dialog work-area fitting
+        run: ./test_tray_custom_dialog_work_area.sh
+
       - name: Test About dialog monitor positioning
         run: ./test_tray_about_dialog_monitor.sh
 

@@ -3556,6 +3556,10 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
 #endif
 
 // Resolve newer DPI APIs at runtime so older Windows versions keep working.
+static BOOL dialog_work_area(HWND hwnd, const RECT* suggested, RECT* work_area);
+static void fit_custom_dialog_to_work_area(HWND hwnd, UINT dpi, const RECT* work_area,
+                                          const RECT* suggested);
+
 static UINT custom_dialog_dpi(HWND hwnd) {
     typedef UINT (WINAPI *GetDpiForWindowFn)(HWND);
     GetDpiForWindowFn get_dpi = (GetDpiForWindowFn)GetProcAddress(
@@ -3586,20 +3590,6 @@ static void layout_custom_dialog(HWND hwnd, UINT dpi, HFONT* font) {
         if (*font) DeleteObject(*font);
         *font = replacement;
     }
-}
-
-static void size_custom_dialog(HWND hwnd, UINT dpi) {
-    typedef BOOL (WINAPI *AdjustWindowRectExForDpiFn)(LPRECT, DWORD, BOOL, DWORD, UINT);
-    AdjustWindowRectExForDpiFn adjust = (AdjustWindowRectExForDpiFn)GetProcAddress(
-        GetModuleHandle("user32.dll"), "AdjustWindowRectExForDpi");
-    RECT rect = {0, 0, MulDiv(260, dpi, 96), MulDiv(125, dpi, 96)};
-    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
-    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-    if (!adjust || !adjust(&rect, style, FALSE, ex_style, dpi)) {
-        AdjustWindowRectEx(&rect, style, FALSE, ex_style);
-    }
-    SetWindowPos(hwnd, NULL, 0, 0, rect.right - rect.left, rect.bottom - rect.top,
-                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // Simple input dialog window procedure
@@ -3665,17 +3655,21 @@ static LRESULT CALLBACK input_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
         case WM_DPICHANGED:
             {
                 RECT* suggested = (RECT*)lParam;
-                SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
-                    suggested->right - suggested->left, suggested->bottom - suggested->top,
-                    SWP_NOZORDER | SWP_NOACTIVATE);
-                size_custom_dialog(hwnd, HIWORD(wParam));
-                layout_custom_dialog(hwnd, HIWORD(wParam), &hInputFont);
+                RECT work_area;
+                if (dialog_work_area(hwnd, suggested, &work_area)) {
+                    fit_custom_dialog_to_work_area(hwnd, HIWORD(wParam),
+                                                   &work_area, suggested);
+                }
             }
             return 0;
 
         case WM_APP:
-            layout_custom_dialog(hwnd, custom_dialog_dpi(hwnd), &hInputFont);
+        {
+            UINT layout_dpi = (UINT)wParam;
+            if (!layout_dpi) layout_dpi = custom_dialog_dpi(hwnd);
+            layout_custom_dialog(hwnd, layout_dpi, &hInputFont);
             return 0;
+        }
 
         case WM_DESTROY:
             if (hInputFont) {
@@ -3784,18 +3778,7 @@ static int tray_show_custom_dialog(NoSleepTray* tray) {
         20, 10, 180, 20,
         hwndDlg, (HMENU)3, hInstance, NULL);
 
-    UINT dpi = custom_dialog_dpi(hwndDlg);
-    size_custom_dialog(hwndDlg, dpi);
-    SendMessage(hwndDlg, WM_APP, 0, 0);
-    RECT bounds;
-    GetWindowRect(hwndDlg, &bounds);
-    int width = bounds.right - bounds.left;
-    int height = bounds.bottom - bounds.top;
-    int x = work_area.left + (work_area.right - work_area.left - width) / 2;
-    int y = work_area.top + (work_area.bottom - work_area.top - height) / 2;
-    if (x < work_area.left) x = work_area.left;
-    if (y < work_area.top) y = work_area.top;
-    SetWindowPos(hwndDlg, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    fit_custom_dialog_to_work_area(hwndDlg, custom_dialog_dpi(hwndDlg), &work_area, NULL);
 
     // Show dialog
     ShowWindow(hwndDlg, SW_SHOW);
@@ -3937,6 +3920,16 @@ static BOOL dialog_window_bounds_for_dpi(int width, int height, UINT layout_dpi,
     return TRUE;
 }
 
+static void size_custom_dialog(HWND hwnd, UINT layout_dpi, UINT window_dpi) {
+    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    RECT bounds;
+    if (!dialog_window_bounds_for_dpi(260, 125, layout_dpi, window_dpi,
+                                      style, ex_style, &bounds)) return;
+    SetWindowPos(hwnd, NULL, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
+                 SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
 static UINT fit_dialog_dpi(UINT dpi, int width, int height, int available_width,
                            int available_height, DWORD style, DWORD ex_style) {
     if (!dpi) dpi = 96;
@@ -3985,6 +3978,37 @@ static BOOL dialog_work_area(HWND hwnd, const RECT* suggested, RECT* work_area) 
 
     *work_area = (RECT){0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
     return work_area->right > work_area->left && work_area->bottom > work_area->top;
+}
+
+static void fit_custom_dialog_to_work_area(HWND hwnd, UINT dpi, const RECT* work_area,
+                                          const RECT* suggested) {
+    if (!work_area) return;
+    if (!dpi) dpi = custom_dialog_dpi(hwnd);
+
+    int available_width = work_area->right - work_area->left;
+    int available_height = work_area->bottom - work_area->top;
+    DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
+    DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    UINT layout_dpi = fit_dialog_dpi(dpi, 260, 125, available_width,
+        available_height, style, ex_style);
+    size_custom_dialog(hwnd, layout_dpi, dpi);
+    SendMessage(hwnd, WM_APP, layout_dpi, 0);
+
+    RECT bounds;
+    if (!GetWindowRect(hwnd, &bounds)) return;
+    int width = bounds.right - bounds.left;
+    int height = bounds.bottom - bounds.top;
+    int x = suggested ? suggested->left : work_area->left + (available_width - width) / 2;
+    int y = suggested ? suggested->top : work_area->top + (available_height - height) / 2;
+    int max_x = work_area->right - width;
+    int max_y = work_area->bottom - height;
+    if (max_x < work_area->left) max_x = work_area->left;
+    if (max_y < work_area->top) max_y = work_area->top;
+    if (x < work_area->left) x = work_area->left;
+    if (x > max_x) x = max_x;
+    if (y < work_area->top) y = work_area->top;
+    if (y > max_y) y = max_y;
+    SetWindowPos(hwnd, NULL, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
