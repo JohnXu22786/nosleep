@@ -273,6 +273,15 @@ int main(void) {
     assert(wcscmp(registry, L"%USERPROFILE%\\工具; C:\\既存 ") == 0);
     assert(remove_app_from_path());
     assert(writes == previous_writes + 1);
+    wcscpy(registry, L"C:/安装/😀");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    previous_writes = writes;
+    assert(add_app_to_path());
+    assert(wcscmp(registry, L"C:/安装/😀") == 0);
+    assert(writes == previous_writes);
+    assert(remove_app_from_path());
+    assert(registry[0] == 0);
+    assert(writes == previous_writes + 1);
     registry_bytes = 0;
     registry_exists = 0;
     assert(add_app_to_path());

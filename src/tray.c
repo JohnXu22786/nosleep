@@ -2788,7 +2788,7 @@ static wchar_t* get_exe_path_w(void) {
     }
 }
 
-// Compare bounded UTF-16 PATH segments using Windows ordinal case folding.
+// Compare bounded UTF-16 PATH segments, treating slash forms as equivalent.
 static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n) {
     // A preserved root separator may use either slash form in PATH.
     if (n > 0 && (a[n - 1] == L'\\' || a[n - 1] == L'/') &&
@@ -2797,8 +2797,28 @@ static bool path_segment_equal(const wchar_t* a, const wchar_t* b, size_t n) {
     }
     if (n == 0) return true;
     if (n > INT_MAX) return false;
-    // A zero API result indicates failure and must never count as a match.
-    return CompareStringOrdinal(a, (int)n, b, (int)n, TRUE) == CSTR_EQUAL;
+
+    size_t run_start = 0;
+    for (size_t i = 0; i < n; ++i) {
+        bool a_separator = a[i] == L'\\' || a[i] == L'/';
+        bool b_separator = b[i] == L'\\' || b[i] == L'/';
+        if (!a_separator && !b_separator) continue;
+        if (!a_separator || !b_separator) return false;
+
+        size_t run_length = i - run_start;
+        // A zero API result indicates failure and must never count as a match.
+        if (run_length > 0 && CompareStringOrdinal(
+                a + run_start, (int)run_length,
+                b + run_start, (int)run_length, TRUE) != CSTR_EQUAL) {
+            return false;
+        }
+        run_start = i + 1;
+    }
+
+    size_t run_length = n - run_start;
+    return run_length == 0 || CompareStringOrdinal(
+        a + run_start, (int)run_length,
+        b + run_start, (int)run_length, TRUE) == CSTR_EQUAL;
 }
 
 // Ignore optional trailing directory separators during PATH comparisons, but
