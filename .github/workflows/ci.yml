@@ -175,6 +175,9 @@ jobs:
       - name: Test tray stop timeout worker retention
         run: ./test_tray_concurrent_stop.sh
 
+      - name: Test manual Stop during suppressed expiry cleanup
+        run: ./test_tray_manual_stop_expiry_race.sh
+
       - name: Install MinGW cross-compiler
         run: sudo apt-get update && sudo apt-get install -y mingw-w64
 

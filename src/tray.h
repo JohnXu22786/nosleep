@@ -90,6 +90,7 @@ typedef struct NoSleepTray {
     bool duration_expired;      // Whether the timer duration has expired (to show correct notification) - accessed atomically
     bool stopping;              // Prevent re-entrant calls to tray_stop_nosleep - accessed atomically
     DWORD stopping_thread_id;   // Thread completing stop cleanup - protected by delayed_action_lock
+    bool stopping_expiry_notification_suppressed; // Whether the active cleanup suppressed an expiry notice - protected by delayed_action_lock
     CONDITION_VARIABLE stop_condition; // Wakes concurrent stops after cleanup completes
     bool core_init_failed;      // Suppress follow-up actions if NoSleep initialization fails - accessed atomically
     bool core_init_succeeded;   // Allow follow-up actions only after NoSleep initialization succeeds - accessed atomically
