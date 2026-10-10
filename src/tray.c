@@ -64,6 +64,7 @@ struct TrayUpdateCheckTask {
     HWND hwnd;
     bool silent;
     bool check_succeeded;
+    volatile LONG shutdown_requested;
     UpdateInfo info;
     HANDLE thread;
     DWORD thread_id;
@@ -77,6 +78,14 @@ static bool tray_update_check_begin(void) {
 
 static void tray_update_check_end(void) {
     update_check_in_progress = false;
+}
+
+static bool tray_update_check_shutdown_requested(TrayUpdateCheckTask* task) {
+#ifdef __GNUC__
+    return __atomic_load_n(&task->shutdown_requested, __ATOMIC_SEQ_CST) != 0;
+#else
+    return InterlockedCompareExchange(&task->shutdown_requested, 0, 0) != 0;
+#endif
 }
 
 static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
@@ -258,7 +267,8 @@ static bool tray_wait_for_update_check(NoSleepTray* tray) {
     if (task->thread && GetCurrentThreadId() == task->thread_id) return false;
 
     if (task->thread) {
-        // Do not leave shutdown waiting on the check's synchronous WinHTTP call.
+        // Stop result delivery and cancel WinHTTP before joining the worker.
+        ATOMIC_STORE_INT(&task->shutdown_requested, true);
         CancelSynchronousIo(task->thread);
         if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) {
             DEBUG_LOG("tray_wait_for_update_check: waiting for update worker failed");
@@ -5403,8 +5413,15 @@ static DWORD WINAPI tray_update_check_worker(LPVOID parameter) {
     TrayUpdateCheckTask* task = (TrayUpdateCheckTask*)parameter;
     task->check_succeeded = updater_check(&task->info, NULL);
     MEMORY_BARRIER();
-    while (!PostMessage(task->hwnd, WM_TRAY_UPDATE_CHECK_COMPLETE, 0,
+    for (;;) {
+        if (tray_update_check_shutdown_requested(task)) {
+            DEBUG_LOG("tray_update_check_worker: tray is shutting down before result delivery");
+            return 0;
+        }
+        if (PostMessage(task->hwnd, WM_TRAY_UPDATE_CHECK_COMPLETE, 0,
                         (LPARAM)task)) {
+            return 0;
+        }
         if (!IsWindow(task->hwnd)) {
             DEBUG_LOG("tray_update_check_worker: tray window closed before result delivery");
             return 0;
