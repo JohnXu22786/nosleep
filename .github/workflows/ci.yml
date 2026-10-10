@@ -95,6 +95,9 @@ jobs:
       - name: Test countdown icon lifetime
         run: bash test_tray_countdown_icon.sh
 
+      - name: Test transparent fallback icon mask initialization
+        run: bash test_tray_transparent_icon_mask.sh
+
       - name: Test automatic update timer failures
         run: bash test_tray_auto_update_timer.sh
 

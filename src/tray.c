@@ -1031,22 +1031,30 @@ static HICON create_transparent_icon(void) {
             // Create 1-bit mask (all white = transparent)
             HBITMAP hbmpMask = CreateBitmap(width, height, 1, 1, NULL);
             if (hbmpMask) {
+                BOOL maskInitialized = FALSE;
                 HDC hdcMask = CreateCompatibleDC(hdc);
                 if (hdcMask) {
                     HBITMAP oldMask = (HBITMAP)SelectObject(hdcMask, hbmpMask);
-                    PatBlt(hdcMask, 0, 0, width, height, WHITENESS);
-                    SelectObject(hdcMask, oldMask);
+                    if (oldMask) {
+                        maskInitialized = PatBlt(
+                            hdcMask, 0, 0, width, height, WHITENESS);
+                        SelectObject(hdcMask, oldMask);
+                    }
                     DeleteDC(hdcMask);
                 }
-                
-                ICONINFO iconInfo = {0};
-                iconInfo.fIcon = TRUE;
-                iconInfo.hbmColor = hbmpColor;
-                iconInfo.hbmMask = hbmpMask;
-                
-                hIcon = CreateIconIndirect(&iconInfo);
-                if (!hIcon) {
-                    DEBUG_LOG("create_transparent_icon: CreateIconIndirect failed, error=%lu", GetLastError());
+
+                if (maskInitialized) {
+                    ICONINFO iconInfo = {0};
+                    iconInfo.fIcon = TRUE;
+                    iconInfo.hbmColor = hbmpColor;
+                    iconInfo.hbmMask = hbmpMask;
+
+                    hIcon = CreateIconIndirect(&iconInfo);
+                    if (!hIcon) {
+                        DEBUG_LOG("create_transparent_icon: CreateIconIndirect failed, error=%lu", GetLastError());
+                    }
+                } else {
+                    DEBUG_LOG("create_transparent_icon: mask initialization failed");
                 }
                 
                 DeleteObject(hbmpMask);
