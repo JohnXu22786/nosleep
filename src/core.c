@@ -83,10 +83,10 @@ bool nosleep_allow_sleep(NoSleep* ns) {
     return result != 0;
 }
 
-static double get_elapsed_seconds(ULONGLONG start_tick64) {
+static ULONGLONG get_elapsed_seconds(ULONGLONG start_tick64) {
     ULONGLONG current_tick64 = GetTickCount64();
     // GetTickCount64 does not wrap for ~584 million years, no wrap handling needed
-    return (double)(current_tick64 - start_tick64) / 1000.0;
+    return (current_tick64 - start_tick64) / 1000;
 }
 
 static bool wait_for_stop_event(NoSleep* ns, HANDLE external_stop_event, DWORD timeout) {
@@ -163,9 +163,9 @@ int nosleep_run(NoSleep* ns, int duration_minutes, int interval_seconds,
         if (success) {
             ns->failure_count = 0; // Reset failure count on success
             
-            double elapsed = get_elapsed_seconds(ns->start_tick64);
-            int minutes = (int)(elapsed / 60);
-            int seconds = (int)(elapsed) % 60;
+            ULONGLONG elapsed_seconds = get_elapsed_seconds(ns->start_tick64);
+            int minutes = (int)(elapsed_seconds / 60);
+            int seconds = (int)(elapsed_seconds % 60);
             
             if (verbose) {
                 SYSTEMTIME now;
@@ -236,10 +236,10 @@ void nosleep_stop(NoSleep* ns) {
             nosleep_log_warning("Failed to restore sleep behavior");
         }
         
-        double elapsed = get_elapsed_seconds(ns->start_tick64);
-        int hours = (int)(elapsed / 3600);
-        int minutes = (int)((elapsed - hours * 3600) / 60);
-        int seconds = (int)(elapsed) % 60;
+        ULONGLONG elapsed_seconds = get_elapsed_seconds(ns->start_tick64);
+        int hours = (int)(elapsed_seconds / 3600);
+        int minutes = (int)((elapsed_seconds % 3600) / 60);
+        int seconds = (int)(elapsed_seconds % 60);
         
         if (hours > 0) {
             nosleep_log_info("nosleep ran for %dh %dm %ds", hours, minutes, seconds);
