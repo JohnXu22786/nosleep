@@ -103,6 +103,7 @@ test-updater-url-policy:
 	./tests/test_updater_url_policy_t.exe
 
 test-cli:
+	bash ./test_temp_cleanup_traps.sh
 	bash ./test_cli_run_mode_overrides.sh
 	bash ./test_cli_batch_mode.sh
 

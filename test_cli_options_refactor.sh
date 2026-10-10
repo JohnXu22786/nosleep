@@ -17,7 +17,7 @@ fail() { FAIL=$((FAIL+1)); echo "FAIL: $1"; }
 
 # Create a temp dir for compilation tests
 TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "=== Test 1: CLIOptions struct is defined ==="
 
