@@ -84,11 +84,13 @@ assert "interval = normalize_auto_check_interval(interval);" in startup_check, (
 
 normalize_interval = extract_function("normalize_auto_check_interval", "DWORD")
 read_setting = extract_function("settings_read_dword", "bool")
+save_last_check = extract_function("save_last_update_check_time")
 load_settings = extract_function("tray_load_settings")
 apply_interval = extract_function("tray_apply_auto_check_interval")
 setup_timer = extract_function("tray_setup_update_timer")
 begin_update_check = extract_function("tray_update_check_begin", "bool")
 end_update_check = extract_function("tray_update_check_end")
+process_update_result = extract_function("tray_process_update_check_result")
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
@@ -115,6 +117,10 @@ typedef union {
     };
     ULONGLONG QuadPart;
 } ULARGE_INTEGER;
+typedef struct {
+    char latest_version[64];
+    bool update_available;
+} UpdateInfo;
 typedef enum {
     SESSION_FINISHED_NONE = 0,
     SESSION_FINISHED_SHUTDOWN,
@@ -124,6 +130,7 @@ typedef enum {
 
 typedef struct {
     HWND hwnd;
+    void* hmenu;
     int auto_check_interval;
     UINT_PTR update_timer_id;
     bool prevent_display;
@@ -134,11 +141,13 @@ typedef struct {
     bool add_to_path_preference_set;
     bool add_to_path;
     SessionFinishedAction session_finished_action;
+    UpdateInfo available_update;
 } NoSleepTray;
 
 #define HKEY_CURRENT_USER ((HKEY)(uintptr_t)1)
 #define REG_DWORD 4
 #define REG_QWORD 11
+#define KEY_WRITE 0x20006
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
 #define REG_OPTION_NON_VOLATILE 0
@@ -147,6 +156,13 @@ typedef struct {
 #define NOTIFY_ALL 0
 #define CB_ERR (-1)
 #define NOTIFY_EVENT_UPDATE_CHECK_FAILED 7
+#define NOTIFY_EVENT_UPDATE_CHECK_COMPLETED 10
+#define NOTIFY_EVENT_UPDATE_AVAILABLE 11
+#define CURRENT_VERSION "1.0.0"
+#define IDM_REVIEW_UPDATE 1
+#define MF_BYCOMMAND 0
+#define MF_GRAYED 1
+#define MF_ENABLED 2
 
 typedef int NotifyEventId;
 
@@ -192,6 +208,20 @@ static LONG RegCreateKeyEx(HKEY root, const char* subkey, DWORD reserved,
     return ERROR_SUCCESS;
 }
 
+static LONG RegSetValueEx(HKEY key, const char* name, DWORD reserved,
+                          DWORD type, LPBYTE data, DWORD size) {
+    (void)key;
+    (void)reserved;
+    if (strcmp(name, "last_update_check") == 0 && type == REG_QWORD &&
+        size == sizeof(stored_last_update_check)) {
+        memcpy(&stored_last_update_check, data, size);
+        stored_last_update_check_type = type;
+        stored_last_update_check_size = size;
+        has_last_update_check = true;
+    }
+    return ERROR_SUCCESS;
+}
+
 static LONG RegQueryValueEx(HKEY key, const char* name, void* reserved,
                             DWORD* type, LPBYTE data, DWORD* size) {
     (void)key;
@@ -234,6 +264,33 @@ static void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     snprintf(last_notification_message, sizeof(last_notification_message), "%s", message);
 }
 
+static void tray_set_manual_update_status(const char* status) {
+    (void)status;
+}
+
+static UINT EnableMenuItem(void* menu, UINT item, UINT flags) {
+    (void)menu;
+    (void)item;
+    (void)flags;
+    return 0;
+}
+
+static int updater_compare_versions(const char* left, const char* right) {
+    (void)left;
+    (void)right;
+    return 0;
+}
+
+static void tray_prompt_available_update(NoSleepTray* tray, UpdateInfo* info) {
+    (void)tray;
+    (void)info;
+}
+
+static void tray_set_update_check_visible(NoSleepTray* tray, bool checking) {
+    (void)tray;
+    (void)checking;
+}
+
 static int KillTimer(HWND hwnd, UINT_PTR timer_id) {
     (void)hwnd;
     if (!timer_id) return 0;
@@ -258,11 +315,13 @@ static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interv
 __NORMALIZE_INTERVAL__
 __READ_SETTING__
 __SHOULD_CHECK__
+__SAVE_LAST_CHECK__
 __LOAD_SETTINGS__
 __APPLY_INTERVAL__
 __SETUP_TIMER__
 __BEGIN_UPDATE_CHECK__
 __END_UPDATE_CHECK__
+__PROCESS_UPDATE_RESULT__
 
 static int fail(const char* scenario) {
     fprintf(stderr, "FAIL: %s\n", scenario);
@@ -414,6 +473,52 @@ int main(void) {
         return fail("a clock rollback must keep the next periodic timer from firing repeatedly");
     }
 
+    fake_now_100ns = 30ULL * daily_ticks;
+    stored_auto_check_interval = 1;
+    NoSleepTray manual_daily_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 1,
+        .update_timer_id = 1002,
+    };
+    set_count = 0;
+    kill_count = 0;
+    last_interval_ms = 0;
+    tray_process_update_check_result(&manual_daily_tray, true, true, NULL);
+    if (!has_last_update_check || stored_last_update_check != fake_now_100ns ||
+        manual_daily_tray.update_timer_id != 1002 || set_count != 1 ||
+        kill_count != 1 || last_interval_ms != 86400000U) {
+        return fail("a completed manual check must restart the Daily timer from its new timestamp");
+    }
+
+    fake_now_100ns = 40ULL * daily_ticks;
+    stored_auto_check_interval = 2;
+    NoSleepTray manual_weekly_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 2,
+        .update_timer_id = 1002,
+    };
+    set_count = 0;
+    kill_count = 0;
+    last_interval_ms = 0;
+    tray_process_update_check_result(&manual_weekly_tray, true, true, NULL);
+    if (stored_last_update_check != fake_now_100ns ||
+        manual_weekly_tray.update_timer_id != 1002 || set_count != 1 ||
+        kill_count != 1 || last_interval_ms != 604800000U) {
+        return fail("a completed manual check must restart the Weekly timer from its new timestamp");
+    }
+
+    NoSleepTray disabled_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 0,
+        .update_timer_id = 1002,
+    };
+    set_count = 0;
+    kill_count = 0;
+    tray_process_update_check_result(&disabled_tray, true, true, NULL);
+    if (disabled_tray.update_timer_id != 0 || set_count != 0 || kill_count != 1) {
+        return fail("a completed manual check must not restore a timer when auto checks are disabled");
+    }
+
     puts("PASS: update checks are non-reentrant and interval changes reconfigure the timer");
     return 0;
 }
@@ -424,11 +529,14 @@ harness = harness.replace("__NORMALIZE_INTERVAL__", normalize_interval).replace(
 ).replace(
     "__SHOULD_CHECK__", startup_check
 ).replace(
+    "__SAVE_LAST_CHECK__", save_last_check
+).replace(
     "__LOAD_SETTINGS__", load_settings
 ).replace("__APPLY_INTERVAL__", apply_interval).replace(
     "__SETUP_TIMER__", setup_timer
 ).replace("__BEGIN_UPDATE_CHECK__", begin_update_check).replace(
     "__END_UPDATE_CHECK__", end_update_check
+).replace("__PROCESS_UPDATE_RESULT__", process_update_result
 )
 
 with tempfile.TemporaryDirectory() as tmp:
