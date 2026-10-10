@@ -11,7 +11,7 @@ fail() { FAIL=$((FAIL+1)); echo "FAIL: $1"; }
 
 # Create a temp dir
 TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+trap 'rm -rf "$TMPDIR"' EXIT
 
 # Copy constants.h (with our fix) to temp dir and test compilation
 cp src/constants.h "$TMPDIR/constants.h"
