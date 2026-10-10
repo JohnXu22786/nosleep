@@ -1,8 +1,6 @@
 // Portable parsing and version comparison used by the updater
 #include "updater_logic.h"
 #include "cJSON.h"
-#include <limits.h>
-#include <stdio.h>
 #include <string.h>
 
 static bool is_valid_url_port(const char* port, const char* end) {
@@ -134,11 +132,7 @@ static bool consume_version_component(const char** version) {
     if (!is_ascii_digit(*character)) return false;
 
     const char* component_start = character;
-    unsigned int value = 0;
     do {
-        unsigned int digit = (unsigned int)(*character - '0');
-        if (value > ((unsigned int)INT_MAX - digit) / 10u) return false;
-        value = value * 10u + digit;
         character++;
     } while (is_ascii_digit(*character));
 
@@ -269,8 +263,27 @@ static int compare_prerelease(const char* v1, size_t v1_len,
     return v1 == end1 ? -1 : 1;
 }
 
-static const char* get_prerelease(const char* version, int core_length, size_t* length) {
-    const char* suffix = version + core_length;
+static int compare_version_component(const char** version1, const char** version2) {
+    const char* end1 = *version1;
+    const char* end2 = *version2;
+    while (is_ascii_digit(*end1)) end1++;
+    while (is_ascii_digit(*end2)) end2++;
+
+    size_t length1 = (size_t)(end1 - *version1);
+    size_t length2 = (size_t)(end2 - *version2);
+    if (length1 > length2) return 1;
+    if (length1 < length2) return -1;
+
+    int result = memcmp(*version1, *version2, length1);
+    if (result > 0) return 1;
+    if (result < 0) return -1;
+
+    *version1 = *end1 == '.' ? end1 + 1 : end1;
+    *version2 = *end2 == '.' ? end2 + 1 : end2;
+    return 0;
+}
+
+static const char* get_prerelease(const char* suffix, size_t* length) {
     if (*suffix != '-') return NULL;
 
     const char* prerelease = suffix + 1;
@@ -291,34 +304,24 @@ int updater_compare_versions(const char* v1, const char* v2) {
     if (v1[0] == 'v' || v1[0] == 'V') v1++;
     if (v2[0] == 'v' || v2[0] == 'V') v2++;
 
-    // Parse major.minor.patch
-    int maj1 = 0, min1 = 0, pat1 = 0, core_length1 = 0;
-    int maj2 = 0, min2 = 0, pat2 = 0, core_length2 = 0;
-
-    int parsed1 = sscanf(v1, "%d.%d.%d%n", &maj1, &min1, &pat1, &core_length1);
-    int parsed2 = sscanf(v2, "%d.%d.%d%n", &maj2, &min2, &pat2, &core_length2);
-
-    if (maj1 > maj2) return 1;
-    if (maj1 < maj2) return -1;
-    if (min1 > min2) return 1;
-    if (min1 < min2) return -1;
-    if (pat1 > pat2) return 1;
-    if (pat1 < pat2) return -1;
-
-    if (parsed1 == 3 && parsed2 == 3) {
-        size_t prerelease1_len = 0;
-        size_t prerelease2_len = 0;
-        const char* prerelease1 = get_prerelease(v1, core_length1, &prerelease1_len);
-        const char* prerelease2 = get_prerelease(v2, core_length2, &prerelease2_len);
-
-        if (!prerelease1 && !prerelease2) return 0;
-        if (!prerelease1) return 1;
-        if (!prerelease2) return -1;
-        return compare_prerelease(prerelease1, prerelease1_len,
-                                  prerelease2, prerelease2_len);
+    // Compare decimal core components by length and digits so they need no integer limit.
+    const char* core1 = v1;
+    const char* core2 = v2;
+    for (size_t i = 0; i < 3; i++) {
+        int result = compare_version_component(&core1, &core2);
+        if (result != 0) return result;
     }
 
-    return 0;
+    size_t prerelease1_len = 0;
+    size_t prerelease2_len = 0;
+    const char* prerelease1 = get_prerelease(core1, &prerelease1_len);
+    const char* prerelease2 = get_prerelease(core2, &prerelease2_len);
+
+    if (!prerelease1 && !prerelease2) return 0;
+    if (!prerelease1) return 1;
+    if (!prerelease2) return -1;
+    return compare_prerelease(prerelease1, prerelease1_len,
+                              prerelease2, prerelease2_len);
 }
 
 // Parse GitHub API response JSON using cJSON

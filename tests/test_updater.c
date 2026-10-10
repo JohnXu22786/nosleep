@@ -198,6 +198,24 @@ static void test_ver_compare(void) {
     PASS();
 }
 
+static void test_large_core_components(void) {
+    printf("\n--- large SemVer core components ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char response[] =
+        "{\"tag_name\":\"v2147483648.0.0\",\"assets\":[]}";
+
+    TEST("valid core components above INT_MAX are accepted and compared by value");
+    ASSERT(updater_parse_response(response, &info) &&
+           strcmp(info.latest_version, "2147483648.0.0") == 0,
+           "Expected a release with a core component above INT_MAX to parse");
+    ASSERT(updater_compare_versions("2147483648.0.0", "2147483647.999.999") == 1 &&
+           updater_compare_versions("1.2147483648.0", "1.2147483647.999") == 1 &&
+           updater_compare_versions("1.0.2147483648", "1.0.2147483647") == 1,
+           "Expected large core components to compare as decimal numbers");
+    PASS();
+}
+
 static void test_parse_full(void) {
     printf("\n--- updater_parse_response (full sample) ---\n");
     fflush(stdout);
@@ -553,6 +571,7 @@ int main(void) {
     fflush(stdout);
 
     test_ver_compare();
+    test_large_core_components();
     test_parse_full();
     test_release_page_url();
     test_parse_no_exe();
