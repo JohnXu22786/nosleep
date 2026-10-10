@@ -62,6 +62,9 @@ jobs:
       - name: Test About dialog monitor positioning
         run: ./test_tray_about_dialog_monitor.sh
 
+      - name: Test About dialog DPI scaling
+        run: ./test_tray_about_dialog_dpi_scaling.sh
+
       - name: Test keyboard tray menu anchoring
         run: ./test_tray_keyboard_menu_anchor.sh
 
