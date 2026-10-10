@@ -378,7 +378,17 @@ static bool tray_restore_taskbar_icon(NoSleepTray* tray) {
             TASKBAR_RESTORE_RETRY_INTERVAL_MS, NULL);
         if (!tray->taskbar_restore_timer_id) {
             DEBUG_PRINT("tray_restore_taskbar_icon: could not schedule icon restore retry\n");
-            return tray_add_icon_to_shell(tray);
+            if (tray_add_icon_to_shell(tray)) return true;
+
+            // The immediate shell retry may outlast a transient timer failure.
+            // Try scheduling again so a later attempt can restore the icon.
+            tray->taskbar_restore_timer_id = SetTimer(
+                tray->hwnd, TIMER_ID_TASKBAR_RESTORE,
+                TASKBAR_RESTORE_RETRY_INTERVAL_MS, NULL);
+            if (!tray->taskbar_restore_timer_id) {
+                DEBUG_PRINT("tray_restore_taskbar_icon: retry scheduling still failed\n");
+            }
+            return false;
         }
     }
     return false;
