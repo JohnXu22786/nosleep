@@ -88,6 +88,10 @@ save_last_check = extract_function("save_last_update_check_time")
 load_settings = extract_function("tray_load_settings")
 apply_interval = extract_function("tray_apply_auto_check_interval")
 setup_timer = extract_function("tray_setup_update_timer")
+allocate_timer_id = (
+    extract_function("tray_allocate_update_timer_id", "UINT_PTR")
+    if "tray_allocate_update_timer_id" in tray else ""
+)
 begin_update_check = extract_function("tray_update_check_begin", "bool")
 end_update_check = extract_function("tray_update_check_end")
 process_update_result = extract_function("tray_process_update_check_result")
@@ -171,6 +175,7 @@ typedef struct {
 #define WM_TIMER 0x0113
 #define WM_DESTROY 0x0002
 #define TIMER_ID_AUTO_START 1001
+#define TIMER_ID_UPDATE_CHECK_FIRST 1004
 #define DEBUG_PRINT(...) ((void)0)
 
 typedef int NotifyEventId;
@@ -322,6 +327,7 @@ static UINT_PTR SetTimer(HWND hwnd, UINT_PTR timer_id, UINT interval_ms, void* c
 
 static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interval);
 
+__ALLOCATE_TIMER_ID__
 __NORMALIZE_INTERVAL__
 __READ_SETTING__
 __SHOULD_CHECK__
@@ -512,6 +518,23 @@ int main(void) {
         return fail("a clock rollback must keep the next periodic timer from firing repeatedly");
     }
 
+    NoSleepTray rearmed_timer_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 1,
+        .update_timer_id = 1002,
+    };
+    set_count = 0;
+    kill_count = 0;
+    update_check_count = 0;
+    tray_setup_update_timer(&rearmed_timer_tray, false);
+    UINT_PTR rearmed_timer_id = rearmed_timer_tray.update_timer_id;
+    run_update_timer_message(&rearmed_timer_tray, 1002);
+    if (rearmed_timer_id == 1002 || update_check_count != 0 ||
+        rearmed_timer_tray.update_timer_id != rearmed_timer_id ||
+        set_count != 1 || kill_count != 1) {
+        return fail("a queued WM_TIMER from the killed schedule must not trigger an update after reconfiguration");
+    }
+
     fake_now_100ns = 30ULL * daily_ticks;
     stored_auto_check_interval = 1;
     NoSleepTray manual_daily_tray = {
@@ -524,7 +547,8 @@ int main(void) {
     last_interval_ms = 0;
     tray_process_update_check_result(&manual_daily_tray, true, true, NULL);
     if (!has_last_update_check || stored_last_update_check != fake_now_100ns ||
-        manual_daily_tray.update_timer_id != 1002 || set_count != 1 ||
+        manual_daily_tray.update_timer_id == 0 ||
+        manual_daily_tray.update_timer_id == 1002 || set_count != 1 ||
         kill_count != 1 || last_interval_ms != 86400000U) {
         return fail("a completed manual check must restart the Daily timer from its new timestamp");
     }
@@ -541,7 +565,8 @@ int main(void) {
     last_interval_ms = 0;
     tray_process_update_check_result(&manual_weekly_tray, true, true, NULL);
     if (stored_last_update_check != fake_now_100ns ||
-        manual_weekly_tray.update_timer_id != 1002 || set_count != 1 ||
+        manual_weekly_tray.update_timer_id == 0 ||
+        manual_weekly_tray.update_timer_id == 1002 || set_count != 1 ||
         kill_count != 1 || last_interval_ms != 604800000U) {
         return fail("a completed manual check must restart the Weekly timer from its new timestamp");
     }
@@ -586,8 +611,8 @@ int main(void) {
         .update_timer_id = 1002,
     };
     run_update_timer_message(&active_timer_tray, 1002);
-    if (update_check_count != 1 || active_timer_tray.update_timer_id != 1002 ||
-        set_count != 1) {
+    if (update_check_count != 1 || active_timer_tray.update_timer_id == 0 ||
+        active_timer_tray.update_timer_id == 1002 || set_count != 1) {
         return fail("the active update timer must still start a check and reschedule itself");
     }
 
@@ -596,7 +621,9 @@ int main(void) {
 }
 '''
 
-harness = harness.replace("__NORMALIZE_INTERVAL__", normalize_interval).replace(
+harness = harness.replace("__ALLOCATE_TIMER_ID__", allocate_timer_id).replace(
+    "__NORMALIZE_INTERVAL__", normalize_interval
+).replace(
     "__READ_SETTING__", read_setting
 ).replace(
     "__SHOULD_CHECK__", startup_check
