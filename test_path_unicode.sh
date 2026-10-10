@@ -23,17 +23,21 @@ prelude = r'''
 #include <limits.h>
 typedef uint32_t DWORD;
 typedef long LONG;
+typedef int BOOL;
 typedef unsigned char *LPBYTE;
 typedef void *HKEY;
+typedef void *HANDLE;
 typedef intptr_t LPARAM;
 #define MAX_PATH 260
 #define MAXDWORD ((DWORD)~0U)
+#define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
 #define HKEY_CURRENT_USER ((HKEY)1)
 #define KEY_READ 1
 #define KEY_WRITE 2
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
 #define ERROR_MORE_DATA 234
+#define ERROR_GEN_FAILURE 31
 #define REG_OPTION_NON_VOLATILE 0
 #define REG_SZ 1
 #define REG_EXPAND_SZ 2
@@ -64,12 +68,20 @@ static wchar_t startup_registry[2048];
 static DWORD registry_bytes;
 static DWORD startup_registry_bytes;
 static DWORD registry_type = REG_EXPAND_SZ;
+static unsigned int registry_revision;
+static unsigned int transaction_start_revision;
+static int transaction_active;
+static int pending_registry_write;
+static wchar_t pending_registry[2048];
+static DWORD pending_registry_bytes;
+static DWORD pending_registry_type;
 static int change_type_on_data_read;
 static DWORD data_read_type;
 static DWORD startup_registry_type = REG_SZ;
 static int ansi_calls;
 static int writes;
 static int grow_on_read;
+static int race_change_after_data_read;
 static int registry_exists = 1;
 static int fail_module_filename;
 static int fail_malloc;
@@ -124,12 +136,63 @@ LONG RegCreateKeyEx(HKEY root, const char *name, DWORD a, void *c, DWORD d,
                    DWORD b, void *e, HKEY *key, void *f) {
     (void)name; ++ansi_calls; return RegCreateKeyExW(root, L"Environment", a, c, d, b, e, key, f);
 }
+HANDLE CreateTransaction(void *attributes, void *unit, DWORD options,
+                         DWORD isolation, DWORD isolation_flags,
+                         DWORD timeout, const wchar_t *description) {
+    (void)attributes; (void)unit; (void)options; (void)isolation;
+    (void)isolation_flags; (void)timeout; (void)description;
+    transaction_active = 1;
+    transaction_start_revision = registry_revision;
+    pending_registry_write = 0;
+    return (HANDLE)4;
+}
+BOOL CommitTransaction(HANDLE transaction) {
+    (void)transaction;
+    if (!transaction_active || registry_revision != transaction_start_revision) {
+        transaction_active = 0;
+        pending_registry_write = 0;
+        return 0;
+    }
+    if (pending_registry_write) {
+        memcpy(registry, pending_registry, pending_registry_bytes);
+        registry_bytes = pending_registry_bytes;
+        registry_type = pending_registry_type;
+        registry_exists = 1;
+        ++registry_revision;
+    }
+    transaction_active = 0;
+    pending_registry_write = 0;
+    return 1;
+}
+BOOL RollbackTransaction(HANDLE transaction) {
+    (void)transaction;
+    transaction_active = 0;
+    pending_registry_write = 0;
+    return 1;
+}
+BOOL CloseHandle(HANDLE handle) { (void)handle; return 1; }
+LONG RegOpenKeyTransactedW(HKEY root, const wchar_t *name, DWORD options,
+                           DWORD access, HKEY *key, HANDLE transaction,
+                           void *extended) {
+    (void)transaction; (void)extended;
+    return RegOpenKeyExW(root, name, options, access, key);
+}
+LONG RegCreateKeyTransactedW(HKEY root, const wchar_t *name, DWORD reserved,
+                             const wchar_t *class_name, DWORD options,
+                             DWORD access, void *security, HKEY *key,
+                             DWORD *disposition, HANDLE transaction,
+                             void *extended) {
+    (void)transaction; (void)extended;
+    return RegCreateKeyExW(root, name, reserved, (void *)class_name, options,
+                           access, security, key, disposition);
+}
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, void *reserved, DWORD *type,
                      LPBYTE out, DWORD *size) {
     (void)reserved;
     if (key == (HKEY)2 && out && change_type_on_data_read) {
         registry_type = data_read_type;
         change_type_on_data_read = 0;
+        ++registry_revision;
     }
     wchar_t *value;
     DWORD value_bytes;
@@ -152,10 +215,18 @@ LONG RegQueryValueExW(HKEY key, const wchar_t *name, void *reserved, DWORD *type
         registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
         value_bytes = registry_bytes;
         grow_on_read = 0;
+        ++registry_revision;
     }
     if (!out) { *size = value_bytes; return ERROR_SUCCESS; }
     if (*size < value_bytes) { *size = value_bytes; return ERROR_MORE_DATA; }
-    memcpy(out, value, value_bytes); *size = value_bytes; return ERROR_SUCCESS;
+    memcpy(out, value, value_bytes); *size = value_bytes;
+    if (key == (HKEY)2 && race_change_after_data_read) {
+        wcscat(registry, L";C:\\Concurrent");
+        registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+        race_change_after_data_read = 0;
+        ++registry_revision;
+    }
+    return ERROR_SUCCESS;
 }
 LONG RegQueryValueEx(HKEY key, const char *name, void *reserved, DWORD *type,
                     LPBYTE out, DWORD *size) {
@@ -167,10 +238,17 @@ LONG RegQueryValueEx(HKEY key, const char *name, void *reserved, DWORD *type,
 }
 LONG RegSetValueExW(HKEY key, const wchar_t *name, DWORD a, DWORD type,
                    LPBYTE data, DWORD size) {
-    (void)key; (void)a; assert(wcscmp(name, L"Path") == 0); assert(type == registry_type);
+    (void)a; assert(key == (HKEY)2); assert(wcscmp(name, L"Path") == 0);
+    if (registry_exists) assert(type == registry_type);
     assert(size <= sizeof(registry)); assert(size % sizeof(wchar_t) == 0);
     assert(((wchar_t *)data)[size / sizeof(wchar_t) - 1] == 0);
-    memcpy(registry, data, size); registry_bytes = size; registry_exists = 1; ++writes; return ERROR_SUCCESS;
+    assert(transaction_active);
+    memcpy(pending_registry, data, size);
+    pending_registry_bytes = size;
+    pending_registry_type = type;
+    pending_registry_write = 1;
+    ++writes;
+    return ERROR_SUCCESS;
 }
 LONG RegSetValueEx(HKEY key, const char *name, DWORD a, DWORD type, LPBYTE data, DWORD size) {
     (void)key; (void)name; (void)a; (void)type; (void)data; (void)size;
@@ -209,6 +287,19 @@ int main(void) {
     grow_on_read = 1;
     assert(remove_app_from_path());
     assert(wcscmp(registry, L"C:\\既存;C:\\新增;C:\\新增") == 0);
+    // A concurrent writer can update PATH after our data read and before our write.
+    wcscpy(registry, L"C:\\Before");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    race_change_after_data_read = 1;
+    assert(add_app_to_path());
+    assert(wcscmp(registry, L"C:\\Before;C:\\Concurrent;C:\\安装\\😀") == 0);
+
+    wcscpy(registry, L"C:\\安装\\😀;C:\\Before");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    race_change_after_data_read = 1;
+    assert(remove_app_from_path());
+    assert(wcscmp(registry, L"C:\\Before;C:\\Concurrent") == 0);
+
     // Registry string values need not include a terminating NUL.
     wcscpy(registry, L"C:\\工具");
     registry_bytes = (DWORD)(wcslen(registry) * sizeof(wchar_t));

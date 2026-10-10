@@ -87,7 +87,7 @@ windres --include-dir src -i obj/resources_built.rc -o obj/resources.o
 gcc -std=c99 -Wall -Wextra -O2 -Isrc -DVERSION_STR=\"${VERSION}\" \
     src/core.c src/tray.c src/main.c src/notify_groups.c src/updater.c src/updater_logic.c src/updater_response_read.c src/updater_pe.c src/cJSON.c \
     obj/resources.o -o bin/nosleep.exe \
-    -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lwinhttp -lcomctl32
+    -mwindows -luser32 -lkernel32 -lgdi32 -lpowrprof -ladvapi32 -lktmw32 -lwinhttp -lcomctl32
 ```
 
 ### Adding to PATH (Optional)
