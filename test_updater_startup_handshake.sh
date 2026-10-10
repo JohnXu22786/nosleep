@@ -47,6 +47,7 @@ typedef struct { HANDLE hProcess; HANDLE hThread; } PROCESS_INFORMATION;
 #define MB_ICONERROR 2
 #define MB_TOPMOST 4
 #define EVENT_MODIFY_STATE 2
+#define ERROR_SUCCESS 0
 #define ERROR_ALREADY_EXISTS 183
 #define WAIT_OBJECT_0 0
 #define WAIT_TIMEOUT 258
@@ -69,6 +70,7 @@ static unsigned int create_process_calls;
 static unsigned int error_dialog_calls;
 static BOOL launch_succeeds;
 static BOOL terminate_succeeds;
+static BOOL event_already_exists;
 static DWORD last_error;
 
 HANDLE CreateFileW(const wchar_t *path, DWORD access, DWORD sharing,
@@ -110,12 +112,14 @@ HANDLE CreateEventW(void *security, BOOL manual_reset, BOOL initial_state,
     (void)security;
     assert(manual_reset == TRUE);
     assert(initial_state == FALSE);
+    if (event_already_exists) last_error = ERROR_ALREADY_EXISTS;
     wcsncpy(created_event_name, name,
             sizeof(created_event_name) / sizeof(created_event_name[0]) - 1);
     created_event_name[sizeof(created_event_name) / sizeof(created_event_name[0]) - 1] = L'\0';
-    last_error = 0;
     return ready_event_handle;
 }
+
+void SetLastError(DWORD error) { last_error = error; }
 
 DWORD GetLastError(void) { return last_error; }
 
@@ -190,11 +194,13 @@ static void reset(void) {
     error_dialog_calls = 0;
     launch_succeeds = TRUE;
     terminate_succeeds = TRUE;
+    event_already_exists = FALSE;
     last_error = 0;
 }
 
 int main(void) {
     reset();
+    last_error = ERROR_ALREADY_EXISTS;
     assert(relaunch_from_command_line_file(L"arguments.dat") == 0);
     assert(create_process_calls == 1);
     assert(wait_calls == 1);
@@ -205,6 +211,13 @@ int main(void) {
     assert(wcsstr(launched_command_line,
                   L"--nosleep-internal-update-ready-event") != NULL);
     assert(wcsstr(launched_command_line, created_event_name) != NULL);
+
+    reset();
+    event_already_exists = TRUE;
+    assert(relaunch_from_command_line_file(L"arguments.dat") == 1);
+    assert(create_process_calls == 0);
+    assert(wait_calls == 0);
+    assert(error_dialog_calls == 1);
 
     reset();
     requested_wait_result = WAIT_OBJECT_0 + 1;

@@ -331,6 +331,7 @@ static int relaunch_from_command_line_file(const wchar_t* arguments_path) {
         return 1;
     }
 
+    SetLastError(ERROR_SUCCESS);
     HANDLE startup_ready_event = CreateEventW(NULL, TRUE, FALSE, startup_event_name);
     if (!startup_ready_event || GetLastError() == ERROR_ALREADY_EXISTS) {
         if (startup_ready_event) CloseHandle(startup_ready_event);
