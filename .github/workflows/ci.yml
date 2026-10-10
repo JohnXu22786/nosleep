@@ -160,6 +160,9 @@ jobs:
       - name: Test suspend cancellation before delayed action startup
         run: ./test_tray_suspend_delayed_action_race.sh
 
+      - name: Test scheduled sleep disables wake events
+        run: ./test_tray_disable_wake_events.sh
+
       - name: Test concurrent countdown cleanup ownership
         run: bash test_tray_countdown_cleanup.sh
 
