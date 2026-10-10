@@ -1370,6 +1370,8 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     ATOMIC_STORE_BOOL(&tray->core_init_succeeded, false);
     ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, false);
     tray->session_action_cancelled = false;
+    tray->session_action_pending = false;
+    tray->session_expiry_action_resolved = false;
     tray->timer_thread_id = 0;
     tray->nosleep_thread_id = 0;
     tray->start_tick64 = GetTickCount64();
@@ -1513,6 +1515,9 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     // Cancel even when expiry cleanup has not yet published its delayed action.
     if (expected_thread_id == 0 && !timer_expired) {
         tray->session_action_cancelled = true;
+    }
+    if (!timer_expired) {
+        tray->session_action_pending = false;
     }
 
     // Preserve the completed expiry cleanup's suppression state when Stop
@@ -1754,6 +1759,7 @@ static void tray_reap_delayed_action_handle(NoSleepTray* tray, HANDLE* timer_han
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     HANDLE completed_timer = *timer_handle;
     *timer_handle = NULL;
+    tray->session_action_pending = false;
     if (completed_timer) CloseHandle(completed_timer);
     // Keep teardown from freeing the tray before its menu caption is refreshed.
     tray_update_stop_menu_item_internal(tray, true);
@@ -1788,8 +1794,21 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         
         if (elapsed_ms >= duration_ms) {
             AcquireSRWLockExclusive(&tray->delayed_action_lock);
+            bool is_current_session = tray->timer_thread_id == timer_thread_id;
+            bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
             SessionFinishedAction finished_action = tray->session_finished_action;
+            if (is_current_session && is_running) {
+                tray->session_expiry_action_resolved = true;
+                if (!tray->session_action_cancelled &&
+                    finished_action != SESSION_FINISHED_NONE) {
+                    tray->session_action_pending = true;
+                }
+            }
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+            if (!is_current_session || !is_running) {
+                DEBUG_LOG("tray_duration_timer: abandoning expiry for an ended session");
+                return 0;
+            }
             if (finished_action != SESSION_FINISHED_NONE) {
                 // Do not honor a follow-up action until the NoSleep core is known to exist.
                 for (;;) {
@@ -1803,6 +1822,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     bool should_abandon = !is_current_session || !is_running ||
                                           core_init_failed || nosleep_run_failed ||
                                           session_starting;
+                    if (should_abandon && is_current_session) {
+                        tray->session_action_pending = false;
+                    }
                     if (!should_abandon && core_init_succeeded) {
                         // Publish expiry with the final session check so suspend
                         // cannot miss cancellation between the check and publish.
@@ -1878,6 +1900,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                         );
                         sleep_timer = tray->sleep_timer;
                     }
+                    if (!sleep_timer && tray->timer_thread_id == timer_thread_id) {
+                        tray->session_action_pending = false;
+                    }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     if (stale_session) {
                         DEBUG_LOG("tray_duration_timer: skipping sleep action from an ended session");
@@ -1939,6 +1964,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                             NULL, 0, delayed_shutdown_thread, tray, 0, NULL
                         );
                         shutdown_timer = tray->shutdown_timer;
+                    }
+                    if (!shutdown_timer && tray->timer_thread_id == timer_thread_id) {
+                        tray->session_action_pending = false;
                     }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     if (shutdown_stale_session) {
@@ -2279,6 +2307,7 @@ static DWORD WINAPI delayed_sleep_thread(LPVOID lpParam) {
             // Claim dispatch before Stop can cancel it. Keep the handle for
             // cleanup to join, and release the lock before OS power callbacks.
             tray->sleep_action_claimed = true;
+            tray->session_action_pending = false;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             tray_update_stop_menu_item(tray);
             DEBUG_LOG("delayed_sleep_thread: 60 seconds elapsed, triggering sleep");
@@ -2350,6 +2379,7 @@ static DWORD WINAPI delayed_shutdown_thread(LPVOID lpParam) {
             // Claim dispatch before Stop can cancel it. Keep the handle for
             // cleanup to join, and release the lock before OS power callbacks.
             tray->shutdown_action_claimed = true;
+            tray->session_action_pending = false;
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             tray_update_stop_menu_item(tray);
             DEBUG_LOG("delayed_shutdown_thread: 60 seconds elapsed, triggering shutdown");
@@ -6103,16 +6133,27 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         // be generating this broadcast while waiting for it to return.
                         AcquireSRWLockExclusive(&tray->delayed_action_lock);
                         tray_wait_for_delayed_countdown_start(tray);
-                        bool duration_reached_at_suspend = false;
-                        if (tray->timer_thread_id != 0 && tray->duration_minutes > 0 &&
+                        bool session_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+                        bool has_uncancelled_action =
+                            tray->session_action_pending ||
+                            (session_running && !tray->session_expiry_action_resolved &&
+                             tray->session_finished_action != SESSION_FINISHED_NONE) ||
+                            (tray->sleep_timer != NULL && !tray->sleep_action_claimed) ||
+                            (tray->shutdown_timer != NULL && !tray->shutdown_action_claimed) ||
+                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+                        bool cancel_pending_actions_at_suspend = false;
+                        if (has_uncancelled_action && !tray->session_action_cancelled &&
+                            tray->timer_thread_id != 0 &&
+                            tray->duration_minutes > 0 &&
                             suspend_tick64 >= tray->start_tick64) {
                             ULONGLONG duration_ms =
                                 (ULONGLONG)tray->duration_minutes * 60 * 1000;
-                            duration_reached_at_suspend =
+                            cancel_pending_actions_at_suspend =
                                 suspend_tick64 - tray->start_tick64 >= duration_ms;
                         }
-                        if (duration_reached_at_suspend) {
+                        if (cancel_pending_actions_at_suspend) {
                             tray->session_action_cancelled = true;
+                            tray->session_action_pending = false;
                             SetEvent(tray->sleep_stop_event);
                             SetEvent(tray->shutdown_stop_event);
                         }
@@ -6120,14 +6161,18 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
 
                         // Only cancel actions that were due when suspend arrived;
                         // the timer can start a new action while this handler waits.
-                        if (duration_reached_at_suspend &&
+                        if (cancel_pending_actions_at_suspend &&
                             ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                             tray_stop_countdown(tray);
                         }
                         
                         // Show notification
                         tray_show_notification(tray, NOTIFY_EVENT_SLEEP_DETECTED,
-                            "Sleep Detected", "System sleep cancelled all pending actions", false);
+                            "Sleep Detected",
+                            cancel_pending_actions_at_suspend
+                                ? "System sleep cancelled all pending actions"
+                                : "System sleep detected; no pending actions were cancelled",
+                            false);
                         break;
                         
                     case PBT_APMRESUMESUSPEND:
