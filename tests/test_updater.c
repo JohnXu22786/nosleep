@@ -344,6 +344,46 @@ static void test_parse_exe_url_with_query(void) {
     PASS();
 }
 
+static void test_parse_official_release_asset_url(void) {
+    printf("\n--- updater_parse_response (official release asset URL) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char* official_url =
+        "https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe?download=1";
+
+    TEST("official repository release asset remains installable with its query");
+    ASSERT(parse_asset_url(official_url, &info) && info.update_available &&
+           strcmp(info.download_url, official_url) == 0,
+           "Expected the official release asset URL to be preserved");
+    PASS();
+}
+
+static void test_parse_nonofficial_release_asset_urls(void) {
+    printf("\n--- updater_parse_response (nonofficial release asset URLs) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char* invalid_urls[] = {
+        "https://attacker.example/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com.attacker.example/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com:8443/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com/attacker/nosleep/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com/JohnXu22786/other/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com/JohnXu22786/nosleep-evil/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com/JohnXu22786evil/nosleep/releases/download/v2.1.0/nosleep.exe",
+        "https://github.com/JohnXu22786/nosleep/releases/download-evil/v2.1.0/nosleep.exe"
+    };
+
+    TEST("unrelated hosts, repositories, and prefix-confusion paths are not installable");
+    for (size_t i = 0; i < sizeof(invalid_urls) / sizeof(invalid_urls[0]); i++) {
+        if (!parse_asset_url(invalid_urls[i], &info) || info.update_available ||
+            info.download_url[0] != '\0') {
+            FAIL("Expected nonofficial EXE URL to be ignored");
+            return;
+        }
+    }
+    PASS();
+}
+
 static void test_parse_exe_url_at_buffer_limit(void) {
     printf("\n--- updater_parse_response (EXE URL buffer limit) ---\n");
     fflush(stdout);
@@ -385,10 +425,10 @@ static void test_parse_exe_url_with_valid_port(void) {
     UpdateInfo info;
 
     TEST("valid HTTPS port preserves an executable asset URL");
-    ASSERT(parse_asset_url("https://github.com:443/JohnXu22786/nosleep/nosleep-2.1.0.exe", &info) &&
+    ASSERT(parse_asset_url("https://github.com:443/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe", &info) &&
            info.update_available &&
            strcmp(info.download_url,
-                  "https://github.com:443/JohnXu22786/nosleep/nosleep-2.1.0.exe") == 0,
+                  "https://github.com:443/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.exe") == 0,
            "Expected valid HTTPS port to be accepted");
     PASS();
 }
@@ -520,6 +560,8 @@ int main(void) {
     test_parse_exe_suffix_case_insensitive();
     test_parse_malformed_exe_urls();
     test_parse_exe_url_with_query();
+    test_parse_official_release_asset_url();
+    test_parse_nonofficial_release_asset_urls();
     test_parse_exe_url_at_buffer_limit();
     test_parse_exe_url_with_valid_port();
     test_parse_no_tag();
