@@ -413,6 +413,24 @@ int main(void) {
     wcscat(startup_registry, L"\" --startup");
     startup_registry_bytes = (DWORD)((wcslen(startup_registry) + 1) * sizeof(wchar_t));
     assert(is_startup_enabled());
+
+    static wchar_t differently_cased_exe[512];
+    size_t full_exe_length = wcslen(long_exe);
+    for (size_t i = 0; i <= full_exe_length; ++i) {
+        wchar_t c = long_exe[i];
+        if (c >= L'A' && c <= L'Z') c += L'a' - L'A';
+        else if (c >= L'a' && c <= L'z') c -= L'a' - L'A';
+        differently_cased_exe[i] = c;
+    }
+    swprintf(startup_registry, sizeof(startup_registry) / sizeof(startup_registry[0]),
+             L"\"%ls\" --startup", differently_cased_exe);
+    startup_registry_bytes = (DWORD)((wcslen(startup_registry) + 1) * sizeof(wchar_t));
+    assert(is_startup_enabled());
+
+    swprintf(startup_registry, sizeof(startup_registry) / sizeof(startup_registry[0]),
+             L"\"%ls\" --Startup", differently_cased_exe);
+    startup_registry_bytes = (DWORD)((wcslen(startup_registry) + 1) * sizeof(wchar_t));
+    assert(!is_startup_enabled());
     puts("PASS: Unicode PATH and long executable paths preserve registry behavior");
 }
 '''
