@@ -47,6 +47,9 @@ functions = "\n\n".join(
         "static void tray_show_window_context_menu(",
     )
 )
+fallback_signature = "static void tray_get_context_menu_fallback_position("
+if fallback_signature in tray:
+    functions = extract_function(fallback_signature) + "\n\n" + functions
 
 harness = r"""
 #include <stdbool.h>
@@ -128,6 +131,7 @@ static RECT owner_work_area = { -1600, 0, 0, 1040 };
 static RECT owner_window_rect = { 40, 50, 640, 430 };
 static BOOL icon_rect_available = TRUE;
 static BOOL monitor_info_available = TRUE;
+static BOOL cursor_available = TRUE;
 
 static HRESULT mock_shell_notify_icon_get_rect(
     const TrayNotifyIconIdentifier* identifier, RECT* bounds) {
@@ -155,6 +159,11 @@ static FARPROC GetProcAddress(HMODULE module, const char* name) {
 
 static BOOL GetCursorPos(POINT* point) {
     cursor_queries++;
+    if (!cursor_available) {
+        point->x = 1234;
+        point->y = 5678;
+        return FALSE;
+    }
     *point = cursor_point;
     return TRUE;
 }
@@ -294,6 +303,7 @@ int main(void) {
     shell_api_available = TRUE;
     icon_rect_available = TRUE;
     monitor_info_available = TRUE;
+    cursor_available = TRUE;
 
     reset_harness();
     tray.menu_invoked_by_keyboard = TRUE;
@@ -306,6 +316,13 @@ int main(void) {
     tray_show_window_context_menu(&tray, (HWND)10, (LPARAM)0x00100020);
     failed |= check_result("mouse WM_CONTEXTMENU keeps cursor placement",
                            &tray, cursor_point.x, cursor_point.y, FALSE, 1, 0, 0);
+
+    reset_harness();
+    cursor_available = FALSE;
+    tray.menu_invoked_by_keyboard = TRUE;
+    tray_show_tray_icon_context_menu(&tray, (HWND)10, WM_RBUTTONUP);
+    failed |= check_result("mouse tray activation falls back to the tray monitor when cursor lookup fails",
+                           &tray, -1, 1039, FALSE, 1, 0, 1);
 
     return failed;
 }
