@@ -5598,6 +5598,28 @@ static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interv
     }
 }
 
+static void tray_get_context_menu_fallback_position(NoSleepTray* tray,
+                                                    POINT* point) {
+    HMONITOR monitor = MonitorFromWindow(
+        tray->hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO monitor_info = {0};
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (monitor && GetMonitorInfo(monitor, &monitor_info)) {
+        point->x = monitor_info.rcWork.right - 1;
+        point->y = monitor_info.rcWork.bottom - 1;
+        return;
+    }
+
+    RECT window_rect;
+    if (GetWindowRect(tray->hwnd, &window_rect)) {
+        point->x = window_rect.left;
+        point->y = window_rect.top;
+    } else {
+        point->x = 0;
+        point->y = 0;
+    }
+}
+
 static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
                                    BOOL keyboard_invoked) {
     if (!tray || !tray->hmenu) return;
@@ -5610,26 +5632,10 @@ static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
             pt.x = icon_rect.left;
             pt.y = icon_rect.bottom;
         } else {
-            HMONITOR monitor = MonitorFromWindow(
-                tray->hwnd, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO monitor_info = {0};
-            monitor_info.cbSize = sizeof(monitor_info);
-            if (monitor && GetMonitorInfo(monitor, &monitor_info)) {
-                pt.x = monitor_info.rcWork.right - 1;
-                pt.y = monitor_info.rcWork.bottom - 1;
-            } else {
-                RECT window_rect;
-                if (GetWindowRect(tray->hwnd, &window_rect)) {
-                    pt.x = window_rect.left;
-                    pt.y = window_rect.top;
-                } else {
-                    pt.x = 0;
-                    pt.y = 0;
-                }
-            }
+            tray_get_context_menu_fallback_position(tray, &pt);
         }
-    } else {
-        GetCursorPos(&pt);
+    } else if (!GetCursorPos(&pt)) {
+        tray_get_context_menu_fallback_position(tray, &pt);
     }
 
     SetForegroundWindow(hwnd); // Required for menu to disappear properly
