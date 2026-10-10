@@ -31,7 +31,7 @@ RESOURCE_OBJ = $(OBJDIR)/resources.o
 TARGET = $(BINDIR)/nosleep.exe
 VERSION_STAMP = $(OBJDIR)/.version
 
-.PHONY: all clean test-unit test-cli FORCE
+.PHONY: all clean test-unit test-cli run run-cli test install test-updater-url-policy FORCE
 
 all: $(TARGET)
 
@@ -70,6 +70,7 @@ run-cli: $(TARGET)
 
 # Build and run unit tests for updater module (JSON parsing, version comparison)
 test-unit: $(OBJDIR) test-cli test-updater-url-policy
+	bash ./test_make_action_targets_phony.sh
 	bash ./test_updater_launch_cleanup.sh
 	bash ./test_updater_wait_process.sh
 	bash ./test_updater_startup_handshake.sh
