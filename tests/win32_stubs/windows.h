@@ -12,15 +12,29 @@ typedef long LONG;
 typedef unsigned char BYTE;
 typedef BYTE *LPBYTE;
 typedef void *HKEY;
+typedef void *HANDLE;
 typedef void *HMODULE;
+typedef void *HLOCAL;
+typedef void *LPVOID;
+typedef void *PSID;
 typedef void (*FARPROC)(void);
 typedef const wchar_t *LPCWSTR;
+typedef wchar_t *LPWSTR;
+typedef DWORD TOKEN_INFORMATION_CLASS;
+typedef struct {
+    PSID Sid;
+    DWORD Attributes;
+} SID_AND_ATTRIBUTES;
+typedef struct {
+    SID_AND_ATTRIBUTES User;
+} TOKEN_USER;
 
 #define TRUE 1
 #define FALSE 0
 #define WINAPI
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
+#define ERROR_INSUFFICIENT_BUFFER 122
 #define ERROR_MORE_DATA 234
 #define DELETE 0x00010000
 #define REG_CREATED_NEW_KEY 1
@@ -35,7 +49,25 @@ typedef const wchar_t *LPCWSTR;
 #define KEY_READ (READ_CONTROL | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY)
 #define REG_SZ 1
 #define REG_DWORD 4
+#define TOKEN_QUERY 0x0008
+#define TokenUser 1
+#define INFINITE 0xFFFFFFFFu
+#define WAIT_OBJECT_0 0x00000000u
+#define WAIT_ABANDONED 0x00000080u
+#define WAIT_TIMEOUT 0x00000102u
+#define WAIT_FAILED 0xFFFFFFFFu
 #define HKEY_CURRENT_USER ((HKEY)(uintptr_t)1)
+
+HANDLE CreateMutexW(void *security, BOOL initial_owner, LPCWSTR name);
+DWORD WaitForSingleObject(HANDLE object, DWORD milliseconds);
+BOOL ReleaseMutex(HANDLE object);
+BOOL CloseHandle(HANDLE object);
+HANDLE GetCurrentProcess(void);
+BOOL OpenProcessToken(HANDLE process, DWORD access, HANDLE *token);
+BOOL GetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS info_class,
+                         LPVOID info, DWORD info_size, DWORD *return_length);
+DWORD GetLastError(void);
+HLOCAL LocalFree(HLOCAL memory);
 
 LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
                     const char *class_name, DWORD options, DWORD access,
