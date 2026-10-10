@@ -344,6 +344,41 @@ static void test_parse_exe_url_with_query(void) {
     PASS();
 }
 
+static void test_parse_exe_url_at_buffer_limit(void) {
+    printf("\n--- updater_parse_response (EXE URL buffer limit) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char prefix[] =
+        "https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/";
+    static const char suffix[] = ".exe";
+    char url[sizeof(info.download_url) + 1];
+    const size_t prefix_len = sizeof(prefix) - 1;
+    const size_t suffix_len = sizeof(suffix) - 1;
+
+    TEST("511-byte installer URL fits the 512-byte download buffer");
+    size_t url_len = sizeof(info.download_url) - 1;
+    memcpy(url, prefix, prefix_len);
+    memset(url + prefix_len, 'a', url_len - prefix_len - suffix_len);
+    memcpy(url + url_len - suffix_len, suffix, suffix_len);
+    url[url_len] = '\0';
+    ASSERT(parse_asset_url(url, &info) && info.update_available &&
+           strlen(info.download_url) == url_len &&
+           strcmp(info.download_url, url) == 0,
+           "Expected 511-byte installer URL to be preserved");
+    PASS();
+
+    TEST("512-byte installer URL remains too large for the download buffer");
+    url_len = sizeof(info.download_url);
+    memcpy(url, prefix, prefix_len);
+    memset(url + prefix_len, 'a', url_len - prefix_len - suffix_len);
+    memcpy(url + url_len - suffix_len, suffix, suffix_len);
+    url[url_len] = '\0';
+    ASSERT(parse_asset_url(url, &info) && !info.update_available &&
+           info.download_url[0] == '\0',
+           "Expected over-capacity installer URL to be ignored");
+    PASS();
+}
+
 static void test_parse_exe_url_with_valid_port(void) {
     printf("\n--- updater_parse_response (EXE URL with valid port) ---\n");
     fflush(stdout);
@@ -485,6 +520,7 @@ int main(void) {
     test_parse_exe_suffix_case_insensitive();
     test_parse_malformed_exe_urls();
     test_parse_exe_url_with_query();
+    test_parse_exe_url_at_buffer_limit();
     test_parse_exe_url_with_valid_port();
     test_parse_no_tag();
     test_parse_malformed_tag();
