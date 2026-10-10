@@ -5733,7 +5733,8 @@ static void tray_get_context_menu_fallback_position(NoSleepTray* tray,
 }
 
 static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
-                                   BOOL keyboard_invoked) {
+                                   BOOL keyboard_invoked,
+                                   const POINT* mouse_point) {
     if (!tray || !tray->hmenu) return;
 
     tray->menu_invoked_by_keyboard = keyboard_invoked;
@@ -5746,6 +5747,8 @@ static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
         } else {
             tray_get_context_menu_fallback_position(tray, &pt);
         }
+    } else if (mouse_point) {
+        pt = *mouse_point;
     } else if (!GetCursorPos(&pt)) {
         tray_get_context_menu_fallback_position(tray, &pt);
     }
@@ -5762,7 +5765,7 @@ static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
 
 static void tray_show_tray_icon_context_menu(NoSleepTray* tray, HWND hwnd,
                                              LPARAM tray_event) {
-    tray_show_context_menu(tray, hwnd, tray_event == NIN_KEYSELECT);
+    tray_show_context_menu(tray, hwnd, tray_event == NIN_KEYSELECT, NULL);
 }
 
 static void tray_show_window_context_menu(NoSleepTray* tray, HWND hwnd,
@@ -5770,7 +5773,16 @@ static void tray_show_window_context_menu(NoSleepTray* tray, HWND hwnd,
     if (!tray || !tray->hmenu) return;
     BOOL keyboard_invoked =
         LOWORD(coordinates) == (WORD)-1 && HIWORD(coordinates) == (WORD)-1;
-    tray_show_context_menu(tray, hwnd, keyboard_invoked);
+    if (keyboard_invoked) {
+        tray_show_context_menu(tray, hwnd, TRUE, NULL);
+        return;
+    }
+
+    POINT point = {
+        (int)(SHORT)LOWORD(coordinates),
+        (int)(SHORT)HIWORD(coordinates)
+    };
+    tray_show_context_menu(tray, hwnd, FALSE, &point);
 }
 
 
