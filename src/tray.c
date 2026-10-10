@@ -4862,6 +4862,18 @@ static void refresh_notification_group_list(HWND hwnd_parent, NoSleepTray* tray)
     update_notification_group_actions(hwnd_parent, tray);
 }
 
+static void settings_dialog_initial_bounds(NoSleepTray* tray, RECT* bounds) {
+    GetWindowRect(tray->hwnd, bounds);
+
+    HMONITOR monitor = tray_get_icon_monitor(tray->hwnd, tray->nid.uID);
+    MONITORINFO monitor_info = {0};
+    monitor_info.cbSize = sizeof(monitor_info);
+    if (monitor && GetMonitorInfo(monitor, &monitor_info)) {
+        bounds->left = monitor_info.rcWork.left;
+        bounds->top = monitor_info.rcWork.top;
+    }
+}
+
 void tray_show_settings_dialog(NoSleepTray* tray) {
     if (!tray || tray_dialog_open) return;
     tray_dialog_open = true;
@@ -4879,13 +4891,13 @@ void tray_show_settings_dialog(NoSleepTray* tray) {
 
     DialogDpiContextFn set_dpi_context;
     HANDLE previous_context = enter_dialog_dpi_context(&set_dpi_context);
-    RECT owner_bounds = {0};
-    GetWindowRect(tray->hwnd, &owner_bounds);
+    RECT initial_bounds = {0};
+    settings_dialog_initial_bounds(tray, &initial_bounds);
 
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepSettingsDialog", "nosleep Settings",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
-        owner_bounds.left, owner_bounds.top, 490, 440,
+        initial_bounds.left, initial_bounds.top, 490, 440,
         tray->hwnd, NULL, hInstance, (LPVOID)tray
     );
 
