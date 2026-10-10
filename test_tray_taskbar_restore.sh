@@ -159,6 +159,7 @@ static BOOL fail_set_version;
 static unsigned int set_timer_calls;
 static unsigned int kill_timer_calls;
 static BOOL fail_set_timer;
+static BOOL fail_first_set_timer;
 
 static DWORD GetLastError(void) { return 5; }
 static void AcquireSRWLockExclusive(SRWLOCK *lock) {
@@ -188,7 +189,8 @@ static UINT_PTR SetTimer(HWND hwnd, UINT_PTR timer_id, UINT interval, void *call
     assert(interval == 1000u);
     assert(callback == NULL);
     ++set_timer_calls;
-    return fail_set_timer ? 0 : timer_id;
+    return (fail_set_timer || (fail_first_set_timer && set_timer_calls == 1))
+        ? 0 : timer_id;
 }
 static BOOL KillTimer(HWND hwnd, UINT_PTR timer_id) {
     assert(active_tray && hwnd == active_tray->hwnd);
@@ -290,6 +292,30 @@ int main(void) {
     assert(set_timer_calls == 1);
     assert(kill_timer_calls == 0);
     assert(tray.taskbar_restore_timer_id == 0);
+
+    shell_call_count = 0;
+    add_attempt_count = 0;
+    add_result_count = 3;
+    add_results[0] = 0;
+    add_results[1] = 0;
+    add_results[2] = 1;
+    set_timer_calls = 0;
+    kill_timer_calls = 0;
+    fail_set_timer = 0;
+    fail_first_set_timer = 1;
+    assert(tray_handle_taskbar_created(&tray, tray.uTaskbarCreatedMessage));
+    assert(shell_call_count == 2);
+    assert(shell_calls[0].operation == NIM_ADD);
+    assert(shell_calls[1].operation == NIM_ADD);
+    assert(set_timer_calls == 2);
+    assert(tray.taskbar_restore_timer_id == TIMER_ID_TASKBAR_RESTORE);
+    assert(tray_handle_taskbar_restore_retry(&tray, TIMER_ID_TASKBAR_RESTORE));
+    assert(shell_call_count == 4);
+    assert(shell_calls[2].operation == NIM_ADD);
+    assert(shell_calls[3].operation == NIM_SETVERSION);
+    assert(kill_timer_calls == 1);
+    assert(tray.taskbar_restore_timer_id == 0);
+
     puts("PASS: TaskbarCreated retries failed icon adds until the shell accepts the icon");
     return 0;
 }
