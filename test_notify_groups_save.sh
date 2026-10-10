@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TMPDIR_PATH="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_PATH"' EXIT
 
-"${CC:-cc}" -std=c99 -Wall -Wextra \
+"${CC:-cc}" -std=c99 -Wall -Wextra -pthread \
     -I"$SCRIPT_DIR/tests/win32_stubs" -I"$SCRIPT_DIR/src" \
     "$SCRIPT_DIR/tests/test_notify_groups_save.c" \
     "$SCRIPT_DIR/src/notify_groups.c" \

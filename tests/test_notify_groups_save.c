@@ -1,11 +1,14 @@
 #include <stdbool.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 #include <wchar.h>
+#include <pthread.h>
 
 #include "notify_groups.h"
+#include <sddl.h>
 
 enum {
     REGISTRY_PARENT_HANDLE = 1,
@@ -66,6 +69,23 @@ static int fail_write_group_index;
 static bool rename_api_available;
 static int rename_api_call_count;
 static char fail_write_name[32];
+static bool mutex_held;
+static bool global_mutex_name_requested;
+static int mutex_wait_count;
+static int fallback_copy_count;
+static bool inject_interleaved_load;
+static bool interleaved_load_attempted;
+static bool interleaved_load_waiting;
+static bool interleaved_load_lock_was_busy;
+static bool interleaved_load_thread_entered;
+static bool interleaved_load_finished;
+static bool interleaved_load_thread_started;
+static pthread_t interleaved_load_thread;
+static pthread_t interleaved_load_thread_id;
+static pthread_mutex_t registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t test_state_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t test_state_changed = PTHREAD_COND_INITIALIZER;
+static NotifyGroupManager interleaved_load;
 
 static void make_manager(NotifyGroupManager *manager);
 static void seed_stored_group(int index, const char *name, DWORD event_mask,
@@ -94,6 +114,132 @@ static void reset_registry(void) {
     rename_api_available = false;
     rename_api_call_count = 0;
     fail_write_name[0] = '\0';
+    mutex_held = false;
+    global_mutex_name_requested = false;
+    mutex_wait_count = 0;
+    fallback_copy_count = 0;
+    inject_interleaved_load = false;
+    interleaved_load_attempted = false;
+    interleaved_load_waiting = false;
+    interleaved_load_lock_was_busy = false;
+    interleaved_load_thread_entered = false;
+    interleaved_load_finished = false;
+    interleaved_load_thread_started = false;
+    memset(&interleaved_load, 0, sizeof(interleaved_load));
+}
+
+HANDLE CreateMutexW(void *security, BOOL initial_owner, LPCWSTR name) {
+    (void)security;
+    (void)initial_owner;
+    global_mutex_name_requested = name && wcscmp(name,
+        L"Global\\NoSleep_NotificationGroups_Registry_S-1-5-21-1000") == 0;
+    return (HANDLE)(uintptr_t)1;
+}
+
+HANDLE GetCurrentProcess(void) {
+    return (HANDLE)(uintptr_t)1;
+}
+
+BOOL OpenProcessToken(HANDLE process, DWORD access, HANDLE *token) {
+    (void)process;
+    (void)access;
+    *token = (HANDLE)(uintptr_t)2;
+    return TRUE;
+}
+
+static DWORD mock_last_error;
+
+BOOL GetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS info_class,
+                         LPVOID info, DWORD info_size, DWORD *return_length) {
+    if ((intptr_t)token != 2 || info_class != TokenUser) return FALSE;
+    if (!info || info_size < sizeof(TOKEN_USER)) {
+        if (return_length) *return_length = sizeof(TOKEN_USER);
+        mock_last_error = ERROR_INSUFFICIENT_BUFFER;
+        return FALSE;
+    }
+    ((TOKEN_USER *)info)->User.Sid = (PSID)(uintptr_t)3;
+    ((TOKEN_USER *)info)->User.Attributes = 0;
+    if (return_length) *return_length = sizeof(TOKEN_USER);
+    return TRUE;
+}
+
+DWORD GetLastError(void) {
+    return mock_last_error;
+}
+
+BOOL ConvertSidToStringSidW(PSID sid, LPWSTR *string_sid) {
+    static wchar_t current_user_sid[] = L"S-1-5-21-1000";
+    if ((intptr_t)sid != 3) return FALSE;
+    *string_sid = current_user_sid;
+    return TRUE;
+}
+
+HLOCAL LocalFree(HLOCAL memory) {
+    (void)memory;
+    return NULL;
+}
+
+DWORD WaitForSingleObject(HANDLE object, DWORD milliseconds) {
+    (void)object;
+    (void)milliseconds;
+    pthread_mutex_lock(&test_state_mutex);
+    mutex_wait_count++;
+    bool is_interleaved_load = interleaved_load_thread_entered &&
+        pthread_equal(pthread_self(), interleaved_load_thread_id);
+    pthread_mutex_unlock(&test_state_mutex);
+
+    bool acquired = false;
+    if (is_interleaved_load) {
+        int result = pthread_mutex_trylock(&registry_mutex);
+        if (result == 0) {
+            acquired = true;
+        } else if (result != EBUSY) {
+            return WAIT_FAILED;
+        }
+        pthread_mutex_lock(&test_state_mutex);
+        interleaved_load_lock_was_busy = !acquired;
+        interleaved_load_waiting = true;
+        pthread_cond_broadcast(&test_state_changed);
+        pthread_mutex_unlock(&test_state_mutex);
+    }
+
+    if (!acquired && pthread_mutex_lock(&registry_mutex) != 0) return WAIT_FAILED;
+    pthread_mutex_lock(&test_state_mutex);
+    mutex_held = true;
+    pthread_mutex_unlock(&test_state_mutex);
+    return WAIT_OBJECT_0;
+}
+
+BOOL ReleaseMutex(HANDLE object) {
+    (void)object;
+    pthread_mutex_lock(&test_state_mutex);
+    if (!mutex_held) {
+        pthread_mutex_unlock(&test_state_mutex);
+        return FALSE;
+    }
+    mutex_held = false;
+    pthread_mutex_unlock(&test_state_mutex);
+    return pthread_mutex_unlock(&registry_mutex) == 0 ? TRUE : FALSE;
+}
+
+BOOL CloseHandle(HANDLE object) {
+    (void)object;
+    return TRUE;
+}
+
+static void *run_interleaved_load(void *unused) {
+    (void)unused;
+    pthread_mutex_lock(&test_state_mutex);
+    interleaved_load_thread_id = pthread_self();
+    interleaved_load_thread_entered = true;
+    pthread_cond_broadcast(&test_state_changed);
+    pthread_mutex_unlock(&test_state_mutex);
+    notify_groups_load(&interleaved_load);
+    pthread_mutex_lock(&test_state_mutex);
+    interleaved_load_finished = true;
+    pthread_cond_broadcast(&test_state_changed);
+    pthread_mutex_unlock(&test_state_mutex);
+    return NULL;
 }
 
 static const char *registry_tree_path(int tree) {
@@ -459,6 +605,27 @@ LONG RegCopyTreeW(HKEY source, LPCWSTR subkey, HKEY destination) {
         return ERROR_FILE_NOT_FOUND;
     }
     stored_trees[destination_tree] = stored_trees[source_tree];
+    fallback_copy_count++;
+    if (inject_interleaved_load && fallback_copy_count == 2) {
+        inject_interleaved_load = false;
+        interleaved_load_attempted = true;
+        if (pthread_create(&interleaved_load_thread, NULL,
+                run_interleaved_load, NULL) == 0) {
+            interleaved_load_thread_started = true;
+            pthread_mutex_lock(&test_state_mutex);
+            while (!interleaved_load_thread_entered) {
+                pthread_cond_wait(&test_state_changed, &test_state_mutex);
+            }
+            while (!interleaved_load_waiting && !interleaved_load_finished) {
+                pthread_cond_wait(&test_state_changed, &test_state_mutex);
+            }
+            while (interleaved_load_waiting && !interleaved_load_lock_was_busy &&
+                !interleaved_load_finished) {
+                pthread_cond_wait(&test_state_changed, &test_state_mutex);
+            }
+            pthread_mutex_unlock(&test_state_mutex);
+        }
+    }
     return ERROR_SUCCESS;
 }
 
@@ -590,6 +757,44 @@ static int test_interrupted_copy_rename_restores_complete_backup_before_load(voi
         stored_trees[REGISTRY_TREE_PRIMARY].exists ||
         !stored_trees[REGISTRY_TREE_BACKUP].exists || journal_phase_exists) {
         fprintf(stderr, "FAIL: interrupted fallback rename did not recover its complete backup before load\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_load_during_fallback_rename_cannot_delete_live_destination(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 0;
+    seed_stored_group(0, "Persisted before save", 0x1u, 1);
+
+    NotifyGroupManager updated;
+    make_manager(&updated);
+    strcpy(updated.groups[0].name, "Replacement all");
+    strcpy(updated.groups[1].name, "Replacement work");
+    updated.groups[1].event_mask = 0x2u;
+    inject_interleaved_load = true;
+
+    bool saved = notify_groups_save(&updated);
+    if (interleaved_load_thread_started) {
+        pthread_join(interleaved_load_thread, NULL);
+    }
+    if (!saved || !interleaved_load_attempted || !interleaved_load_thread_started ||
+        !interleaved_load_thread_entered || !interleaved_load_finished ||
+        !interleaved_load_lock_was_busy ||
+        !global_mutex_name_requested ||
+        interleaved_load.load_incomplete ||
+        interleaved_load.count != 2 ||
+        strcmp(interleaved_load.groups[0].name, "Replacement all") != 0 ||
+        strcmp(interleaved_load.groups[1].name, "Replacement work") != 0 ||
+        !stored_root_exists ||
+        !stored_groups[0].exists || strcmp(stored_groups[0].name, "Replacement all") != 0 ||
+        !stored_groups[1].exists || strcmp(stored_groups[1].name, "Replacement work") != 0 ||
+        mutex_wait_count != 2 ||
+        stored_trees[REGISTRY_TREE_STAGING].exists ||
+        stored_trees[REGISTRY_TREE_BACKUP].exists || journal_phase_exists || mutex_held) {
+        fprintf(stderr, "FAIL: a concurrent load disrupted the active fallback rename\n");
         return 1;
     }
     return 0;
@@ -1002,6 +1207,7 @@ int main(void) {
     failures += test_legacy_rename_fallback_replaces_existing_tree();
     failures += test_dynamic_rename_api_is_used_when_available();
     failures += test_interrupted_copy_rename_restores_complete_backup_before_load();
+    failures += test_load_during_fallback_rename_cannot_delete_live_destination();
     failures += test_load_without_write_access_when_no_rename_journal();
     failures += test_load_skips_missing_group_slots_and_preserves_persistence();
     failures += test_load_skips_whitespace_only_group_and_maps_active_selection();

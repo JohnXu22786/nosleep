@@ -5,6 +5,7 @@
 // Notification groups implementation for nosleep
 #include "notify_groups.h"
 #include <ctype.h>
+#include <sddl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +48,69 @@ static const unsigned int DEFAULT_MASK_NONE = 0;
 
 #define NOTIFY_GROUPS_RENAME_PHASE_COPYING 1
 #define NOTIFY_GROUPS_RENAME_PHASE_DELETE_SOURCE 2
+
+static bool notify_groups_get_current_user_sid(LPWSTR* sid_string) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+
+    DWORD token_user_size = 0;
+    if (GetTokenInformation(token, TokenUser, NULL, 0, &token_user_size) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER || token_user_size < sizeof(TOKEN_USER)) {
+        CloseHandle(token);
+        return false;
+    }
+
+    TOKEN_USER* token_user = (TOKEN_USER*)malloc(token_user_size);
+    if (!token_user) {
+        CloseHandle(token);
+        return false;
+    }
+    bool read_token_user = GetTokenInformation(token, TokenUser,
+        token_user, token_user_size, &token_user_size) != FALSE;
+    CloseHandle(token);
+    if (!read_token_user) {
+        free(token_user);
+        return false;
+    }
+
+    bool converted = ConvertSidToStringSidW(token_user->User.Sid, sid_string) != FALSE;
+    free(token_user);
+    return converted;
+}
+
+static HANDLE notify_groups_acquire_registry_mutex(void) {
+    const wchar_t mutex_name_prefix[] = L"Global\\NoSleep_NotificationGroups_Registry_";
+    wchar_t mutex_name[256];
+    LPWSTR user_sid = NULL;
+    if (!notify_groups_get_current_user_sid(&user_sid)) return NULL;
+
+    size_t prefix_length = wcslen(mutex_name_prefix);
+    size_t sid_length = wcslen(user_sid);
+    if (prefix_length + sid_length + 1 > sizeof(mutex_name) / sizeof(mutex_name[0])) {
+        LocalFree(user_sid);
+        return NULL;
+    }
+    memcpy(mutex_name, mutex_name_prefix, prefix_length * sizeof(wchar_t));
+    memcpy(mutex_name + prefix_length, user_sid, (sid_length + 1) * sizeof(wchar_t));
+    LocalFree(user_sid);
+
+    HANDLE mutex = CreateMutexW(NULL, FALSE,
+        mutex_name);
+    if (!mutex) return NULL;
+
+    DWORD wait_result = WaitForSingleObject(mutex, INFINITE);
+    if (wait_result != WAIT_OBJECT_0 && wait_result != WAIT_ABANDONED) {
+        CloseHandle(mutex);
+        return NULL;
+    }
+    return mutex;
+}
+
+static void notify_groups_release_registry_mutex(HANDLE mutex) {
+    if (!mutex) return;
+    ReleaseMutex(mutex);
+    CloseHandle(mutex);
+}
 
 static bool notify_groups_delete_registry_tree(const char* root_key) {
     char subkey[512];
@@ -423,7 +487,7 @@ bool notify_groups_restore_default(NotifyGroupManager* mgr, int index, int prese
     return notify_groups_update(mgr, index, preset->name, preset->event_mask);
 }
 
-bool notify_groups_save(NotifyGroupManager* mgr) {
+static bool notify_groups_save_locked(NotifyGroupManager* mgr) {
     if (!mgr || mgr->load_incomplete) return false;
     
     DWORD parent_access = KEY_READ | KEY_WRITE;
@@ -554,6 +618,16 @@ bool notify_groups_save(NotifyGroupManager* mgr) {
     return true;
 }
 
+bool notify_groups_save(NotifyGroupManager* mgr) {
+    if (!mgr || mgr->load_incomplete) return false;
+
+    HANDLE mutex = notify_groups_acquire_registry_mutex();
+    if (!mutex) return false;
+    bool saved = notify_groups_save_locked(mgr);
+    notify_groups_release_registry_mutex(mutex);
+    return saved;
+}
+
 // Missing values and oversized payloads use the existing corrupt-data fallback.
 // Other query failures leave persisted data unread and must block replacement.
 static bool notify_groups_value_read_failed(LONG result) {
@@ -561,7 +635,7 @@ static bool notify_groups_value_read_failed(LONG result) {
         result != ERROR_MORE_DATA;
 }
 
-void notify_groups_load(NotifyGroupManager* mgr) {
+static void notify_groups_load_locked(NotifyGroupManager* mgr) {
     if (!mgr) return;
     mgr->load_incomplete = false;
 
@@ -656,6 +730,18 @@ void notify_groups_load(NotifyGroupManager* mgr) {
     if (!active_index_mapped || mgr->active_index < 0 || mgr->active_index >= mgr->count) {
         mgr->active_index = 0;
     }
+}
+
+void notify_groups_load(NotifyGroupManager* mgr) {
+    if (!mgr) return;
+
+    HANDLE mutex = notify_groups_acquire_registry_mutex();
+    if (!mutex) {
+        mgr->load_incomplete = true;
+        return;
+    }
+    notify_groups_load_locked(mgr);
+    notify_groups_release_registry_mutex(mutex);
 }
 
 int notify_groups_migrate_old_settings(NotifyGroupManager* mgr, int old_notification_mode) {

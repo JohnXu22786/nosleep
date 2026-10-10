@@ -4,6 +4,7 @@
 #include <wchar.h>
 
 #include "notify_groups.h"
+#include <sddl.h>
 
 enum {
     REGISTRY_ROOT_HANDLE = 1,
@@ -40,6 +41,8 @@ static StoredGroup stored_groups[REGISTRY_GROUP_LIMIT];
 static int inaccessible_group_index;
 static int saved_active_index;
 static int active_index_writes;
+static bool registry_mutex_held;
+static DWORD mock_last_error;
 
 static void reset_registry(void) {
     stored_groups_available = false;
@@ -51,6 +54,76 @@ static void reset_registry(void) {
     inaccessible_group_index = -1;
     saved_active_index = -1;
     active_index_writes = 0;
+    registry_mutex_held = false;
+    mock_last_error = 0;
+}
+
+HANDLE GetCurrentProcess(void) {
+    return (HANDLE)(uintptr_t)1;
+}
+
+BOOL OpenProcessToken(HANDLE process, DWORD access, HANDLE *token) {
+    (void)process;
+    (void)access;
+    *token = (HANDLE)(uintptr_t)2;
+    return TRUE;
+}
+
+BOOL GetTokenInformation(HANDLE token, TOKEN_INFORMATION_CLASS info_class,
+                         LPVOID info, DWORD info_size, DWORD *return_length) {
+    if ((intptr_t)token != 2 || info_class != TokenUser) return FALSE;
+    if (!info || info_size < sizeof(TOKEN_USER)) {
+        if (return_length) *return_length = sizeof(TOKEN_USER);
+        mock_last_error = ERROR_INSUFFICIENT_BUFFER;
+        return FALSE;
+    }
+    ((TOKEN_USER *)info)->User.Sid = (PSID)(uintptr_t)3;
+    ((TOKEN_USER *)info)->User.Attributes = 0;
+    if (return_length) *return_length = sizeof(TOKEN_USER);
+    return TRUE;
+}
+
+DWORD GetLastError(void) {
+    return mock_last_error;
+}
+
+BOOL ConvertSidToStringSidW(PSID sid, LPWSTR *string_sid) {
+    static wchar_t current_user_sid[] = L"S-1-5-21-1000";
+    if ((intptr_t)sid != 3) return FALSE;
+    *string_sid = current_user_sid;
+    return TRUE;
+}
+
+HLOCAL LocalFree(HLOCAL memory) {
+    (void)memory;
+    return NULL;
+}
+
+HANDLE CreateMutexW(void *security, BOOL initial_owner, LPCWSTR name) {
+    (void)security;
+    (void)initial_owner;
+    (void)name;
+    return (HANDLE)(uintptr_t)4;
+}
+
+DWORD WaitForSingleObject(HANDLE object, DWORD milliseconds) {
+    (void)object;
+    (void)milliseconds;
+    if (registry_mutex_held) return WAIT_TIMEOUT;
+    registry_mutex_held = true;
+    return WAIT_OBJECT_0;
+}
+
+BOOL ReleaseMutex(HANDLE object) {
+    (void)object;
+    if (!registry_mutex_held) return FALSE;
+    registry_mutex_held = false;
+    return TRUE;
+}
+
+BOOL CloseHandle(HANDLE object) {
+    (void)object;
+    return TRUE;
 }
 
 static void set_stored_group(int index, const char *name,
