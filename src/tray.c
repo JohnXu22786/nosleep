@@ -3369,9 +3369,6 @@ bool tray_save_settings(NoSleepTray* tray) {
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
         0, NULL, REG_OPTION_NON_VOLATILE, KEY_WRITE, NULL, &hKey, NULL);
     if (result != ERROR_SUCCESS) {
-        // Notification groups use their own key, so attempt their save even
-        // when the general settings key is unavailable.
-        notify_groups_save(&tray->notify_groups);
         return false;
     }
 
@@ -3421,11 +3418,6 @@ bool tray_save_settings(NoSleepTray* tray) {
     }
 
     RegCloseKey(hKey);
-
-    // Save notification groups separately
-    if (!notify_groups_save(&tray->notify_groups)) {
-        success = false;
-    }
     return success;
 }
 
