@@ -5143,21 +5143,25 @@ typedef struct TrayNotifyIconIdentifier {
 typedef HRESULT (WINAPI *ShellNotifyIconGetRectFn)(
     const TrayNotifyIconIdentifier* identifier, RECT* icon_rect);
 
-static HMONITOR tray_get_icon_monitor(HWND hwnd_owner, UINT icon_id) {
-    if (!hwnd_owner || !icon_id) return NULL;
+static BOOL tray_get_icon_rect(HWND hwnd_owner, UINT icon_id, RECT* icon_rect) {
+    if (!hwnd_owner || !icon_id || !icon_rect) return FALSE;
 
     HMODULE shell32 = GetModuleHandle("shell32.dll");
     ShellNotifyIconGetRectFn get_icon_rect = shell32
         ? (ShellNotifyIconGetRectFn)GetProcAddress(shell32, "Shell_NotifyIconGetRect")
         : NULL;
-    if (!get_icon_rect) return NULL;
+    if (!get_icon_rect) return FALSE;
 
     TrayNotifyIconIdentifier identifier = {0};
     identifier.cbSize = sizeof(identifier);
     identifier.hWnd = hwnd_owner;
     identifier.uID = icon_id;
+    return !FAILED(get_icon_rect(&identifier, icon_rect));
+}
+
+static HMONITOR tray_get_icon_monitor(HWND hwnd_owner, UINT icon_id) {
     RECT icon_rect;
-    if (FAILED(get_icon_rect(&identifier, &icon_rect))) return NULL;
+    if (!tray_get_icon_rect(hwnd_owner, icon_id, &icon_rect)) return NULL;
 
     return MonitorFromRect(&icon_rect, MONITOR_DEFAULTTONEAREST);
 }
@@ -5578,6 +5582,63 @@ static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interv
     }
 }
 
+static void tray_show_context_menu(NoSleepTray* tray, HWND hwnd,
+                                   BOOL keyboard_invoked) {
+    if (!tray || !tray->hmenu) return;
+
+    tray->menu_invoked_by_keyboard = keyboard_invoked;
+    POINT pt;
+    if (keyboard_invoked) {
+        RECT icon_rect;
+        if (tray_get_icon_rect(tray->hwnd, tray->nid.uID, &icon_rect)) {
+            pt.x = icon_rect.left;
+            pt.y = icon_rect.bottom;
+        } else {
+            HMONITOR monitor = MonitorFromWindow(
+                tray->hwnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO monitor_info = {0};
+            monitor_info.cbSize = sizeof(monitor_info);
+            if (monitor && GetMonitorInfo(monitor, &monitor_info)) {
+                pt.x = monitor_info.rcWork.right - 1;
+                pt.y = monitor_info.rcWork.bottom - 1;
+            } else {
+                RECT window_rect;
+                if (GetWindowRect(tray->hwnd, &window_rect)) {
+                    pt.x = window_rect.left;
+                    pt.y = window_rect.top;
+                } else {
+                    pt.x = 0;
+                    pt.y = 0;
+                }
+            }
+        }
+    } else {
+        GetCursorPos(&pt);
+    }
+
+    SetForegroundWindow(hwnd); // Required for menu to disappear properly
+    if (tray_has_stop_work(tray)) {
+        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
+    } else {
+        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
+    }
+    TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+    PostMessage(hwnd, WM_NULL, 0, 0); // Send dummy message to make menu disappear
+}
+
+static void tray_show_tray_icon_context_menu(NoSleepTray* tray, HWND hwnd,
+                                             LPARAM tray_event) {
+    tray_show_context_menu(tray, hwnd, tray_event == NIN_KEYSELECT);
+}
+
+static void tray_show_window_context_menu(NoSleepTray* tray, HWND hwnd,
+                                          LPARAM coordinates) {
+    if (!tray || !tray->hmenu) return;
+    BOOL keyboard_invoked =
+        LOWORD(coordinates) == (WORD)-1 && HIWORD(coordinates) == (WORD)-1;
+    tray_show_context_menu(tray, hwnd, keyboard_invoked);
+}
+
 
 
 LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -5624,18 +5685,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         if (lParam == WM_RBUTTONUP || lParam == NIN_KEYSELECT) {
             // Show context menu
             DEBUG_LOG("tray_window_proc: Right-click detected, showing menu");
-            tray->menu_invoked_by_keyboard = lParam == NIN_KEYSELECT;
-            POINT pt;
-            GetCursorPos(&pt);
-            SetForegroundWindow(hwnd); // Required for menu to disappear properly
-            // Enable/disable Stop menu item based on running state
-            if (tray_has_stop_work(tray)) {
-                EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
-            } else {
-                EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
-            }
-            TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
-            PostMessage(hwnd, WM_NULL, 0, 0); // Send dummy message to make menu disappear
+            tray_show_tray_icon_context_menu(tray, hwnd, lParam);
         }
         return 0;
     }
@@ -5807,21 +5857,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
         case WM_CONTEXTMENU:
             {
                 DEBUG_LOG("tray_window_proc: WM_CONTEXTMENU received");
-                if (tray && tray->hmenu) {
-                    tray->menu_invoked_by_keyboard =
-                        LOWORD(lParam) == (WORD)-1 && HIWORD(lParam) == (WORD)-1;
-                    POINT pt;
-                    GetCursorPos(&pt);
-                    SetForegroundWindow(hwnd);
-                    // Enable/disable Stop menu item based on running state
-                    if (tray_has_stop_work(tray)) {
-                        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_ENABLED);
-                    } else {
-                        EnableMenuItem(tray->hmenu, IDM_STOP, MF_BYCOMMAND | MF_GRAYED);
-                    }
-                    TrackPopupMenu(tray->hmenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
-                    PostMessage(hwnd, WM_NULL, 0, 0);
-                }
+                tray_show_window_context_menu(tray, hwnd, lParam);
             }
             break;
 

@@ -34,6 +34,7 @@ def extract_function(signature):
     raise AssertionError(f"unterminated function: {signature}")
 
 
+icon_rect_helper = extract_function("static BOOL tray_get_icon_rect(")
 icon_helper = extract_function("static HMONITOR tray_get_icon_monitor(")
 helper = extract_function("static void center_about_dialog_on_invoking_monitor(")
 
@@ -200,6 +201,8 @@ static BOOL SetWindowPos(HWND hwnd, HWND insert_after, int x, int y,
     return TRUE;
 }
 
+__ICON_RECT_HELPER__
+
 __ICON_HELPER__
 
 __HELPER__
@@ -295,7 +298,9 @@ int main(void) {
 
     return failed;
 }
-""".replace("__ICON_HELPER__", icon_helper).replace("__HELPER__", helper)
+""".replace("__ICON_RECT_HELPER__", icon_rect_helper).replace(
+    "__ICON_HELPER__", icon_helper
+).replace("__HELPER__", helper)
 
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "tray_about_dialog_monitor.c"
