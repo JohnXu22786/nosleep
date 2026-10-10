@@ -102,7 +102,19 @@ typedef unsigned int UINT;
 typedef unsigned int DWORD;
 typedef int LONG;
 typedef uintptr_t UINT_PTR;
+typedef unsigned long long ULONGLONG;
 typedef unsigned char* LPBYTE;
+typedef struct {
+    DWORD dwLowDateTime;
+    DWORD dwHighDateTime;
+} FILETIME;
+typedef union {
+    struct {
+        DWORD LowPart;
+        DWORD HighPart;
+    };
+    ULONGLONG QuadPart;
+} ULARGE_INTEGER;
 typedef enum {
     SESSION_FINISHED_NONE = 0,
     SESSION_FINISHED_SHUTDOWN,
@@ -126,6 +138,7 @@ typedef struct {
 
 #define HKEY_CURRENT_USER ((HKEY)(uintptr_t)1)
 #define REG_DWORD 4
+#define REG_QWORD 11
 #define ERROR_SUCCESS 0
 #define ERROR_FILE_NOT_FOUND 2
 #define REG_OPTION_NON_VOLATILE 0
@@ -148,6 +161,19 @@ static NotifyEventId last_notification_event;
 static char last_notification_title[128];
 static char last_notification_message[256];
 static DWORD stored_auto_check_interval = 3;
+static ULONGLONG stored_last_update_check;
+static ULONGLONG fake_now_100ns;
+static bool has_last_update_check;
+
+static LONG RegOpenKeyEx(HKEY root, const char* subkey, DWORD options,
+                         DWORD access, HKEY* result) {
+    (void)root;
+    (void)subkey;
+    (void)options;
+    (void)access;
+    *result = (HKEY)(uintptr_t)1;
+    return ERROR_SUCCESS;
+}
 
 static LONG RegCreateKeyEx(HKEY root, const char* subkey, DWORD reserved,
                            char* class_name, DWORD options, DWORD access,
@@ -168,12 +194,26 @@ static LONG RegQueryValueEx(HKEY key, const char* name, void* reserved,
                             DWORD* type, LPBYTE data, DWORD* size) {
     (void)key;
     (void)reserved;
-    if (strcmp(name, "auto_check_interval") != 0) return ERROR_FILE_NOT_FOUND;
-    if (*size < sizeof(stored_auto_check_interval)) return 234;
-    *type = REG_DWORD;
-    memcpy(data, &stored_auto_check_interval, sizeof(stored_auto_check_interval));
-    *size = sizeof(stored_auto_check_interval);
-    return ERROR_SUCCESS;
+    if (strcmp(name, "auto_check_interval") == 0) {
+        if (*size < sizeof(stored_auto_check_interval)) return 234;
+        if (type) *type = REG_DWORD;
+        memcpy(data, &stored_auto_check_interval, sizeof(stored_auto_check_interval));
+        *size = sizeof(stored_auto_check_interval);
+        return ERROR_SUCCESS;
+    }
+    if (strcmp(name, "last_update_check") == 0 && has_last_update_check) {
+        if (*size < sizeof(stored_last_update_check)) return 234;
+        if (type) *type = REG_QWORD;
+        memcpy(data, &stored_last_update_check, sizeof(stored_last_update_check));
+        *size = sizeof(stored_last_update_check);
+        return ERROR_SUCCESS;
+    }
+    return ERROR_FILE_NOT_FOUND;
+}
+
+static void GetSystemTimeAsFileTime(FILETIME* file_time) {
+    file_time->dwLowDateTime = (DWORD)fake_now_100ns;
+    file_time->dwHighDateTime = (DWORD)(fake_now_100ns >> 32);
 }
 
 static LONG RegCloseKey(HKEY key) {
@@ -210,10 +250,11 @@ static UINT_PTR SetTimer(HWND hwnd, UINT_PTR timer_id, UINT interval_ms, void* c
     return timer_id ? timer_id : 2000;
 }
 
-static void tray_setup_update_timer(NoSleepTray* tray);
+static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interval);
 
 __NORMALIZE_INTERVAL__
 __READ_SETTING__
+__SHOULD_CHECK__
 __LOAD_SETTINGS__
 __APPLY_INTERVAL__
 __SETUP_TIMER__
@@ -234,7 +275,7 @@ int main(void) {
     if (loaded_tray.auto_check_interval != 1) {
         return fail("an invalid stored update interval must be normalized to Daily");
     }
-    tray_setup_update_timer(&loaded_tray);
+    tray_setup_update_timer(&loaded_tray, true);
     if (loaded_tray.update_timer_id == 0 || set_count != 1 ||
         last_interval_ms != 86400000U) {
         return fail("an invalid stored interval must schedule the normalized daily timer");
@@ -257,7 +298,7 @@ int main(void) {
     tray_update_check_end();
 
     fail_next_set = 1;
-    tray_setup_update_timer(&startup_tray);
+    tray_setup_update_timer(&startup_tray, true);
     if (startup_tray.auto_check_interval != 1 || startup_tray.update_timer_id != 0 ||
         set_count != 1 || kill_count != 0 || last_interval_ms != 86400000U ||
         notification_count != 1 ||
@@ -313,6 +354,47 @@ int main(void) {
         return fail("an invalid combo selection must leave the timer unchanged");
     }
 
+    const ULONGLONG ticks_per_millisecond = 10000ULL;
+    const ULONGLONG daily_ticks = 24ULL * 60ULL * 60ULL * 10000000ULL;
+    const ULONGLONG weekly_ticks = 7ULL * daily_ticks;
+    fake_now_100ns = 20ULL * daily_ticks;
+    stored_auto_check_interval = 1;
+    has_last_update_check = true;
+    stored_last_update_check = fake_now_100ns - daily_ticks + 100ULL * ticks_per_millisecond;
+    if (should_check_for_updates()) {
+        return fail("a daily startup check must wait until its saved interval is due");
+    }
+    NoSleepTray daily_tray = { .hwnd = (HWND)1, .auto_check_interval = 1 };
+    set_count = 0;
+    tray_setup_update_timer(&daily_tray, true);
+    if (last_interval_ms != 100 || set_count != 1) {
+        return fail("a daily timer must wait only the time remaining since its last check");
+    }
+    tray_setup_update_timer(&daily_tray, false);
+    if (last_interval_ms != 86400000U) {
+        return fail("a daily timer must return to its full interval after the first partial period");
+    }
+
+    stored_auto_check_interval = 2;
+    stored_last_update_check = fake_now_100ns - weekly_ticks + 250ULL * ticks_per_millisecond;
+    NoSleepTray weekly_tray = { .hwnd = (HWND)1, .auto_check_interval = 2 };
+    set_count = 0;
+    tray_setup_update_timer(&weekly_tray, true);
+    if (last_interval_ms != 250 || set_count != 1) {
+        return fail("a weekly timer must wait only the time remaining since its last check");
+    }
+
+    stored_auto_check_interval = 1;
+    stored_last_update_check = fake_now_100ns + 60ULL * 60ULL * 10000000ULL;
+    if (!should_check_for_updates()) {
+        return fail("a future saved timestamp after clock rollback must allow a startup check");
+    }
+    NoSleepTray rollback_tray = { .hwnd = (HWND)1, .auto_check_interval = 1 };
+    tray_setup_update_timer(&rollback_tray, true);
+    if (last_interval_ms != 86400000U) {
+        return fail("a clock rollback must keep the next periodic timer from firing repeatedly");
+    }
+
     puts("PASS: update checks are non-reentrant and interval changes reconfigure the timer");
     return 0;
 }
@@ -320,6 +402,8 @@ int main(void) {
 
 harness = harness.replace("__NORMALIZE_INTERVAL__", normalize_interval).replace(
     "__READ_SETTING__", read_setting
+).replace(
+    "__SHOULD_CHECK__", startup_check
 ).replace(
     "__LOAD_SETTINGS__", load_settings
 ).replace("__APPLY_INTERVAL__", apply_interval).replace(

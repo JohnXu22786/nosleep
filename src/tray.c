@@ -131,7 +131,7 @@ static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction act
 static bool is_startup_enabled(void);
 static bool set_startup_registry(bool enable);
 static bool should_check_for_updates(void);
-static void tray_setup_update_timer(NoSleepTray* tray);
+static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interval);
 static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval);
 static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static bool add_app_to_path(void);
@@ -519,7 +519,7 @@ bool tray_init(NoSleepTray* tray) {
     }
 
     // Set up periodic update check timer
-    tray_setup_update_timer(tray);
+    tray_setup_update_timer(tray, true);
 
     return true;
 }
@@ -3490,8 +3490,8 @@ static bool should_check_for_updates(void) {
     uli_now.HighPart = ft_now.dwHighDateTime;
     ULONGLONG now = uli_now.QuadPart;
 
-    // A clock rollback must not wrap the unsigned elapsed time.
-    if (last_check > now) return false;
+    // A future timestamp indicates a clock rollback, so treat the check as due.
+    if (last_check > now) return true;
 
     ULONGLONG interval_100ns;
     if (interval == 1) {
@@ -5493,10 +5493,10 @@ static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
         (interval == 0 || tray->update_timer_id != 0)) return;
 
     tray->auto_check_interval = interval;
-    tray_setup_update_timer(tray);
+    tray_setup_update_timer(tray, true);
 }
 
-static void tray_setup_update_timer(NoSleepTray* tray) {
+static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interval) {
     if (!tray || !tray->hwnd) return;
 
     if (tray->update_timer_id) {
@@ -5513,6 +5513,37 @@ static void tray_setup_update_timer(NoSleepTray* tray) {
         interval_ms = 7 * 24 * 60 * 60 * 1000;
     } else {
         return;
+    }
+
+    if (use_remaining_interval) {
+        HKEY hKey;
+        LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, SETTINGS_REG_KEY,
+            0, KEY_READ, &hKey);
+        if (result == ERROR_SUCCESS) {
+            ULONGLONG last_check = 0;
+            DWORD qsize = sizeof(last_check);
+            result = RegQueryValueEx(hKey, "last_update_check", NULL, NULL,
+                                    (LPBYTE)&last_check, &qsize);
+            RegCloseKey(hKey);
+            if (result == ERROR_SUCCESS) {
+                FILETIME ft_now;
+                GetSystemTimeAsFileTime(&ft_now);
+                ULARGE_INTEGER uli_now;
+                uli_now.LowPart = ft_now.dwLowDateTime;
+                uli_now.HighPart = ft_now.dwHighDateTime;
+                ULONGLONG now = uli_now.QuadPart;
+
+                if (last_check <= now) {
+                    ULONGLONG elapsed = now - last_check;
+                    ULONGLONG interval_100ns = (ULONGLONG)interval_ms * 10000ULL;
+                    if (elapsed < interval_100ns) {
+                        ULONGLONG remaining = interval_100ns - elapsed;
+                        interval_ms = (UINT)((remaining + 9999ULL) / 10000ULL);
+                        if (interval_ms == 0) interval_ms = 1;
+                    }
+                }
+            }
+        }
     }
 
     tray->update_timer_id = SetTimer(tray->hwnd, 1002, interval_ms, NULL);
@@ -5695,6 +5726,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 // Periodic update check timer
                 if (tray) {
                     tray_check_for_updates(tray, true);
+                    tray_setup_update_timer(tray, false);
                 }
             }
             break;
