@@ -229,6 +229,8 @@ announcement_harness = r'''#include <stdbool.h>
 #include "tray_countdown_tooltip.h"
 
 typedef unsigned long long ULONGLONG;
+typedef unsigned long DWORD;
+typedef void *HANDLE;
 typedef struct { int unused; } SRWLOCK;
 typedef struct { int unused; } CONDITION_VARIABLE;
 typedef enum { NOTIFY_EVENT_TIMER_EXPIRED = 1 } NotifyEventId;
@@ -239,19 +241,29 @@ typedef struct NoSleepTray {
     bool starting_nosleep;
     bool stopping;
     bool delayed_countdown_starting;
+    HANDLE sleep_stop_event;
+    HANDLE shutdown_stop_event;
     ULONGLONG start_tick64;
 } NoSleepTray;
 
+#define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 258
 #define ATOMIC_LOAD_BOOL(value) (*(value))
 #define DEBUG_LOG(...) ((void)0)
 static int notification_count;
 static NotifyEventId notification_event;
 static char notification_title[128];
 static char notification_message[512];
+static HANDLE signaled_stop_event;
 
 void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 void WakeAllConditionVariable(CONDITION_VARIABLE *condition) { (void)condition; }
+DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
+    (void)milliseconds;
+    return signaled_stop_event && handle == signaled_stop_event
+        ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
+}
 ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
     (void)start_tick64;
     return 0;
@@ -271,6 +283,11 @@ void tray_show_notification(NoSleepTray *tray, NotifyEventId event,
 
 static int expect_notice(SessionFinishedAction action, const char *expected) {
     NoSleepTray tray = {0};
+    static int sleep_event;
+    static int shutdown_event;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    signaled_stop_event = NULL;
     notification_count = 0;
     tray_announce_delayed_action(&tray, action);
     if (notification_count != 1 || notification_event != NOTIFY_EVENT_TIMER_EXPIRED ||
@@ -278,6 +295,33 @@ static int expect_notice(SessionFinishedAction action, const char *expected) {
         strcmp(notification_message, expected) != 0) {
         fprintf(stderr, "FAIL: action %d produced '%s': '%s' (%d notices)\n",
                 action, notification_title, notification_message, notification_count);
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_suspended_event_suppresses_notice(SessionFinishedAction action,
+                                                     bool sleep_event_signaled) {
+    NoSleepTray tray = {0};
+    static int sleep_event;
+    static int shutdown_event;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    signaled_stop_event = sleep_event_signaled
+        ? tray.sleep_stop_event : tray.shutdown_stop_event;
+    notification_count = 0;
+    notification_title[0] = '\0';
+    notification_message[0] = '\0';
+
+    tray_announce_delayed_action(&tray, action);
+
+    if (notification_count != 0) {
+        fprintf(stderr, "FAIL: signaled suspend stop event published '%s: %s'\n",
+                notification_title, notification_message);
+        return 1;
+    }
+    if (tray.delayed_countdown_starting) {
+        fprintf(stderr, "FAIL: canceled action reserved countdown startup\n");
         return 1;
     }
     return 0;
@@ -301,6 +345,12 @@ int main(void) {
         "Sleep prevention stopped\nDuration: 0m 0s\n"
         "System will sleep in 60 seconds...\n"
         "Use Cancel sleep in the tray menu.");
+    failures += expect_suspended_event_suppresses_notice(
+        SESSION_FINISHED_SLEEP, true);
+    failures += expect_suspended_event_suppresses_notice(
+        SESSION_FINISHED_SHUTDOWN, false);
+    failures += expect_suspended_event_suppresses_notice(
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL, false);
     if (failures) return 1;
     puts("PASS: delayed action notices distinguish shutdown modes and preserve sleep wording");
     return 0;
@@ -481,6 +531,7 @@ race_harness = r'''#define _POSIX_C_SOURCE 200809L
 typedef unsigned long DWORD;
 typedef unsigned long ULONG;
 typedef unsigned long long ULONGLONG;
+typedef void *HANDLE;
 typedef pthread_mutex_t SRWLOCK;
 typedef pthread_cond_t CONDITION_VARIABLE;
 typedef struct NoSleepTray {
@@ -490,11 +541,15 @@ typedef struct NoSleepTray {
     bool starting_nosleep;
     bool stopping;
     bool delayed_countdown_starting;
+    HANDLE sleep_stop_event;
+    HANDLE shutdown_stop_event;
     ULONGLONG start_tick64;
 } NoSleepTray;
 
 enum { NOTIFY_EVENT_TIMER_EXPIRED = 1 };
 #define INFINITE 0xffffffffUL
+#define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 258
 #define ATOMIC_LOAD_BOOL(value) (*(value))
 #define DEBUG_LOG(...) ((void)0)
 
@@ -524,6 +579,11 @@ bool SleepConditionVariableSRW(CONDITION_VARIABLE *condition, SRWLOCK *lock,
     pthread_cond_broadcast(&test_condition);
     pthread_mutex_unlock(&test_lock);
     return pthread_cond_wait(condition, lock) == 0;
+}
+DWORD WaitForSingleObject(HANDLE handle, DWORD milliseconds) {
+    (void)handle;
+    (void)milliseconds;
+    return WAIT_TIMEOUT;
 }
 void WakeAllConditionVariable(CONDITION_VARIABLE *condition) {
     pthread_cond_broadcast(condition);
