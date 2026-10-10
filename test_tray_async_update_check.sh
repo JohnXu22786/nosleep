@@ -80,6 +80,7 @@ functions = "\n\n".join(
     for name in (
         "tray_update_check_begin",
         "tray_update_check_end",
+        "tray_update_check_shutdown_requested",
         "tray_set_manual_update_status",
         "tray_update_check_worker",
         "tray_prompt_available_update",
@@ -118,6 +119,8 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define MB_ICONERROR 0x00000010
 #define MB_TOPMOST 0x00040000
 #define MEMORY_BARRIER() ((void)0)
+#define ATOMIC_STORE_BOOL(destination, value) \
+    __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
 #define DEBUG_LOG(...) ((void)0)
 #define NOTIFY_EVENT_UPDATE_CHECK_FAILED 1
 #define NOTIFY_EVENT_UPDATE_CHECK_COMPLETED 2
@@ -127,6 +130,14 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define MF_BYCOMMAND 0x0000
 #define MF_GRAYED 0x0001
 #define MF_ENABLED 0x0000
+
+static char InterlockedCompareExchange8(volatile char *destination,
+                                        char exchange, char comparand) {
+    char previous = comparand;
+    __atomic_compare_exchange_n(destination, &previous, exchange, false,
+                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    return previous;
+}
 
 typedef struct {
     char latest_version[64];
@@ -148,6 +159,9 @@ struct NoSleepTray {
 static DWORD current_thread_id = 1;
 static ThreadStart pending_worker;
 static void *pending_worker_parameter;
+static TrayUpdateCheckTask *shutdown_task_after_sleep;
+static int shutdown_after_sleep_count;
+static int retry_sleep_count;
 static int create_thread_count;
 static bool fail_create_thread;
 static int fail_post_message_count;
@@ -247,7 +261,14 @@ static BOOL PostMessage(HWND hwnd, UINT message, uintptr_t wparam, LPARAM lparam
 }
 
 static BOOL IsWindow(HWND hwnd) { return hwnd && window_exists; }
-static void Sleep(DWORD milliseconds) { (void)milliseconds; }
+static void Sleep(DWORD milliseconds) {
+    (void)milliseconds;
+    ++retry_sleep_count;
+    if (shutdown_task_after_sleep &&
+        retry_sleep_count == shutdown_after_sleep_count) {
+        ATOMIC_STORE_BOOL(&shutdown_task_after_sleep->shutdown_requested, true);
+    }
+}
 
 static DWORD GetCurrentThreadId(void) { return current_thread_id; }
 
@@ -420,6 +441,46 @@ int main(void) {
         strcmp(last_status_text, "Latest version: v1.0.0") != 0 ||
         status_update_count != 1) {
         return fail("silent failures must save the check time without notifying the user");
+    }
+
+    fail_post_message_count = 1000;
+    window_exists = true;
+    int posts_before_persistent_shutdown = post_count;
+    tray_check_for_updates(&tray, true);
+    if (!tray.update_check_task) return fail("a running check must be retained for shutdown cleanup");
+    int waits_before_persistent_shutdown = wait_count;
+    int cancels_before_persistent_shutdown = cancel_count;
+    int notifications_before_persistent_shutdown = notification_count;
+    if (!tray_wait_for_update_check(&tray) || tray.update_check_task ||
+        wait_count != waits_before_persistent_shutdown + 1 ||
+        cancel_count != cancels_before_persistent_shutdown + 1 ||
+        post_count != posts_before_persistent_shutdown ||
+        notification_count != notifications_before_persistent_shutdown ||
+        update_check_in_progress) {
+        return fail("shutdown must stop result-post retries before joining and releasing the task");
+    }
+
+    fail_post_message_count = 1000;
+    int posts_before_inflight_shutdown = post_count;
+    tray_check_for_updates(&tray, true);
+    TrayUpdateCheckTask *retrying_task = tray.update_check_task;
+    shutdown_task_after_sleep = retrying_task;
+    shutdown_after_sleep_count = 3;
+    retry_sleep_count = 0;
+    run_pending_worker();
+    shutdown_task_after_sleep = NULL;
+    if (post_count != posts_before_inflight_shutdown + 3 ||
+        tray.update_check_task != retrying_task) {
+        return fail("the worker must stop persistent retries when shutdown begins during delivery");
+    }
+    fail_post_message_count = 0;
+    int waits_before_inflight_shutdown = wait_count;
+    int notifications_before_inflight_shutdown = notification_count;
+    if (!tray_wait_for_update_check(&tray) || tray.update_check_task ||
+        wait_count != waits_before_inflight_shutdown + 1 ||
+        notification_count != notifications_before_inflight_shutdown ||
+        update_check_in_progress) {
+        return fail("shutdown must join and release a worker after an in-flight retry stops");
     }
 
     updater_check_result = true;
@@ -598,7 +659,7 @@ int main(void) {
     if (!tray_wait_for_update_check(&tray) || tray.update_check_task ||
         wait_count != waits_before_shutdown + 1 || close_count != closes_before_shutdown + 1 ||
         cancel_count != cancels_before_shutdown + 1 ||
-        post_count != posts_before_shutdown + 1 ||
+        post_count != posts_before_shutdown ||
         notification_count != notifications_before_shutdown) {
         return fail("shutdown must join and release an unreported check without touching UI");
     }
