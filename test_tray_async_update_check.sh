@@ -210,11 +210,19 @@ static void tray_handle_update_check_complete(NoSleepTray *tray,
 static bool tray_wait_for_update_check(NoSleepTray *tray);
 static bool update_check_in_progress;
 static void updater_prompt_release_page(HWND hwnd_parent, const UpdateInfo *info);
+static int update_timer_setup_count;
+static bool update_timer_use_remaining_interval;
 
 // Button presentation is outside this fixture's asynchronous worker scope.
 static void tray_set_update_check_visible(NoSleepTray *tray, bool checking) {
     (void)tray;
     (void)checking;
+}
+
+static void tray_setup_update_timer(NoSleepTray *tray, bool use_remaining_interval) {
+    (void)tray;
+    ++update_timer_setup_count;
+    update_timer_use_remaining_interval = use_remaining_interval;
 }
 
 static BOOL SetDlgItemText(HWND hwnd, int control, const char *text) {
@@ -409,6 +417,9 @@ int main(void) {
         return fail("the worker must only check and post its result to the tray thread");
     }
     tray_handle_update_check_complete(&tray, (TrayUpdateCheckTask *)last_post_parameter);
+    if (update_timer_setup_count != 1 || !update_timer_use_remaining_interval) {
+        return fail("a completed check must reschedule the automatic timer from its saved timestamp");
+    }
     if (tray.update_check_task || update_check_in_progress || save_time_count != 1 ||
         notification_count != 1 || last_notification != NOTIFY_EVENT_UPDATE_CHECK_COMPLETED ||
         notification_thread_id != 1 || prompt_count != 0 || close_count != 1 ||

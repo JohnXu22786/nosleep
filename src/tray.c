@@ -5504,6 +5504,7 @@ static void tray_review_available_update(NoSleepTray* tray) {
 static void tray_process_update_check_result(NoSleepTray* tray, bool silent,
                                               bool check_ok, UpdateInfo* info) {
     save_last_update_check_time();
+    tray_setup_update_timer(tray, true);
 
     if (!check_ok) {
         if (!silent) {
