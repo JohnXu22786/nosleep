@@ -41,6 +41,12 @@ static const unsigned int DEFAULT_MASK_NONE = 0;
 #define NOTIFY_GROUPS_PARENT_REG_KEY "Software\\nosleep\\settings"
 #define NOTIFY_GROUPS_STAGING_REG_KEY NOTIFY_GROUPS_REG_KEY "_Staging"
 #define NOTIFY_GROUPS_BACKUP_REG_KEY NOTIFY_GROUPS_REG_KEY "_Backup"
+#define NOTIFY_GROUPS_RENAME_SOURCE_VALUE L"__NoSleep_NotifyGroups_RenameSource"
+#define NOTIFY_GROUPS_RENAME_DESTINATION_VALUE L"__NoSleep_NotifyGroups_RenameDestination"
+#define NOTIFY_GROUPS_RENAME_PHASE_VALUE L"__NoSleep_NotifyGroups_RenamePhase"
+
+#define NOTIFY_GROUPS_RENAME_PHASE_COPYING 1
+#define NOTIFY_GROUPS_RENAME_PHASE_DELETE_SOURCE 2
 
 static bool notify_groups_delete_registry_tree(const char* root_key) {
     char subkey[512];
@@ -56,10 +62,190 @@ static bool notify_groups_delete_registry_tree(const char* root_key) {
     return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
 }
 
+typedef LONG (WINAPI *NotifyGroupsRegRenameKeyProc)(HKEY, LPCWSTR, LPCWSTR);
+
+static bool notify_groups_remove_registry_key(HKEY parent, const wchar_t* name) {
+    LONG result = RegDeleteTreeW(parent, name);
+    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) return false;
+
+    result = RegDeleteKeyW(parent, name);
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+static bool notify_groups_registry_key_name_is_known(const wchar_t* name) {
+    return wcscmp(name, L"NotificationGroups") == 0 ||
+        wcscmp(name, L"NotificationGroups_Staging") == 0 ||
+        wcscmp(name, L"NotificationGroups_Backup") == 0;
+}
+
+static bool notify_groups_write_copy_rename_journal(HKEY parent,
+                                                     const wchar_t* old_name,
+                                                     const wchar_t* new_name,
+                                                     DWORD phase) {
+    LONG result = RegDeleteValueW(parent, NOTIFY_GROUPS_RENAME_PHASE_VALUE);
+    if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) return false;
+
+    DWORD old_size = (DWORD)((wcslen(old_name) + 1) * sizeof(wchar_t));
+    DWORD new_size = (DWORD)((wcslen(new_name) + 1) * sizeof(wchar_t));
+    result = RegSetValueExW(parent, NOTIFY_GROUPS_RENAME_SOURCE_VALUE, 0,
+        REG_SZ, (const BYTE*)old_name, old_size);
+    if (result != ERROR_SUCCESS) return false;
+
+    result = RegSetValueExW(parent, NOTIFY_GROUPS_RENAME_DESTINATION_VALUE, 0,
+        REG_SZ, (const BYTE*)new_name, new_size);
+    if (result != ERROR_SUCCESS) return false;
+
+    result = RegSetValueExW(parent, NOTIFY_GROUPS_RENAME_PHASE_VALUE, 0,
+        REG_DWORD, (const BYTE*)&phase, sizeof(phase));
+    return result == ERROR_SUCCESS;
+}
+
+static bool notify_groups_set_copy_rename_phase(HKEY parent, DWORD phase) {
+    LONG result = RegSetValueExW(parent, NOTIFY_GROUPS_RENAME_PHASE_VALUE, 0,
+        REG_DWORD, (const BYTE*)&phase, sizeof(phase));
+    return result == ERROR_SUCCESS;
+}
+
+static bool notify_groups_read_copy_rename_name(HKEY parent, const wchar_t* value_name,
+                                                wchar_t* name, DWORD name_capacity) {
+    DWORD type = 0;
+    DWORD size = name_capacity * (DWORD)sizeof(wchar_t);
+    LONG result = RegQueryValueExW(parent, value_name, NULL, &type, (BYTE*)name, &size);
+    if (result != ERROR_SUCCESS || type != REG_SZ || size < sizeof(wchar_t) ||
+        size % sizeof(wchar_t) != 0 || size > name_capacity * sizeof(wchar_t)) {
+        return false;
+    }
+    return name[size / sizeof(wchar_t) - 1] == L'\0';
+}
+
+static bool notify_groups_clear_copy_rename_journal(HKEY parent) {
+    LONG result = RegDeleteValueW(parent, NOTIFY_GROUPS_RENAME_PHASE_VALUE);
+    return result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND;
+}
+
+static bool notify_groups_recover_interrupted_copy_rename(HKEY parent) {
+    DWORD phase = 0;
+    DWORD type = 0;
+    DWORD size = sizeof(phase);
+    LONG result = RegQueryValueExW(parent, NOTIFY_GROUPS_RENAME_PHASE_VALUE,
+        NULL, &type, (BYTE*)&phase, &size);
+    if (result == ERROR_FILE_NOT_FOUND) return true;
+    if (result != ERROR_SUCCESS || type != REG_DWORD || size != sizeof(phase)) {
+        return false;
+    }
+
+    wchar_t old_name[64] = L"";
+    wchar_t new_name[64] = L"";
+    if (!notify_groups_read_copy_rename_name(parent, NOTIFY_GROUPS_RENAME_SOURCE_VALUE,
+            old_name, sizeof(old_name) / sizeof(old_name[0])) ||
+        !notify_groups_read_copy_rename_name(parent, NOTIFY_GROUPS_RENAME_DESTINATION_VALUE,
+            new_name, sizeof(new_name) / sizeof(new_name[0])) ||
+        !notify_groups_registry_key_name_is_known(old_name) ||
+        !notify_groups_registry_key_name_is_known(new_name) ||
+        wcscmp(old_name, new_name) == 0) {
+        return false;
+    }
+
+    if (phase == NOTIFY_GROUPS_RENAME_PHASE_COPYING) {
+        if (!notify_groups_remove_registry_key(parent, new_name)) return false;
+    } else if (phase == NOTIFY_GROUPS_RENAME_PHASE_DELETE_SOURCE) {
+        if (!notify_groups_remove_registry_key(parent, old_name)) return false;
+    } else {
+        return false;
+    }
+    return notify_groups_clear_copy_rename_journal(parent);
+}
+
+static bool notify_groups_rename_registry_key_fallback(HKEY parent,
+                                                        const wchar_t* old_name,
+                                                        const wchar_t* new_name) {
+    HKEY hExisting;
+    LONG result = RegOpenKeyExW(parent, new_name, 0, KEY_READ, &hExisting);
+    if (result == ERROR_SUCCESS) {
+        RegCloseKey(hExisting);
+        return false;
+    }
+    if (result != ERROR_FILE_NOT_FOUND) return false;
+    if (!notify_groups_write_copy_rename_journal(parent, old_name, new_name,
+            NOTIFY_GROUPS_RENAME_PHASE_COPYING)) {
+        return false;
+    }
+
+    HKEY hSource;
+    result = RegOpenKeyExW(parent, old_name, 0, KEY_READ, &hSource);
+    if (result != ERROR_SUCCESS) {
+        notify_groups_clear_copy_rename_journal(parent);
+        return false;
+    }
+
+    HKEY hDestination;
+    DWORD disposition = 0;
+    result = RegCreateKeyExW(parent, new_name, 0, NULL, REG_OPTION_NON_VOLATILE,
+        KEY_READ | KEY_WRITE, NULL, &hDestination, &disposition);
+    if (result != ERROR_SUCCESS || disposition != REG_CREATED_NEW_KEY) {
+        RegCloseKey(hSource);
+        if (result == ERROR_SUCCESS) RegCloseKey(hDestination);
+        notify_groups_clear_copy_rename_journal(parent);
+        return false;
+    }
+
+    result = RegCopyTreeW(hSource, NULL, hDestination);
+    RegCloseKey(hDestination);
+    RegCloseKey(hSource);
+    if (result != ERROR_SUCCESS) {
+        if (notify_groups_remove_registry_key(parent, new_name)) {
+            notify_groups_clear_copy_rename_journal(parent);
+        }
+        return false;
+    }
+
+    if (!notify_groups_set_copy_rename_phase(parent,
+            NOTIFY_GROUPS_RENAME_PHASE_DELETE_SOURCE)) return false;
+    if (!notify_groups_remove_registry_key(parent, old_name)) return false;
+    return notify_groups_clear_copy_rename_journal(parent);
+}
+
+static NotifyGroupsRegRenameKeyProc notify_groups_get_reg_rename_key(void) {
+    HMODULE advapi32 = GetModuleHandleW(L"advapi32.dll");
+    FARPROC address = advapi32 ? GetProcAddress(advapi32, "RegRenameKey") : NULL;
+    return (NotifyGroupsRegRenameKeyProc)address;
+}
+
 static bool notify_groups_rename_registry_key(HKEY parent,
                                                const wchar_t* old_name,
                                                const wchar_t* new_name) {
-    return RegRenameKey(parent, old_name, new_name) == ERROR_SUCCESS;
+    NotifyGroupsRegRenameKeyProc rename_key = notify_groups_get_reg_rename_key();
+    if (rename_key) {
+        return rename_key(parent, old_name, new_name) == ERROR_SUCCESS;
+    }
+    return notify_groups_rename_registry_key_fallback(parent, old_name, new_name);
+}
+
+static bool notify_groups_recover_interrupted_registry_rename(void) {
+    HKEY hParent;
+    LONG result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_PARENT_REG_KEY,
+        0, KEY_READ, &hParent);
+    if (result == ERROR_FILE_NOT_FOUND) return true;
+    if (result != ERROR_SUCCESS) return false;
+
+    DWORD phase = 0;
+    DWORD type = 0;
+    DWORD size = sizeof(phase);
+    result = RegQueryValueExW(hParent, NOTIFY_GROUPS_RENAME_PHASE_VALUE,
+        NULL, &type, (BYTE*)&phase, &size);
+    RegCloseKey(hParent);
+    if (result == ERROR_FILE_NOT_FOUND) return true;
+    if (result != ERROR_SUCCESS || type != REG_DWORD || size != sizeof(phase)) {
+        return false;
+    }
+
+    result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_PARENT_REG_KEY,
+        0, KEY_READ | KEY_WRITE | DELETE, &hParent);
+    if (result != ERROR_SUCCESS) return false;
+
+    bool success = notify_groups_recover_interrupted_copy_rename(hParent);
+    RegCloseKey(hParent);
+    return success;
 }
 
 // Initialize default groups
@@ -240,12 +426,21 @@ bool notify_groups_restore_default(NotifyGroupManager* mgr, int index, int prese
 bool notify_groups_save(NotifyGroupManager* mgr) {
     if (!mgr || mgr->load_incomplete) return false;
     
+    DWORD parent_access = KEY_READ | KEY_WRITE;
+    if (!notify_groups_get_reg_rename_key()) parent_access |= DELETE;
+
     HKEY hParent;
     LONG result = RegCreateKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_PARENT_REG_KEY,
-        0, NULL, REG_OPTION_NON_VOLATILE, KEY_READ | KEY_WRITE, NULL, &hParent, NULL);
+        0, NULL, REG_OPTION_NON_VOLATILE, parent_access,
+        NULL, &hParent, NULL);
     if (result != ERROR_SUCCESS) return false;
 
-    // Recover the previous tree if a process ended after moving it aside but
+    if (!notify_groups_recover_interrupted_registry_rename()) {
+        RegCloseKey(hParent);
+        return false;
+    }
+
+    // Restore the previous tree if a process ended after moving it aside but
     // before installing the fully written staging tree.
     HKEY hExisting;
     result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
@@ -369,6 +564,11 @@ static bool notify_groups_value_read_failed(LONG result) {
 void notify_groups_load(NotifyGroupManager* mgr) {
     if (!mgr) return;
     mgr->load_incomplete = false;
+
+    if (!notify_groups_recover_interrupted_registry_rename()) {
+        mgr->load_incomplete = true;
+        return;
+    }
     
     const char* registry_root = NOTIFY_GROUPS_REG_KEY;
     HKEY hKeyRoot;

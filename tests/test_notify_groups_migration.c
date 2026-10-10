@@ -189,7 +189,8 @@ LONG RegCloseKey(HKEY key) {
     return ERROR_SUCCESS;
 }
 
-LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name) {
+static LONG mock_reg_rename_key(HKEY key, const wchar_t *subkey_name,
+                                const wchar_t *new_name) {
     if ((uintptr_t)key != REGISTRY_PARENT_HANDLE ||
         wcscmp(subkey_name, L"NotificationGroups_Staging") != 0 ||
         wcscmp(new_name, L"NotificationGroups") != 0 || !staging_groups_available) {
@@ -199,6 +200,63 @@ LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name)
     stored_active_index = staged_active_index;
     staging_groups_available = false;
     return ERROR_SUCCESS;
+}
+
+HMODULE GetModuleHandleW(LPCWSTR module_name) {
+    return wcscmp(module_name, L"advapi32.dll") == 0 ? (HMODULE)(uintptr_t)1 : NULL;
+}
+
+FARPROC GetProcAddress(HMODULE module, const char *name) {
+    if ((uintptr_t)module == 1 && strcmp(name, "RegRenameKey") == 0) {
+        return (FARPROC)mock_reg_rename_key;
+    }
+    return NULL;
+}
+
+// The migration cases expose the modern rename export; fallback calls are outside these tests.
+LONG RegCreateKeyExW(HKEY root, LPCWSTR path, DWORD reserved, wchar_t *class_name,
+                     DWORD options, DWORD access, void *security, HKEY *key,
+                     DWORD *disposition) {
+    (void)root; (void)path; (void)reserved; (void)class_name; (void)options;
+    (void)access; (void)security; (void)key; (void)disposition;
+    return ERROR_ACCESS_DENIED;
+}
+
+LONG RegSetValueExW(HKEY key, LPCWSTR name, DWORD reserved, DWORD type,
+                    const BYTE *value, DWORD size) {
+    (void)key; (void)name; (void)reserved; (void)type; (void)value; (void)size;
+    return ERROR_ACCESS_DENIED;
+}
+
+LONG RegQueryValueExW(HKEY key, LPCWSTR name, DWORD *reserved, DWORD *type,
+                      BYTE *value, DWORD *size) {
+    (void)key; (void)name; (void)reserved; (void)type; (void)value; (void)size;
+    return ERROR_FILE_NOT_FOUND;
+}
+
+LONG RegDeleteValueW(HKEY key, LPCWSTR name) {
+    (void)key; (void)name;
+    return ERROR_FILE_NOT_FOUND;
+}
+
+LONG RegOpenKeyExW(HKEY root, LPCWSTR path, DWORD reserved, DWORD access, HKEY *key) {
+    (void)root; (void)path; (void)reserved; (void)access; (void)key;
+    return ERROR_ACCESS_DENIED;
+}
+
+LONG RegCopyTreeW(HKEY source, LPCWSTR subkey, HKEY destination) {
+    (void)source; (void)subkey; (void)destination;
+    return ERROR_ACCESS_DENIED;
+}
+
+LONG RegDeleteTreeW(HKEY root, LPCWSTR path) {
+    (void)root; (void)path;
+    return ERROR_ACCESS_DENIED;
+}
+
+LONG RegDeleteKeyW(HKEY root, LPCWSTR path) {
+    (void)root; (void)path;
+    return ERROR_ACCESS_DENIED;
 }
 
 static int test_saved_custom_group_is_not_replaced(void) {
