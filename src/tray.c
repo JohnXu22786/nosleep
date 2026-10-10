@@ -2055,8 +2055,12 @@ static void trigger_system_shutdown(NoSleepTray* tray, SessionFinishedAction act
 // an action after cleanup, and never call Shell_NotifyIcon under the action lock.
 static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedAction action) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    bool shutdown = action == SESSION_FINISHED_SHUTDOWN ||
+                    action == SESSION_FINISHED_SHUTDOWN_GRACEFUL;
+    HANDLE stop_event = shutdown ? tray->shutdown_stop_event : tray->sleep_stop_event;
     bool cancelled = tray->session_action_cancelled || tray->starting_nosleep ||
-                     ATOMIC_LOAD_BOOL(&tray->stopping);
+                     ATOMIC_LOAD_BOOL(&tray->stopping) ||
+                     WaitForSingleObject(stop_event, 0) == WAIT_OBJECT_0;
     ULONGLONG start_tick64 = tray->start_tick64;
     if (!cancelled) {
         tray->delayed_countdown_starting = true;
@@ -2075,8 +2079,6 @@ static void tray_announce_delayed_action(NoSleepTray* tray, SessionFinishedActio
         sprintf(duration_message, "Sleep prevention stopped\nDuration: %dm %ds", minutes, seconds);
     }
     char message[512];
-    bool shutdown = action == SESSION_FINISHED_SHUTDOWN ||
-                    action == SESSION_FINISHED_SHUTDOWN_GRACEFUL;
     if (action == SESSION_FINISHED_SHUTDOWN) {
         sprintf(message, "%s\nSystem will %s in 60 seconds...\n"
                         "Unsaved work may be lost because applications will be closed forcibly.\n"
