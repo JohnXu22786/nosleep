@@ -601,6 +601,9 @@ static HICON icon_to_grayscale(HICON hColorIcon) {
         DeleteObject(iconInfo.hbmMask);
         return NULL;
     }
+
+    // DrawIconEx can leave transparent icon pixels untouched, so clear the DIB first.
+    ZeroMemory(pBits, (size_t)width * (size_t)height * sizeof(DWORD));
     
     HBITMAP hOldBmp = (HBITMAP)SelectObject(hdcMem, hbmpGray);
     
