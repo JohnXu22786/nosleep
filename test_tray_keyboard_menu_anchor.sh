@@ -69,6 +69,7 @@ typedef int BOOL;
 typedef long HRESULT;
 typedef intptr_t LPARAM;
 typedef unsigned short WORD;
+typedef int16_t SHORT;
 typedef struct { int x, y; } POINT;
 typedef struct { int left, top, right, bottom; } RECT;
 typedef struct {
@@ -132,6 +133,11 @@ static RECT owner_window_rect = { 40, 50, 640, 430 };
 static BOOL icon_rect_available = TRUE;
 static BOOL monitor_info_available = TRUE;
 static BOOL cursor_available = TRUE;
+
+static LPARAM pack_context_coordinates(int x, int y) {
+    return (LPARAM)((uintptr_t)(uint16_t)x |
+                    ((uintptr_t)(uint16_t)y << 16));
+}
 
 static HRESULT mock_shell_notify_icon_get_rect(
     const TrayNotifyIconIdentifier* identifier, RECT* bounds) {
@@ -313,9 +319,11 @@ int main(void) {
 
     reset_harness();
     tray.menu_invoked_by_keyboard = TRUE;
-    tray_show_window_context_menu(&tray, (HWND)10, (LPARAM)0x00100020);
-    failed |= check_result("mouse WM_CONTEXTMENU keeps cursor placement",
-                           &tray, cursor_point.x, cursor_point.y, FALSE, 1, 0, 0);
+    LPARAM queued_coordinates = pack_context_coordinates(-1200, 460);
+    cursor_point = (POINT){ 1800, 900 };
+    tray_show_window_context_menu(&tray, (HWND)10, queued_coordinates);
+    failed |= check_result("mouse WM_CONTEXTMENU uses queued coordinates after the cursor moves",
+                           &tray, -1200, 460, FALSE, 0, 0, 0);
 
     reset_harness();
     cursor_available = FALSE;
