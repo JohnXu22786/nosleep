@@ -104,6 +104,9 @@ jobs:
       - name: Test transparent fallback icon mask initialization
         run: bash test_tray_transparent_icon_mask.sh
 
+      - name: Test grayscale icon drawing failure fallback
+        run: bash test_tray_grayscale_icon_bitmap.sh
+
       - name: Test automatic update timer failures
         run: bash test_tray_auto_update_timer.sh
 

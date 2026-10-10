@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 python3 - "$SCRIPT_DIR" <<'PY'
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -15,8 +16,10 @@ tray = (root / "src/tray.c").read_text()
 
 
 def extract_function(signature):
-    start = tray.index(signature)
-    opening = tray.index("{", start)
+    definition = re.search(re.escape(signature) + r"\s*\{", tray)
+    assert definition, f"could not find definition for {signature}"
+    start = definition.start()
+    opening = definition.end() - 1
     depth = 0
     state = "code"
     i = opening
@@ -61,7 +64,9 @@ def extract_function(signature):
 
 
 function = extract_function("static HICON icon_to_grayscale(HICON hColorIcon)")
+caller = extract_function("static void load_gray_and_color_icons(NoSleepTray* tray)")
 harness = r"""
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -76,6 +81,8 @@ typedef void *HBRUSH;
 typedef void *HANDLE;
 typedef void *HWND;
 typedef unsigned int UINT;
+typedef unsigned long COLORREF;
+typedef const char *LPCTSTR;
 
 typedef struct {
     int bmWidth;
@@ -101,21 +108,43 @@ typedef struct {
     HBITMAP hbmMask;
 } ICONINFO;
 
+typedef struct {
+    HICON hIconActive;
+    HICON hIconDefault;
+} NoSleepTray;
+
 #define TRUE 1
 #define FALSE 0
 #define BI_RGB 0
 #define DIB_RGB_COLORS 0
 #define DI_NORMAL 3
+#define IDI_APPICON 101
+#define MAKEINTRESOURCE(value) ((LPCTSTR)(uintptr_t)(value))
+#define RGB(red, green, blue) ((COLORREF)((red) | ((green) << 8) | ((blue) << 16)))
 #define ZeroMemory(destination, size) memset((destination), 0, (size))
 #define DEBUG_LOG(...) ((void)0)
 
+static int tray_icon_width = 16;
+static int tray_icon_height = 16;
 static DWORD dib_pixels[2];
 static DWORD captured_pixels[2];
 static HBITMAP expected_mask = (HBITMAP)(uintptr_t)2;
 static int transparent_slot_zero_before_draw;
 static int captured_icon;
+static int create_icon_calls;
 static int failed;
 static int select_calls;
+static BOOL draw_succeeds = TRUE;
+static int draw_calls;
+static int delete_color_bitmap_calls;
+static int delete_mask_bitmap_calls;
+static int delete_dib_bitmap_calls;
+static int delete_dc_calls;
+static int release_dc_calls;
+static int load_icon_calls;
+static int colored_icon_calls;
+static COLORREF colored_icon_color;
+static bool colored_icon_draw_z;
 
 static HICON input_icon = (HICON)(uintptr_t)3;
 static HBITMAP color_bitmap = (HBITMAP)(uintptr_t)4;
@@ -123,6 +152,7 @@ static HBITMAP dib_bitmap = (HBITMAP)(uintptr_t)5;
 static HBITMAP old_bitmap = (HBITMAP)(uintptr_t)6;
 static HDC screen_dc = (HDC)(uintptr_t)7;
 static HDC memory_dc = (HDC)(uintptr_t)8;
+static HICON gray_fallback_icon = (HICON)(uintptr_t)10;
 
 static void check(int condition, const char *message) {
     if (!condition) {
@@ -191,7 +221,9 @@ static BOOL DrawIconEx(HDC dc, int x, int y, HICON icon, int width, int height,
     check(dc == memory_dc && x == 0 && y == 0 && icon == input_icon &&
               width == 2 && height == 1 && flags == DI_NORMAL,
           "the input icon is drawn to the grayscale DIB");
+    ++draw_calls;
     transparent_slot_zero_before_draw = dib_pixels[1] == 0;
+    if (!draw_succeeds) return FALSE;
     dib_pixels[0] = 0xFF112233;
     return TRUE;
 }
@@ -199,6 +231,7 @@ static BOOL DrawIconEx(HDC dc, int x, int y, HICON icon, int width, int height,
 static BOOL GdiFlush(void) { return TRUE; }
 
 static HICON CreateIconIndirect(ICONINFO *info) {
+    ++create_icon_calls;
     check(info->fIcon == TRUE, "grayscale result is an icon");
     check(info->hbmColor == dib_bitmap, "grayscale DIB is used as the icon color bitmap");
     check(info->hbmMask == expected_mask, "the original icon mask is preserved");
@@ -208,21 +241,43 @@ static HICON CreateIconIndirect(ICONINFO *info) {
 }
 
 static BOOL DeleteObject(HBITMAP bitmap) {
-    (void)bitmap;
+    if (bitmap == color_bitmap) ++delete_color_bitmap_calls;
+    else if (bitmap == expected_mask) ++delete_mask_bitmap_calls;
+    else if (bitmap == dib_bitmap) ++delete_dib_bitmap_calls;
+    else check(0, "only acquired icon and DIB bitmaps are deleted");
     return TRUE;
 }
 
 static BOOL DeleteDC(HDC dc) {
     check(dc == memory_dc, "memory DC is deleted");
+    ++delete_dc_calls;
     return TRUE;
 }
 
 static int ReleaseDC(HWND window, HDC dc) {
     check(window == NULL && dc == screen_dc, "screen DC is released");
+    ++release_dc_calls;
     return 1;
 }
 
+static HICON load_icon_from_resource(LPCTSTR resource_name, int width, int height) {
+    check(resource_name == MAKEINTRESOURCE(IDI_APPICON),
+          "caller loads the application icon resource");
+    check(width == tray_icon_width && height == tray_icon_height,
+          "caller requests the configured tray icon dimensions");
+    ++load_icon_calls;
+    return input_icon;
+}
+
+static HICON create_colored_icon(COLORREF color, bool draw_z) {
+    ++colored_icon_calls;
+    colored_icon_color = color;
+    colored_icon_draw_z = draw_z;
+    return gray_fallback_icon;
+}
+
 __ICON_FUNCTION__
+__CALLER_FUNCTION__
 
 int main(void) {
     HICON gray_icon = icon_to_grayscale(input_icon);
@@ -236,11 +291,38 @@ int main(void) {
           "the drawn opaque pixel is converted to grayscale");
     check(captured_pixels[1] == 0,
           "unwritten transparent pixels stay transparent in the grayscale icon");
+
+    draw_succeeds = FALSE;
+    select_calls = 0;
+    create_icon_calls = 0;
+    draw_calls = 0;
+    delete_color_bitmap_calls = 0;
+    delete_mask_bitmap_calls = 0;
+    delete_dib_bitmap_calls = 0;
+    delete_dc_calls = 0;
+    release_dc_calls = 0;
+    load_icon_calls = 0;
+    colored_icon_calls = 0;
+    NoSleepTray tray = {0};
+    load_gray_and_color_icons(&tray);
+    check(load_icon_calls == 1 && tray.hIconActive == input_icon,
+          "caller keeps the loaded active icon after grayscale drawing fails");
+    check(draw_calls == 1 && create_icon_calls == 0,
+          "failed DrawIconEx does not create a grayscale icon");
+    check(colored_icon_calls == 1 && colored_icon_color == RGB(128, 128, 128) &&
+              colored_icon_draw_z,
+          "caller creates the existing gray Z fallback after grayscale failure");
+    check(tray.hIconDefault == gray_fallback_icon,
+          "caller uses the generated gray fallback icon");
+    check(select_calls == 2 && delete_dib_bitmap_calls == 1 &&
+              delete_color_bitmap_calls == 1 && delete_mask_bitmap_calls == 1 &&
+              delete_dc_calls == 1 && release_dc_calls == 1,
+          "failed grayscale conversion restores selection and releases every acquired GDI resource");
     if (failed) return 1;
-    puts("PASS: grayscale icon conversion clears unwritten pixels and preserves transparency");
+    puts("PASS: grayscale conversion preserves transparency and falls back when DrawIconEx fails");
     return 0;
 }
-""".replace("__ICON_FUNCTION__", function)
+""".replace("__ICON_FUNCTION__", function).replace("__CALLER_FUNCTION__", caller)
 
 with tempfile.TemporaryDirectory(prefix="nosleep-grayscale-icon-") as temp_dir:
     source = Path(temp_dir) / "test_tray_grayscale_icon_bitmap.c"
