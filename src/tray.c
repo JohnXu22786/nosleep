@@ -2699,6 +2699,10 @@ void tray_update_session_finished_menu(NoSleepTray* tray) {
 }
 
 // PATH registry values use UTF-16, independently of the application's ANSI UI.
+static bool is_supported_path_registry_type(DWORD type) {
+    return type == REG_SZ || type == REG_EXPAND_SZ;
+}
+
 static wchar_t* get_exe_path_w(void) {
     size_t capacity = MAX_PATH;
     wchar_t* path = (wchar_t*)malloc(capacity * sizeof(wchar_t));
@@ -2813,6 +2817,11 @@ static bool add_app_to_path(void) {
         free(dir);
         return false;
     }
+    if (result == ERROR_SUCCESS && !is_supported_path_registry_type(path_type)) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
     
     if (result == ERROR_FILE_NOT_FOUND) path_type = REG_EXPAND_SZ;
 
@@ -2870,6 +2879,12 @@ static bool add_app_to_path(void) {
         return false;
     }
     // Use the type from the final read; it may have changed since the size query.
+    if (!is_supported_path_registry_type(path_type)) {
+        RegCloseKey(hKey);
+        free(new_path);
+        free(dir);
+        return false;
+    }
     // Refuse an unsafe addition rather than expanding or rewriting existing PATH.
     if (path_type == REG_EXPAND_SZ && wcschr(dir, L'%')) {
         RegCloseKey(hKey);
@@ -2967,6 +2982,11 @@ static bool remove_app_from_path(void) {
     DWORD path_size = 0;
     DWORD path_type = REG_EXPAND_SZ;
     result = RegQueryValueExW(hKey, L"Path", NULL, &path_type, NULL, &path_size);
+    if (result == ERROR_SUCCESS && !is_supported_path_registry_type(path_type)) {
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
     if (result == ERROR_FILE_NOT_FOUND || (result == ERROR_SUCCESS && path_size == 0)) {
         RegCloseKey(hKey);
         free(dir);
@@ -3009,6 +3029,12 @@ static bool remove_app_from_path(void) {
         return true;
     }
     if (result != ERROR_SUCCESS) {
+        free(current_path);
+        RegCloseKey(hKey);
+        free(dir);
+        return false;
+    }
+    if (!is_supported_path_registry_type(path_type)) {
         free(current_path);
         RegCloseKey(hKey);
         free(dir);

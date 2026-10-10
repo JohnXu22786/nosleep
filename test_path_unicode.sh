@@ -10,7 +10,7 @@ import tempfile
 root = Path(sys.argv[1])
 tray = (root / 'src/tray.c').read_text()
 # Compile the production PATH block, not a copied implementation.
-block = tray[tray.index('static wchar_t* get_exe_path_w(void) {'):tray.index('static bool apply_path_preference(bool add_to_path) {')]
+block = tray[tray.index('static bool is_supported_path_registry_type(DWORD type) {'):tray.index('static bool apply_path_preference(bool add_to_path) {')]
 startup_state = tray[tray.index('static bool is_startup_enabled(void) {'):tray.index('static bool set_startup_registry(bool enable) {')]
 prelude = r'''
 #include <assert.h>
@@ -37,6 +37,7 @@ typedef intptr_t LPARAM;
 #define REG_OPTION_NON_VOLATILE 0
 #define REG_SZ 1
 #define REG_EXPAND_SZ 2
+#define REG_MULTI_SZ 7
 #define HWND_BROADCAST 0
 #define WM_SETTINGCHANGE 0
 #define SMTO_ABORTIFHUNG 0
@@ -63,6 +64,8 @@ static wchar_t startup_registry[2048];
 static DWORD registry_bytes;
 static DWORD startup_registry_bytes;
 static DWORD registry_type = REG_EXPAND_SZ;
+static int change_type_on_data_read;
+static DWORD data_read_type;
 static DWORD startup_registry_type = REG_SZ;
 static int ansi_calls;
 static int writes;
@@ -124,6 +127,10 @@ LONG RegCreateKeyEx(HKEY root, const char *name, DWORD a, void *c, DWORD d,
 LONG RegQueryValueExW(HKEY key, const wchar_t *name, void *reserved, DWORD *type,
                      LPBYTE out, DWORD *size) {
     (void)reserved;
+    if (key == (HKEY)2 && out && change_type_on_data_read) {
+        registry_type = data_read_type;
+        change_type_on_data_read = 0;
+    }
     wchar_t *value;
     DWORD value_bytes;
     DWORD value_type;
@@ -228,6 +235,43 @@ int main(void) {
     registry_bytes = 0;
     assert(add_app_to_path());
     assert(remove_app_from_path());
+
+    // Unsupported existing registry types must never be parsed or rewritten.
+    registry_type = REG_MULTI_SZ;
+    wcscpy(registry, L"C:\\Existing");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    previous_writes = writes;
+    assert(!add_app_to_path());
+    assert(writes == previous_writes);
+    wcscpy(registry, L"C:\\安装\\😀;C:\\Existing");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    assert(!remove_app_from_path());
+    assert(writes == previous_writes);
+
+    // A zero-byte value keeps its unsupported type and must not be replaced.
+    registry_bytes = 0;
+    assert(!add_app_to_path());
+    assert(!remove_app_from_path());
+    assert(writes == previous_writes);
+
+    // Recheck the type returned by the data read in case it changed after sizing.
+    registry_type = REG_SZ;
+    wcscpy(registry, L"C:\\Existing");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    data_read_type = REG_MULTI_SZ;
+    change_type_on_data_read = 1;
+    assert(!add_app_to_path());
+    assert(writes == previous_writes);
+
+    registry_type = REG_SZ;
+    wcscpy(registry, L"C:\\安装\\😀;C:\\Existing");
+    registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
+    data_read_type = REG_MULTI_SZ;
+    change_type_on_data_read = 1;
+    assert(!remove_app_from_path());
+    assert(writes == previous_writes);
+
+    registry_type = REG_EXPAND_SZ;
 
     static wchar_t long_exe[512];
     const wchar_t *prefix = L"C:\\NoSleep\\";
