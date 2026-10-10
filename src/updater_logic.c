@@ -87,6 +87,7 @@ static bool consume_version_component(const char** version) {
     const char* character = *version;
     if (!is_ascii_digit(*character)) return false;
 
+    const char* component_start = character;
     unsigned int value = 0;
     do {
         unsigned int digit = (unsigned int)(*character - '0');
@@ -95,21 +96,36 @@ static bool consume_version_component(const char** version) {
         character++;
     } while (is_ascii_digit(*character));
 
+    if (*component_start == '0' && character - component_start > 1) return false;
+
     *version = character;
     return true;
 }
 
-static bool consume_version_identifiers(const char** version) {
+static bool consume_version_identifiers(const char** version,
+                                        bool reject_leading_zero_numeric) {
     const char* character = *version;
     const char* identifier_start = character;
     while (is_ascii_alphanumeric(*character) || *character == '-') character++;
-    if (character == identifier_start) return false;
+    size_t identifier_length = (size_t)(character - identifier_start);
+    if (identifier_length == 0 ||
+        (reject_leading_zero_numeric && identifier_length > 1 &&
+         *identifier_start == '0' &&
+         is_numeric_identifier(identifier_start, identifier_length))) {
+        return false;
+    }
 
     while (*character == '.') {
         character++;
         identifier_start = character;
         while (is_ascii_alphanumeric(*character) || *character == '-') character++;
-        if (character == identifier_start) return false;
+        identifier_length = (size_t)(character - identifier_start);
+        if (identifier_length == 0 ||
+            (reject_leading_zero_numeric && identifier_length > 1 &&
+             *identifier_start == '0' &&
+             is_numeric_identifier(identifier_start, identifier_length))) {
+            return false;
+        }
     }
 
     *version = character;
@@ -128,11 +144,11 @@ static bool is_valid_version(const char* version) {
 
     if (*version == '-') {
         version++;
-        if (!consume_version_identifiers(&version)) return false;
+        if (!consume_version_identifiers(&version, true)) return false;
     }
     if (*version == '+') {
         version++;
-        if (!consume_version_identifiers(&version)) return false;
+        if (!consume_version_identifiers(&version, false)) return false;
     }
 
     return *version == '\0';
