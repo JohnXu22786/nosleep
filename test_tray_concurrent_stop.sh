@@ -94,6 +94,7 @@ typedef enum {
 } NotifyEventId;
 
 typedef struct TrayUpdateCheckTask {
+    bool shutdown_requested;
     HANDLE thread;
     DWORD thread_id;
 } TrayUpdateCheckTask;
