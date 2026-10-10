@@ -8,6 +8,7 @@ trap 'rm -rf "$TMPDIR_PATH"' EXIT
 CC="${CC:-gcc}"
 "$CC" -std=c99 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
     -I"$SCRIPT_DIR/tests/core_stubs" -I"$SCRIPT_DIR/src" \
+    -Dfflush=test_core_fflush \
     "$SCRIPT_DIR/tests/test_core_verbose_logging.c" \
     "$SCRIPT_DIR/src/core.c" -Wl,--gc-sections \
     -o "$TMPDIR_PATH/test_core_verbose_logging"
