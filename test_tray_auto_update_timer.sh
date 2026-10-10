@@ -162,6 +162,8 @@ static char last_notification_title[128];
 static char last_notification_message[256];
 static DWORD stored_auto_check_interval = 3;
 static ULONGLONG stored_last_update_check;
+static DWORD stored_last_update_check_type = REG_QWORD;
+static DWORD stored_last_update_check_size = sizeof(ULONGLONG);
 static ULONGLONG fake_now_100ns;
 static bool has_last_update_check;
 
@@ -202,10 +204,11 @@ static LONG RegQueryValueEx(HKEY key, const char* name, void* reserved,
         return ERROR_SUCCESS;
     }
     if (strcmp(name, "last_update_check") == 0 && has_last_update_check) {
-        if (*size < sizeof(stored_last_update_check)) return 234;
-        if (type) *type = REG_QWORD;
-        memcpy(data, &stored_last_update_check, sizeof(stored_last_update_check));
-        *size = sizeof(stored_last_update_check);
+        DWORD buffer_size = *size;
+        if (type) *type = stored_last_update_check_type;
+        *size = stored_last_update_check_size;
+        if (stored_last_update_check_size > buffer_size) return 234;
+        memcpy(data, &stored_last_update_check, stored_last_update_check_size);
         return ERROR_SUCCESS;
     }
     return ERROR_FILE_NOT_FOUND;
@@ -364,6 +367,22 @@ int main(void) {
     if (should_check_for_updates()) {
         return fail("a daily startup check must wait until its saved interval is due");
     }
+    stored_last_update_check_type = REG_DWORD;
+    if (!should_check_for_updates()) {
+        return fail("a recent timestamp stored with the wrong registry type must not suppress a startup check");
+    }
+    stored_last_update_check_type = REG_QWORD;
+
+    fake_now_100ns = 200000000ULL;
+    stored_last_update_check = fake_now_100ns - 100ULL;
+    stored_last_update_check_size = sizeof(ULONGLONG) - sizeof(DWORD);
+    if (!should_check_for_updates()) {
+        return fail("a truncated QWORD timestamp must not suppress a startup check");
+    }
+    stored_last_update_check_size = sizeof(ULONGLONG);
+    fake_now_100ns = 20ULL * daily_ticks;
+    stored_last_update_check = fake_now_100ns - daily_ticks + 100ULL * ticks_per_millisecond;
+
     NoSleepTray daily_tray = { .hwnd = (HWND)1, .auto_check_interval = 1 };
     set_count = 0;
     tray_setup_update_timer(&daily_tray, true);
