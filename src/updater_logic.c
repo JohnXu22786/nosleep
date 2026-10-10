@@ -38,6 +38,40 @@ static bool is_valid_url_authority(const char* host, const char* path) {
     return !colon || is_valid_url_port(colon + 1, path);
 }
 
+static bool is_github_release_asset_authority(const char* host, const char* path) {
+    static const char github_host[] = "github.com";
+    const char* host_end = memchr(host, ':', (size_t)(path - host));
+    if (!host_end) host_end = path;
+    if ((size_t)(host_end - host) != sizeof(github_host) - 1) return false;
+    if (host_end != path &&
+        ((size_t)(path - host_end - 1) != 3 || memcmp(host_end + 1, "443", 3) != 0)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < sizeof(github_host) - 1; i++) {
+        char character = host[i];
+        if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        if (character != github_host[i]) return false;
+    }
+    return true;
+}
+
+static bool is_github_release_asset_path(const char* path, size_t path_len) {
+    static const char release_asset_prefix[] =
+        "/JohnXu22786/nosleep/releases/download/";
+    const size_t prefix_len = sizeof(release_asset_prefix) - 1;
+    if (path_len <= prefix_len ||
+        memcmp(path, release_asset_prefix, prefix_len) != 0) {
+        return false;
+    }
+
+    const char* path_end = path + path_len;
+    const char* tag_start = path + prefix_len;
+    const char* tag_end = memchr(tag_start, '/', (size_t)(path_end - tag_start));
+    if (!tag_end || tag_end == tag_start || tag_end + 1 == path_end) return false;
+    return memchr(tag_end + 1, '/', (size_t)(path_end - (tag_end + 1))) == NULL;
+}
+
 static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
     static const char https_scheme[] = "https://";
     const size_t scheme_len = sizeof(https_scheme) - 1;
@@ -51,7 +85,10 @@ static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
 
     const char* host = url + scheme_len;
     const char* path = strpbrk(host, "/?#");
-    if (!path || *path != '/' || !is_valid_url_authority(host, path)) return false;
+    if (!path || *path != '/' || !is_valid_url_authority(host, path) ||
+        !is_github_release_asset_authority(host, path)) {
+        return false;
+    }
 
     for (size_t i = 0; i < url_len; i++) {
         unsigned char character = (unsigned char)url[i];
@@ -62,7 +99,7 @@ static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
 
     const char* path_end = strpbrk(path, "?#");
     size_t path_len = path_end ? (size_t)(path_end - path) : url_len - (size_t)(path - url);
-    if (path_len < 4) return false;
+    if (path_len < 4 || !is_github_release_asset_path(path, path_len)) return false;
 
     const char* suffix = path + path_len - 4;
     static const char exe_suffix[] = ".exe";
