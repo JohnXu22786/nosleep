@@ -71,7 +71,11 @@ def extract_function(name):
     raise AssertionError(f"unterminated function: {name}")
 
 
-functions = '\n'.join(extract_function(n) for n in ('tray_show_settings_dialog', 'tray_show_about_dialog'))
+functions = '\n'.join(extract_function(n) for n in (
+    'settings_dialog_initial_bounds',
+    'tray_show_settings_dialog',
+    'tray_show_about_dialog',
+))
 guard = re.search(r'^static bool tray_dialog_open[^;]*;', tray, re.M)
 harness = r"""
 #include <stdbool.h>
@@ -81,6 +85,10 @@ harness = r"""
 typedef void* HANDLE;
 typedef HANDLE (*DialogDpiContextFn)(HANDLE);
 typedef struct { int left, top, right, bottom; } RECT;
+typedef unsigned int UINT;
+typedef unsigned long DWORD;
+typedef void* HMONITOR;
+typedef struct { DWORD cbSize; RECT rcMonitor; RECT rcWork; DWORD dwFlags; } MONITORINFO;
 static HANDLE enter_dialog_dpi_context(DialogDpiContextFn* setter) {
     *setter = NULL;
     return NULL;
@@ -94,7 +102,7 @@ static int GetWindowRect(HWND hwnd, RECT* rect) {
 typedef void* HINSTANCE;
 typedef void* HBRUSH;
 typedef void* LPVOID;
-typedef struct { HWND hwnd; } NoSleepTray;
+typedef struct { HWND hwnd; struct { UINT uID; } nid; } NoSleepTray;
 typedef struct { unsigned long wParam; } MSG;
 typedef struct { void* lpfnWndProc; HINSTANCE hInstance; void* hCursor; HBRUSH hbrBackground; const char* lpszClassName; } WNDCLASS;
 #define IDC_ARROW 0
@@ -114,6 +122,12 @@ static int creates, pumps, update_checks, depth, phase;
 static bool fail_create, dialog_alive;
 static NoSleepTray* about_context;
 static void tray_check_for_updates(NoSleepTray*, bool);
+static HMONITOR tray_get_icon_monitor(HWND hwnd, UINT icon_id) {
+ (void)hwnd; (void)icon_id; return NULL;
+}
+static int GetMonitorInfo(HMONITOR monitor, MONITORINFO* info) {
+ (void)monitor; (void)info; return 0;
+}
 static HINSTANCE GetModuleHandle(void* x) { return x; }
 static void* LoadCursor(void* x, int id) { (void)id; return x; }
 static int RegisterClass(WNDCLASS* x) { (void)x; return 1; }
