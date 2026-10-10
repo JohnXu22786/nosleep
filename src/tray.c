@@ -270,8 +270,14 @@ static bool tray_wait_for_update_check(NoSleepTray* tray) {
     if (task->thread) {
         // Stop result delivery and cancel WinHTTP before joining the worker.
         ATOMIC_STORE_INT(&task->shutdown_requested, true);
-        CancelSynchronousIo(task->thread);
-        if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) {
+        DWORD wait_result;
+        do {
+            // Retry in case the worker starts its first synchronous request
+            // after the initial cancellation.
+            CancelSynchronousIo(task->thread);
+            wait_result = WaitForSingleObject(task->thread, 50);
+        } while (wait_result == WAIT_TIMEOUT);
+        if (wait_result != WAIT_OBJECT_0) {
             DEBUG_LOG("tray_wait_for_update_check: waiting for update worker failed");
             return false;
         }
@@ -5449,6 +5455,10 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
 // tray window, which remains responsible for notifications and dialogs.
 static DWORD WINAPI tray_update_check_worker(LPVOID parameter) {
     TrayUpdateCheckTask* task = (TrayUpdateCheckTask*)parameter;
+    if (tray_update_check_shutdown_requested(task)) {
+        DEBUG_LOG("tray_update_check_worker: tray is shutting down before update request");
+        return 0;
+    }
     task->check_succeeded = updater_check(&task->info, NULL);
     MEMORY_BARRIER();
     for (;;) {
