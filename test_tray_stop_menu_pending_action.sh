@@ -17,59 +17,65 @@ root = Path(sys.argv[1])
 output = Path(sys.argv[2])
 tray = (root / "src/tray.c").read_text()
 
-definition = re.search(
-    r"\bvoid\s+tray_update_stop_menu_item\s*\([^;]*?\)\s*\{",
-    tray,
-    re.S,
-)
-assert definition, "could not find definition for tray_update_stop_menu_item"
-start = definition.start()
-opening = definition.end() - 1
-depth = 0
-state = "code"
-i = opening
-while i < len(tray):
-    char = tray[i]
-    next_two = tray[i : i + 2]
-    if state == "code":
-        if next_two == "//":
-            state = "line_comment"
-            i += 2
-            continue
-        if next_two == "/*":
-            state = "block_comment"
-            i += 2
-            continue
-        if char == '"':
-            state = "string"
-        elif char == "'":
-            state = "char"
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                update = tray[start : i + 1]
-                break
-    elif state == "line_comment":
-        if char == "\n":
-            state = "code"
-    elif state == "block_comment":
-        if next_two == "*/":
-            state = "code"
-            i += 2
-            continue
-    elif state in ("string", "char"):
-        if char == "\\":
-            i += 2
-            continue
-        if (state == "string" and char == '"') or (
-            state == "char" and char == "'"
-        ):
-            state = "code"
-    i += 1
-else:
-    raise AssertionError("unterminated function: tray_update_stop_menu_item")
+def extract_function(name):
+    definition = re.search(
+        r"\b(?:static\s+)?(?:void|bool|DWORD\s+WINAPI|ULONGLONG)\s+"
+        + re.escape(name)
+        + r"\s*\([^;]*?\)\s*\{",
+        tray,
+        re.S,
+    )
+    assert definition, f"could not find definition for {name}"
+    start = definition.start()
+    opening = definition.end() - 1
+    depth = 0
+    state = "code"
+    i = opening
+    while i < len(tray):
+        char = tray[i]
+        next_two = tray[i : i + 2]
+        if state == "code":
+            if next_two == "//":
+                state = "line_comment"
+                i += 2
+                continue
+            if next_two == "/*":
+                state = "block_comment"
+                i += 2
+                continue
+            if char == '"':
+                state = "string"
+            elif char == "'":
+                state = "char"
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return tray[start : i + 1]
+        elif state == "line_comment":
+            if char == "\n":
+                state = "code"
+        elif state == "block_comment":
+            if next_two == "*/":
+                state = "code"
+                i += 2
+                continue
+        elif state in ("string", "char"):
+            if char == "\\":
+                i += 2
+                continue
+            if (state == "string" and char == '"') or (
+                state == "char" and char == "'"
+            ):
+                state = "code"
+        i += 1
+    raise AssertionError(f"unterminated function: {name}")
+
+
+update_internal = extract_function("tray_update_stop_menu_item_internal")
+update = extract_function("tray_update_stop_menu_item")
+reap = extract_function("tray_reap_delayed_action_handle")
 
 harness = r'''#include <stdbool.h>
 #include <stdio.h>
@@ -115,9 +121,23 @@ typedef struct NoSleepTray {
 #define DEBUG_LOG(...) ((void)0)
 
 static char actual_menu_text[64];
+static int close_handle_calls;
+static int delayed_action_lock_depth;
+static int menu_updates_under_lock;
 
-static void AcquireSRWLockExclusive(int *lock) { (void)lock; }
-static void ReleaseSRWLockExclusive(int *lock) { (void)lock; }
+static void AcquireSRWLockExclusive(int *lock) {
+    (void)lock;
+    ++delayed_action_lock_depth;
+}
+static void ReleaseSRWLockExclusive(int *lock) {
+    (void)lock;
+    --delayed_action_lock_depth;
+}
+static int CloseHandle(HANDLE handle) {
+    (void)handle;
+    ++close_handle_calls;
+    return 1;
+}
 
 static int EnableMenuItem(HMENU menu, unsigned int item, unsigned int flags) {
     (void)menu;
@@ -131,11 +151,12 @@ static int SetMenuItemInfo(HMENU menu, unsigned int item, bool by_position,
     (void)menu;
     (void)item;
     (void)by_position;
+    if (delayed_action_lock_depth > 0) ++menu_updates_under_lock;
     snprintf(actual_menu_text, sizeof(actual_menu_text), "%s", info->dwTypeData);
     return 1;
 }
 
-''' + update + r'''
+''' + update_internal + "\n" + update + "\n" + reap + r'''
 
 static int expect_menu_text(const char *scenario,
                             bool countdown_active,
@@ -196,6 +217,43 @@ int main(void) {
         "idle tray", false, false, false, false, false, false,
         SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, "Stop");
     if (failures) return 1;
+    NoSleepTray sleep_tray = {0};
+    sleep_tray.hmenu = (HMENU)1;
+    sleep_tray.sleep_timer = (HANDLE)2;
+    sleep_tray.countdown_action = SESSION_FINISHED_SLEEP;
+    tray_update_stop_menu_item(&sleep_tray);
+    if (strcmp(actual_menu_text, "Cancel sleep") != 0) {
+        fprintf(stderr, "FAIL: pending sleep was not shown as cancellable before reaping\n");
+        return 1;
+    }
+    int sleep_menu_updates_before_reap = menu_updates_under_lock;
+    tray_reap_delayed_action_handle(&sleep_tray, &sleep_tray.sleep_timer);
+    if (sleep_tray.sleep_timer != NULL || strcmp(actual_menu_text, "Stop") != 0 ||
+        menu_updates_under_lock != sleep_menu_updates_before_reap + 1) {
+        fprintf(stderr, "FAIL: sleep reap left caption '%s' or updated it outside the tray lock\n",
+                actual_menu_text);
+        return 1;
+    }
+
+    NoSleepTray shutdown_tray = {0};
+    shutdown_tray.hmenu = (HMENU)1;
+    shutdown_tray.shutdown_timer = (HANDLE)3;
+    shutdown_tray.shutdown_action = SESSION_FINISHED_SHUTDOWN_GRACEFUL;
+    shutdown_tray.countdown_action = SESSION_FINISHED_SHUTDOWN_GRACEFUL;
+    tray_update_stop_menu_item(&shutdown_tray);
+    if (strcmp(actual_menu_text, "Cancel shutdown") != 0) {
+        fprintf(stderr, "FAIL: pending shutdown was not shown as cancellable before reaping\n");
+        return 1;
+    }
+    int shutdown_menu_updates_before_reap = menu_updates_under_lock;
+    tray_reap_delayed_action_handle(&shutdown_tray, &shutdown_tray.shutdown_timer);
+    if (shutdown_tray.shutdown_timer != NULL || strcmp(actual_menu_text, "Stop") != 0 ||
+        close_handle_calls != 2 ||
+        menu_updates_under_lock != shutdown_menu_updates_before_reap + 1) {
+        fprintf(stderr, "FAIL: shutdown reap left caption '%s' or updated it outside the tray lock\n",
+                actual_menu_text);
+        return 1;
+    }
     puts("PASS: stop menu labels pending delayed actions and active countdowns");
     return 0;
 }

@@ -1664,11 +1664,15 @@ static bool tray_has_stop_work(NoSleepTray* tray) {
     return has_work;
 }
 
+static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_held);
+
 static void tray_reap_delayed_action_handle(NoSleepTray* tray, HANDLE* timer_handle) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
     HANDLE completed_timer = *timer_handle;
     *timer_handle = NULL;
     if (completed_timer) CloseHandle(completed_timer);
+    // Keep teardown from freeing the tray before its menu caption is refreshed.
+    tray_update_stop_menu_item_internal(tray, true);
     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 }
 
@@ -2565,13 +2569,13 @@ void tray_update_icon(NoSleepTray* tray) {
     ReleaseSRWLockExclusive(&tray->tray_icon_lock);
 }
 
-void tray_update_stop_menu_item(NoSleepTray* tray) {
+static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_held) {
     if (!tray || !tray->hmenu) return;
     
     // Countdown startup can fail while its delayed action is still pending.
     // Read the action handles under their lock so the menu still offers the
     // matching cancellation command when the display flag is clear.
-    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    if (!lock_held) AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
     bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
     bool sleep_pending = tray->sleep_timer != NULL && !tray->sleep_action_claimed;
@@ -2586,7 +2590,7 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
         // The pending handle identifies the action if the countdown type is stale.
         pending_action = shutdown_pending ? tray->shutdown_action : SESSION_FINISHED_SLEEP;
     }
-    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    if (!lock_held) ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     // Determine menu text based on state
     const char* stop_text = NULL;
@@ -2618,6 +2622,10 @@ void tray_update_stop_menu_item(NoSleepTray* tray) {
     
     DEBUG_LOG("tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s, session_action=%d)",
             stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false", tray->session_finished_action);
+}
+
+void tray_update_stop_menu_item(NoSleepTray* tray) {
+    tray_update_stop_menu_item_internal(tray, false);
 }
 
 void tray_update_session_finished_menu(NoSleepTray* tray) {
