@@ -5141,6 +5141,9 @@ void tray_show_about_dialog(NoSleepTray* tray) {
     wc.lpszClassName = "NoSleepAboutDialog";
     RegisterClass(&wc);
 
+    DialogDpiContextFn set_dpi_context;
+    HANDLE previous_context = enter_dialog_dpi_context(&set_dpi_context);
+
     HWND hwndDlg = CreateWindowEx(
         0, "NoSleepAboutDialog", "About nosleep",
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME,
@@ -5165,6 +5168,8 @@ void tray_show_about_dialog(NoSleepTray* tray) {
             if (message_result == 0) PostQuitMessage((int)msg.wParam);
         }
     }
+
+    if (previous_context) set_dpi_context(previous_context);
 
     UnregisterClass("NoSleepAboutDialog", hInstance);
     tray_dialog_open = false;
@@ -5334,6 +5339,8 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                 SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)aboutFont);
             }
 
+            if (!initialize_dialog_layout(hwnd, 380, 240)) return -1;
+
             BOOL keyboard_invoked = about_tray && about_tray->menu_invoked_by_keyboard;
             if (about_tray) about_tray->menu_invoked_by_keyboard = false;
             center_about_dialog_on_invoking_monitor(
@@ -5356,6 +5363,14 @@ static LRESULT CALLBACK about_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam, LP
                     DestroyWindow(hwnd);
                     return TRUE;
             }
+            break;
+
+        case WM_DPICHANGED:
+            scale_dialog_layout(hwnd, HIWORD(wParam), (const RECT*)lParam);
+            return 0;
+
+        case WM_NCDESTROY:
+            free_dialog_layout(hwnd);
             break;
 
         case WM_DESTROY:
