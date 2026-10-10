@@ -51,11 +51,25 @@ typedef struct {
 
 static StoredRegistryTree stored_trees[REGISTRY_TREE_COUNT];
 static bool fail_root_create;
+static bool deny_parent_mutation;
+static DWORD registry_parent_access;
+static bool journal_phase_exists;
+static DWORD journal_phase;
+static bool journal_source_exists;
+static bool journal_destination_exists;
+static wchar_t journal_source[64];
+static wchar_t journal_destination[64];
 static int fail_group_create_index;
 static int fail_group_open_index;
 static int fail_group_delete_index;
 static int fail_write_group_index;
+static bool rename_api_available;
+static int rename_api_call_count;
 static char fail_write_name[32];
+
+static void make_manager(NotifyGroupManager *manager);
+static void seed_stored_group(int index, const char *name, DWORD event_mask,
+                              DWORD is_default);
 
 #define stored_root_exists (stored_trees[REGISTRY_TREE_PRIMARY].exists)
 #define has_active_index (stored_trees[REGISTRY_TREE_PRIMARY].has_active_index_value)
@@ -65,10 +79,20 @@ static char fail_write_name[32];
 static void reset_registry(void) {
     memset(stored_trees, 0, sizeof(stored_trees));
     fail_root_create = false;
+    deny_parent_mutation = false;
+    registry_parent_access = 0;
+    journal_phase_exists = false;
+    journal_phase = 0;
+    journal_source_exists = false;
+    journal_destination_exists = false;
+    journal_source[0] = L'\0';
+    journal_destination[0] = L'\0';
     fail_group_create_index = -1;
     fail_group_open_index = -1;
     fail_group_delete_index = -1;
     fail_write_group_index = -2;
+    rename_api_available = false;
+    rename_api_call_count = 0;
     fail_write_name[0] = '\0';
 }
 
@@ -152,6 +176,8 @@ static int registry_tree_from_name(const wchar_t *name) {
     return -1;
 }
 
+static LONG mock_reg_rename_key(HKEY key, LPCWSTR subkey_name, LPCWSTR new_name);
+
 static bool registry_tree_has_groups(int tree) {
     for (int i = 0; i < MAX_NOTIFY_GROUPS + 5; i++) {
         if (stored_trees[tree].groups[i].exists) return true;
@@ -166,11 +192,11 @@ LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
     (void)reserved;
     (void)class_name;
     (void)options;
-    (void)access;
     (void)security;
     (void)disposition;
 
     if (strcmp(path, NOTIFY_GROUPS_PARENT_REG_KEY) == 0) {
+        registry_parent_access = access;
         *key = (HKEY)(intptr_t)REGISTRY_PARENT_HANDLE;
         return ERROR_SUCCESS;
     }
@@ -195,7 +221,23 @@ LONG RegOpenKeyEx(HKEY root, const char *path, DWORD reserved, DWORD access,
                   HKEY *key) {
     (void)root;
     (void)reserved;
-    (void)access;
+
+    if (strcmp(path, NOTIFY_GROUPS_PARENT_REG_KEY) == 0) {
+        if (deny_parent_mutation &&
+            (access & (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE)) != 0) {
+            return ERROR_ACCESS_DENIED;
+        }
+        for (int tree = 0; tree < REGISTRY_TREE_COUNT; tree++) {
+            if (stored_trees[tree].exists) {
+                if ((access & (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE)) != 0) {
+                    registry_parent_access = access;
+                }
+                *key = (HKEY)(intptr_t)REGISTRY_PARENT_HANDLE;
+                return ERROR_SUCCESS;
+            }
+        }
+        return ERROR_FILE_NOT_FOUND;
+    }
 
     int tree;
     if (get_root_tree(path, &tree)) {
@@ -255,6 +297,31 @@ LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
     return ERROR_FILE_NOT_FOUND;
 }
 
+LONG RegSetValueExW(HKEY key, LPCWSTR name, DWORD reserved, DWORD type,
+                    const BYTE *value, DWORD size) {
+    (void)reserved;
+    if ((intptr_t)key != REGISTRY_PARENT_HANDLE) return ERROR_FILE_NOT_FOUND;
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenameSource") == 0 &&
+        type == REG_SZ && size <= sizeof(journal_source)) {
+        memcpy(journal_source, value, size);
+        journal_source_exists = true;
+        return ERROR_SUCCESS;
+    }
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenameDestination") == 0 &&
+        type == REG_SZ && size <= sizeof(journal_destination)) {
+        memcpy(journal_destination, value, size);
+        journal_destination_exists = true;
+        return ERROR_SUCCESS;
+    }
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenamePhase") == 0 &&
+        type == REG_DWORD && size == sizeof(journal_phase)) {
+        memcpy(&journal_phase, value, size);
+        journal_phase_exists = true;
+        return ERROR_SUCCESS;
+    }
+    return ERROR_FILE_NOT_FOUND;
+}
+
 static LONG copy_registry_value(const void *source, DWORD source_size,
                                 DWORD source_type, DWORD *type,
                                 BYTE *value, DWORD *size) {
@@ -298,6 +365,38 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
     return ERROR_FILE_NOT_FOUND;
 }
 
+LONG RegQueryValueExW(HKEY key, LPCWSTR name, DWORD *reserved, DWORD *type,
+                      BYTE *value, DWORD *size) {
+    (void)reserved;
+    if ((intptr_t)key != REGISTRY_PARENT_HANDLE) return ERROR_FILE_NOT_FOUND;
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenameSource") == 0 &&
+        journal_source_exists) {
+        return copy_registry_value(journal_source,
+            (DWORD)(wcslen(journal_source) + 1) * sizeof(wchar_t),
+            REG_SZ, type, value, size);
+    }
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenameDestination") == 0 &&
+        journal_destination_exists) {
+        return copy_registry_value(journal_destination,
+            (DWORD)(wcslen(journal_destination) + 1) * sizeof(wchar_t),
+            REG_SZ, type, value, size);
+    }
+    if (wcscmp(name, L"__NoSleep_NotifyGroups_RenamePhase") == 0 &&
+        journal_phase_exists) {
+        return copy_registry_value(&journal_phase, sizeof(journal_phase),
+            REG_DWORD, type, value, size);
+    }
+    return ERROR_FILE_NOT_FOUND;
+}
+
+LONG RegDeleteValueW(HKEY key, LPCWSTR name) {
+    if ((intptr_t)key != REGISTRY_PARENT_HANDLE ||
+        wcscmp(name, L"__NoSleep_NotifyGroups_RenamePhase") != 0 ||
+        !journal_phase_exists) return ERROR_FILE_NOT_FOUND;
+    journal_phase_exists = false;
+    return ERROR_SUCCESS;
+}
+
 LONG RegDeleteKey(HKEY root, const char *path) {
     (void)root;
     int tree;
@@ -324,7 +423,81 @@ LONG RegCloseKey(HKEY key) {
     return ERROR_SUCCESS;
 }
 
-LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name) {
+LONG RegCreateKeyExW(HKEY root, LPCWSTR path, DWORD reserved,
+                     wchar_t *class_name, DWORD options, DWORD access,
+                     void *security, HKEY *key, DWORD *disposition) {
+    (void)reserved;
+    (void)class_name;
+    (void)options;
+    (void)access;
+    (void)security;
+    if ((intptr_t)root != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
+    int tree = registry_tree_from_name(path);
+    if (tree < 0 || stored_trees[tree].exists) return ERROR_ACCESS_DENIED;
+    stored_trees[tree].exists = true;
+    *key = (HKEY)(intptr_t)registry_tree_handle(tree);
+    if (disposition) *disposition = REG_CREATED_NEW_KEY;
+    return ERROR_SUCCESS;
+}
+
+LONG RegOpenKeyExW(HKEY root, LPCWSTR path, DWORD reserved, DWORD access,
+                   HKEY *key) {
+    (void)reserved;
+    (void)access;
+    if ((intptr_t)root != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
+    int tree = registry_tree_from_name(path);
+    if (tree < 0 || !stored_trees[tree].exists) return ERROR_FILE_NOT_FOUND;
+    *key = (HKEY)(intptr_t)registry_tree_handle(tree);
+    return ERROR_SUCCESS;
+}
+
+LONG RegCopyTreeW(HKEY source, LPCWSTR subkey, HKEY destination) {
+    int source_tree = subkey ? registry_tree_from_name(subkey) : registry_tree_from_handle(source);
+    int destination_tree = registry_tree_from_handle(destination);
+    if (source_tree < 0 || destination_tree < 0 ||
+        !stored_trees[source_tree].exists || !stored_trees[destination_tree].exists) {
+        return ERROR_FILE_NOT_FOUND;
+    }
+    stored_trees[destination_tree] = stored_trees[source_tree];
+    return ERROR_SUCCESS;
+}
+
+LONG RegDeleteTreeW(HKEY root, LPCWSTR path) {
+    if ((intptr_t)root != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
+    if ((registry_parent_access & DELETE) == 0) return ERROR_ACCESS_DENIED;
+    int tree = registry_tree_from_name(path);
+    if (tree < 0 || !stored_trees[tree].exists) return ERROR_FILE_NOT_FOUND;
+    stored_trees[tree].has_active_index_value = false;
+    stored_trees[tree].active_index = 0;
+    memset(stored_trees[tree].groups, 0, sizeof(stored_trees[tree].groups));
+    return ERROR_SUCCESS;
+}
+
+LONG RegDeleteKeyW(HKEY root, LPCWSTR path) {
+    if ((intptr_t)root != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
+    int tree = registry_tree_from_name(path);
+    if (tree < 0 || !stored_trees[tree].exists) return ERROR_FILE_NOT_FOUND;
+    if (registry_tree_has_groups(tree) || stored_trees[tree].has_active_index_value) {
+        return ERROR_ACCESS_DENIED;
+    }
+    memset(&stored_trees[tree], 0, sizeof(stored_trees[tree]));
+    return ERROR_SUCCESS;
+}
+
+HMODULE GetModuleHandleW(LPCWSTR module_name) {
+    return wcscmp(module_name, L"advapi32.dll") == 0 ? (HMODULE)(intptr_t)1 : NULL;
+}
+
+FARPROC GetProcAddress(HMODULE module, const char *name) {
+    if ((intptr_t)module == 1 && rename_api_available &&
+        strcmp(name, "RegRenameKey") == 0) {
+        return (FARPROC)mock_reg_rename_key;
+    }
+    return NULL;
+}
+
+static LONG mock_reg_rename_key(HKEY key, LPCWSTR subkey_name, LPCWSTR new_name) {
+    rename_api_call_count++;
     if ((intptr_t)key != REGISTRY_PARENT_HANDLE) return ERROR_ACCESS_DENIED;
     int old_tree = registry_tree_from_name(subkey_name);
     int new_tree = registry_tree_from_name(new_name);
@@ -335,6 +508,109 @@ LONG RegRenameKey(HKEY key, const wchar_t *subkey_name, const wchar_t *new_name)
     stored_trees[new_tree] = stored_trees[old_tree];
     memset(&stored_trees[old_tree], 0, sizeof(stored_trees[old_tree]));
     return ERROR_SUCCESS;
+}
+
+static int test_legacy_rename_fallback_replaces_existing_tree(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 1;
+    seed_stored_group(0, "Persisted all", 0xFFFFFFFFu, 1);
+    seed_stored_group(1, "Persisted work", 0x155u, 0);
+
+    NotifyGroupManager updated;
+    make_manager(&updated);
+    strcpy(updated.groups[0].name, "Replacement all");
+    strcpy(updated.groups[1].name, "Replacement work");
+    updated.groups[1].event_mask = 0x2u;
+
+    if (!notify_groups_save(&updated) || rename_api_call_count != 0) {
+        fprintf(stderr, "FAIL: registry tree replacement failed without RegRenameKey\n");
+        return 1;
+    }
+
+    NotifyGroupManager loaded;
+    memset(&loaded, 0, sizeof(loaded));
+    notify_groups_load(&loaded);
+    if (loaded.count != 2 || loaded.active_index != 1 ||
+        strcmp(loaded.groups[0].name, "Replacement all") != 0 ||
+        strcmp(loaded.groups[1].name, "Replacement work") != 0 ||
+        loaded.groups[1].event_mask != 0x2u ||
+        stored_trees[REGISTRY_TREE_STAGING].exists ||
+        stored_trees[REGISTRY_TREE_BACKUP].exists) {
+        fprintf(stderr, "FAIL: legacy rename fallback did not preserve the replacement tree\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_dynamic_rename_api_is_used_when_available(void) {
+    reset_registry();
+    rename_api_available = true;
+    NotifyGroupManager manager;
+    make_manager(&manager);
+
+    if (!notify_groups_save(&manager) || rename_api_call_count != 1 ||
+        (registry_parent_access & DELETE) != 0) {
+        fprintf(stderr, "FAIL: dynamic rename export was unavailable or required unnecessary parent DELETE access\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_interrupted_copy_rename_restores_complete_backup_before_load(void) {
+    reset_registry();
+    stored_trees[REGISTRY_TREE_PRIMARY].exists = true;
+    stored_trees[REGISTRY_TREE_PRIMARY].has_active_index_value = true;
+    stored_trees[REGISTRY_TREE_PRIMARY].active_index = 0;
+    seed_stored_group(0, "Partial active", 0x1u, 0);
+
+    stored_trees[REGISTRY_TREE_BACKUP].exists = true;
+    stored_trees[REGISTRY_TREE_BACKUP].has_active_index_value = true;
+    stored_trees[REGISTRY_TREE_BACKUP].active_index = 1;
+    stored_trees[REGISTRY_TREE_BACKUP].groups[0] = (StoredGroup){
+        true, true, true, true, "Persisted all", 0xFFFFFFFFu, 1
+    };
+    stored_trees[REGISTRY_TREE_BACKUP].groups[1] = (StoredGroup){
+        true, true, true, true, "Persisted work", 0x155u, 0
+    };
+
+    journal_phase_exists = true;
+    journal_phase = 2;
+    journal_source_exists = true;
+    journal_destination_exists = true;
+    wcscpy(journal_source, L"NotificationGroups");
+    wcscpy(journal_destination, L"NotificationGroups_Backup");
+
+    NotifyGroupManager loaded = {0};
+    notify_groups_load(&loaded);
+    if (loaded.count != 2 || loaded.active_index != 1 ||
+        strcmp(loaded.groups[0].name, "Persisted all") != 0 ||
+        strcmp(loaded.groups[1].name, "Persisted work") != 0 ||
+        stored_trees[REGISTRY_TREE_PRIMARY].exists ||
+        !stored_trees[REGISTRY_TREE_BACKUP].exists || journal_phase_exists) {
+        fprintf(stderr, "FAIL: interrupted fallback rename did not recover its complete backup before load\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int test_load_without_write_access_when_no_rename_journal(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 0;
+    seed_stored_group(0, "Persisted all", 0xFFFFFFFFu, 1);
+    deny_parent_mutation = true;
+
+    NotifyGroupManager loaded = {0};
+    notify_groups_load(&loaded);
+    if (loaded.load_incomplete || loaded.count != 1 ||
+        strcmp(loaded.groups[0].name, "Persisted all") != 0) {
+        fprintf(stderr, "FAIL: loading groups without a pending rename required parent write access\n");
+        return 1;
+    }
+    return 0;
 }
 
 static void make_manager(NotifyGroupManager *manager) {
@@ -723,6 +999,10 @@ int main(void) {
     failures += test_staging_cleanup_failure();
     failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
+    failures += test_legacy_rename_fallback_replaces_existing_tree();
+    failures += test_dynamic_rename_api_is_used_when_available();
+    failures += test_interrupted_copy_rename_restores_complete_backup_before_load();
+    failures += test_load_without_write_access_when_no_rename_journal();
     failures += test_load_skips_missing_group_slots_and_preserves_persistence();
     failures += test_load_skips_whitespace_only_group_and_maps_active_selection();
     failures += test_partial_load_cannot_overwrite_persisted_groups();
