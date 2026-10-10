@@ -71,6 +71,7 @@ run-cli: $(TARGET)
 # Build and run unit tests for updater module (JSON parsing, version comparison)
 test-unit: $(OBJDIR) test-cli test-updater-url-policy
 	bash ./test_tray_atomic_loads.sh
+	bash ./test_tray_atomic_loads_cc_arguments.sh
 	bash ./test_make_action_targets_phony.sh
 	bash ./test_updater_launch_cleanup.sh
 	bash ./test_updater_wait_process.sh
