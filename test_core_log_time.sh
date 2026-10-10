@@ -11,8 +11,11 @@ echo "=== Test Suite: Core logging + time source ==="
 
 # The deterministic Win32 stubs let this test compile and run production core.c
 # on Linux while checking elapsed-time status output across a 32-bit tick wrap.
-$CC $TEST_CFLAGS -Itests/core_stubs tests/test_core_log_time.c src/core.c \
-    -o "$TEST_TMPDIR/test_core_log_time"
+$CC $TEST_CFLAGS -Itests/core_stubs \
+    -Dprintf=test_core_printf -Dvprintf=test_core_vprintf \
+    -c src/core.c -o "$TEST_TMPDIR/core.o"
+$CC $TEST_CFLAGS -Itests/core_stubs tests/test_core_log_time.c \
+    "$TEST_TMPDIR/core.o" -o "$TEST_TMPDIR/test_core_log_time"
 "$TEST_TMPDIR/test_core_log_time"
 
 case "$(uname -s)" in
