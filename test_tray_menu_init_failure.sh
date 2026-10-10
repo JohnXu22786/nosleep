@@ -254,8 +254,8 @@ static bool should_check_for_updates(void) { return false; }
 static void tray_check_for_updates(NoSleepTray *tray, bool startup) {
     (void)tray; (void)startup;
 }
-static void tray_setup_update_timer(NoSleepTray *tray) {
-    (void)tray; ++update_timer_calls;
+static void tray_setup_update_timer(NoSleepTray *tray, bool use_remaining_interval) {
+    (void)tray; (void)use_remaining_interval; ++update_timer_calls;
 }
 static void tray_create_icons(NoSleepTray *tray) {
     tray->hIconDefault = (HICON)1;
