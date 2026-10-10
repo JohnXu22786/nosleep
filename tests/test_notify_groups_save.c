@@ -1078,6 +1078,42 @@ static int test_successful_save_round_trips_groups(void) {
     return 0;
 }
 
+static int test_reload_without_registry_trees_clears_stale_groups(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 1;
+    seed_stored_group(0, "Persisted all", 0xFFFFFFFFu, 1);
+    seed_stored_group(1, "Persisted work", 0x155u, 0);
+
+    NotifyGroupManager loaded = {0};
+    notify_groups_load(&loaded);
+    if (loaded.count != 2 || loaded.active_index != 1) {
+        fprintf(stderr, "FAIL: initial registry load did not populate the manager\n");
+        return 1;
+    }
+
+    memset(&stored_trees[REGISTRY_TREE_PRIMARY], 0,
+           sizeof(stored_trees[REGISTRY_TREE_PRIMARY]));
+    memset(&stored_trees[REGISTRY_TREE_BACKUP], 0,
+           sizeof(stored_trees[REGISTRY_TREE_BACKUP]));
+    notify_groups_load(&loaded);
+    if (loaded.load_incomplete || loaded.count != 0 || loaded.active_index != 0 ||
+        notify_groups_get_active(&loaded) != NULL) {
+        fprintf(stderr, "FAIL: reload without registry trees retained stale groups or selection\n");
+        return 1;
+    }
+
+    if (!notify_groups_save(&loaded) || !stored_root_exists ||
+        !has_active_index || stored_active_index != 0 ||
+        registry_tree_has_groups(REGISTRY_TREE_PRIMARY) ||
+        stored_trees[REGISTRY_TREE_BACKUP].exists) {
+        fprintf(stderr, "FAIL: saving after an empty reload recreated deleted groups or selection\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_load_skips_missing_group_slots_and_preserves_persistence(void) {
     reset_registry();
     stored_root_exists = true;
@@ -1209,6 +1245,7 @@ int main(void) {
     failures += test_interrupted_copy_rename_restores_complete_backup_before_load();
     failures += test_load_during_fallback_rename_cannot_delete_live_destination();
     failures += test_load_without_write_access_when_no_rename_journal();
+    failures += test_reload_without_registry_trees_clears_stale_groups();
     failures += test_load_skips_missing_group_slots_and_preserves_persistence();
     failures += test_load_skips_whitespace_only_group_and_maps_active_selection();
     failures += test_partial_load_cannot_overwrite_persisted_groups();

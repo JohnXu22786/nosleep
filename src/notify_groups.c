@@ -653,7 +653,13 @@ static void notify_groups_load_locked(NotifyGroupManager* mgr) {
         result = RegOpenKeyEx(HKEY_CURRENT_USER, registry_root, 0, KEY_READ, &hKeyRoot);
     }
     if (result != ERROR_SUCCESS) {
-        mgr->load_incomplete = result != ERROR_FILE_NOT_FOUND;
+        if (result == ERROR_FILE_NOT_FOUND) {
+            // Neither registry tree exists, so this is a successful empty load.
+            mgr->count = 0;
+            mgr->active_index = 0;
+        } else {
+            mgr->load_incomplete = true;
+        }
         return;
     }
     
