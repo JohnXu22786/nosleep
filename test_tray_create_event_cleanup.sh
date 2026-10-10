@@ -84,6 +84,7 @@ typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
     SRWLOCK tray_icon_lock;
     SRWLOCK countdown_icon_cache_lock;
+    SRWLOCK notify_groups_lock;
     CONDITION_VARIABLE stop_condition;
     int duration_minutes;
     int current_number;
