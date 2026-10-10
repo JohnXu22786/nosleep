@@ -91,6 +91,10 @@ setup_timer = extract_function("tray_setup_update_timer")
 begin_update_check = extract_function("tray_update_check_begin", "bool")
 end_update_check = extract_function("tray_update_check_end")
 process_update_result = extract_function("tray_process_update_check_result")
+window_proc = extract_function("tray_window_proc", "LRESULT CALLBACK")
+timer_case = window_proc.split("case WM_TIMER:", 1)[1].split(
+    "case WM_DESTROY:", 1
+)[0]
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
@@ -104,6 +108,7 @@ typedef unsigned int UINT;
 typedef unsigned int DWORD;
 typedef int LONG;
 typedef uintptr_t UINT_PTR;
+typedef uintptr_t WPARAM;
 typedef unsigned long long ULONGLONG;
 typedef unsigned char* LPBYTE;
 typedef struct {
@@ -163,10 +168,15 @@ typedef struct {
 #define MF_BYCOMMAND 0
 #define MF_GRAYED 1
 #define MF_ENABLED 2
+#define WM_TIMER 0x0113
+#define WM_DESTROY 0x0002
+#define TIMER_ID_AUTO_START 1001
+#define DEBUG_PRINT(...) ((void)0)
 
 typedef int NotifyEventId;
 
 static bool update_check_in_progress;
+static int update_check_count;
 
 static int kill_count;
 static int set_count;
@@ -322,6 +332,35 @@ __SETUP_TIMER__
 __BEGIN_UPDATE_CHECK__
 __END_UPDATE_CHECK__
 __PROCESS_UPDATE_RESULT__
+
+static void tray_check_for_updates(NoSleepTray* tray, bool silent) {
+    (void)tray;
+    (void)silent;
+    ++update_check_count;
+}
+
+static bool tray_handle_taskbar_restore_retry(NoSleepTray* tray, WPARAM timer_id) {
+    (void)tray;
+    (void)timer_id;
+    return false;
+}
+
+static void tray_start_nosleep(NoSleepTray* tray, int minutes) {
+    (void)tray;
+    (void)minutes;
+}
+
+static void run_update_timer_message(NoSleepTray* tray, WPARAM wParam) {
+    HWND hwnd = tray ? tray->hwnd : NULL;
+    UINT msg = WM_TIMER;
+    switch (msg) {
+        case WM_TIMER:
+__TRAY_TIMER_CASE__
+        case WM_DESTROY:
+            break;
+    }
+    (void)hwnd;
+}
 
 static int fail(const char* scenario) {
     fprintf(stderr, "FAIL: %s\n", scenario);
@@ -519,6 +558,39 @@ int main(void) {
         return fail("a completed manual check must not restore a timer when auto checks are disabled");
     }
 
+    NoSleepTray stale_timer_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 0,
+        .update_timer_id = 0,
+    };
+    update_check_count = 0;
+    set_count = 0;
+    run_update_timer_message(&stale_timer_tray, 1002);
+    if (update_check_count != 0 || set_count != 0) {
+        return fail("a queued update timer after disabling automatic checks must be ignored");
+    }
+
+    NoSleepTray replaced_timer_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 1,
+        .update_timer_id = 2002,
+    };
+    run_update_timer_message(&replaced_timer_tray, 1002);
+    if (update_check_count != 0 || set_count != 0) {
+        return fail("an update timer message for an obsolete timer ID must be ignored");
+    }
+
+    NoSleepTray active_timer_tray = {
+        .hwnd = (HWND)1,
+        .auto_check_interval = 1,
+        .update_timer_id = 1002,
+    };
+    run_update_timer_message(&active_timer_tray, 1002);
+    if (update_check_count != 1 || active_timer_tray.update_timer_id != 1002 ||
+        set_count != 1) {
+        return fail("the active update timer must still start a check and reschedule itself");
+    }
+
     puts("PASS: update checks are non-reentrant and interval changes reconfigure the timer");
     return 0;
 }
@@ -537,7 +609,7 @@ harness = harness.replace("__NORMALIZE_INTERVAL__", normalize_interval).replace(
 ).replace("__BEGIN_UPDATE_CHECK__", begin_update_check).replace(
     "__END_UPDATE_CHECK__", end_update_check
 ).replace("__PROCESS_UPDATE_RESULT__", process_update_result
-)
+).replace("__TRAY_TIMER_CASE__", timer_case)
 
 with tempfile.TemporaryDirectory() as tmp:
     source = Path(tmp) / "test_tray_auto_update_timer.c"
