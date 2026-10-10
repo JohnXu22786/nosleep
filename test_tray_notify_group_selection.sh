@@ -309,6 +309,28 @@ main = r'''int main(void) {
         ++failures;
     }
 
+    // Keep Delete unavailable when it would remove the final custom group.
+    tray.notify_groups.count = 1;
+    tray.notify_groups.active_index = 0;
+    tray.notify_groups.groups[0].is_default = false;
+    seed_list(1, 0);
+    update_notification_group_actions(parent, &tray);
+    if (is_control_enabled(IDC_NOTIFY_DEL_GROUP)) {
+        fprintf(stderr, "FAIL: Delete is enabled for the sole custom group\n");
+        ++failures;
+    }
+
+    // Removing one group is still available when another group remains.
+    tray.notify_groups.count = 2;
+    tray.notify_groups.active_index = 0;
+    tray.notify_groups.groups[1].is_default = false;
+    seed_list(2, 1);
+    update_notification_group_actions(parent, &tray);
+    if (!is_control_enabled(IDC_NOTIFY_DEL_GROUP)) {
+        fprintf(stderr, "FAIL: Delete is disabled when another group can remain\n");
+        ++failures;
+    }
+
     return failures ? 1 : 0;
 }
 '''

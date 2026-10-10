@@ -445,7 +445,7 @@ int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int ev
 }
 
 bool notify_groups_remove(NotifyGroupManager* mgr, int index) {
-    if (!mgr || index < 0 || index >= mgr->count) return false;
+    if (!mgr || mgr->count <= 1 || index < 0 || index >= mgr->count) return false;
     if (mgr->groups[index].is_default) return false; // Cannot delete defaults
     
     // Shift remaining groups
