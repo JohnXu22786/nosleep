@@ -805,6 +805,8 @@ source = (
     + "\n"
     + extract_function("path_segment_comparison_length")
     + "\n"
+    + extract_function("is_supported_path_registry_type")
+    + "\n"
     + add_app_to_path_test_function
     + "\n"
     + extract_function("remove_app_from_path")
