@@ -46,7 +46,7 @@ def run(failure=None, collision=None, relay_status=0):
         if match:
             if status >= int(match[1]): pc = labels[match[2]]
             continue
-        if line.startswith('if not "%%errorlevel%%"=="0" goto '):
+        if line.startswith('if not "%errorlevel%"=="0" goto '):
             if status != 0: pc = labels[line.split()[-1]]
             continue
         match = re.match(r'goto (\w+)', line, re.I)
@@ -93,6 +93,9 @@ for suffix in ('.update', '.backup'):
 files = run()
 assert files[current] == b'new executable', 'successful install did not replace executable'
 assert current + '.backup' not in files, 'successful install retained backup'
+files = run(relay_status=1)
+assert files[current] == b'old executable', 'failed relay start did not restore original executable'
+assert download in files, 'failed relay start discarded the recovery download'
 files = run(relay_status=2)
 assert files[current] == b'new executable', 'failed child stop attempted a rollback over a running process'
 assert files.get(current + '.backup') == b'old executable', 'failed child stop discarded the rollback backup'
