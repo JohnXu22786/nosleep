@@ -27,6 +27,7 @@ static const char* TRAY_WINDOW_CLASS = "NoSleepTrayWindowClass";
 // Timer ID for auto-start debug feature
 #define TIMER_ID_AUTO_START 1000
 #define TIMER_ID_TASKBAR_RESTORE 1003
+#define TIMER_ID_UPDATE_CHECK_FIRST 1004
 #define TASKBAR_RESTORE_RETRY_INTERVAL_MS 1000
 #define WM_TRAY_UPDATE_CHECK_COMPLETE (WM_APP + 2)
 
@@ -5746,6 +5747,15 @@ static void tray_apply_auto_check_interval(NoSleepTray* tray, int interval) {
     tray_setup_update_timer(tray, true);
 }
 
+static UINT_PTR tray_allocate_update_timer_id(void) {
+    static UINT_PTR next_timer_id = TIMER_ID_UPDATE_CHECK_FIRST;
+    UINT_PTR timer_id = next_timer_id++;
+    if (next_timer_id < TIMER_ID_UPDATE_CHECK_FIRST) {
+        next_timer_id = TIMER_ID_UPDATE_CHECK_FIRST;
+    }
+    return timer_id;
+}
+
 static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interval) {
     if (!tray || !tray->hwnd) return;
 
@@ -5796,7 +5806,8 @@ static void tray_setup_update_timer(NoSleepTray* tray, bool use_remaining_interv
         }
     }
 
-    tray->update_timer_id = SetTimer(tray->hwnd, 1002, interval_ms, NULL);
+    tray->update_timer_id = SetTimer(tray->hwnd,
+        tray_allocate_update_timer_id(), interval_ms, NULL);
     if (!tray->update_timer_id) {
         tray_show_notification(tray, NOTIFY_EVENT_UPDATE_CHECK_FAILED,
             "Automatic Updates Not Scheduled",
