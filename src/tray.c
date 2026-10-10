@@ -1756,10 +1756,17 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     bool core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
                     bool nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
                     bool session_starting = tray->starting_nosleep;
+                    bool should_abandon = !is_current_session || !is_running ||
+                                          core_init_failed || nosleep_run_failed ||
+                                          session_starting;
+                    if (!should_abandon && core_init_succeeded) {
+                        // Publish expiry with the final session check so suspend
+                        // cannot miss cancellation between the check and publish.
+                        ATOMIC_STORE_BOOL(&tray->duration_expired, true);
+                    }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 
-                    if (!is_current_session || !is_running || core_init_failed ||
-                        nosleep_run_failed || session_starting) {
+                    if (should_abandon) {
                         DEBUG_LOG("tray_duration_timer: abandoning action while core initialization or session state changes");
                         return 0;
                     }
@@ -1768,11 +1775,27 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     Sleep(10);
                 }
+            } else {
+                // No delayed action needs core readiness, but only publish expiry
+                // for the session that reached its duration.
+                AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                bool is_current_session = (tray->timer_thread_id == timer_thread_id);
+                bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+                bool session_starting = tray->starting_nosleep;
+                bool should_abandon = !is_current_session || !is_running ||
+                                      session_starting;
+                if (!should_abandon) {
+                    ATOMIC_STORE_BOOL(&tray->duration_expired, true);
+                }
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                if (should_abandon) {
+                    DEBUG_LOG("tray_duration_timer: abandoning expiry for an ended session");
+                    return 0;
+                }
             }
 
             // Duration reached
             DEBUG_LOG("tray_duration_timer: duration reached, stopping with timer_expired=true");
-            ATOMIC_STORE_BOOL(&tray->duration_expired, true);
             
             DEBUG_LOG("tray_duration_timer: elapsed=%llu ms, duration=%llu ms, calling tray_stop_nosleep",
                     elapsed_ms, duration_ms);
@@ -5976,20 +5999,31 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     case PBT_APMSUSPEND:
                         // System is about to enter sleep
                         DEBUG_LOG("System entering sleep, stopping all timers");
+                        ULONGLONG suspend_tick64 = GetTickCount64();
                         
                         // Do not wait for action workers here: a sleep action can
                         // be generating this broadcast while waiting for it to return.
                         AcquireSRWLockExclusive(&tray->delayed_action_lock);
                         tray_wait_for_delayed_countdown_start(tray);
-                        if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
-                            tray->session_action_cancelled = true;
+                        bool duration_reached_at_suspend = false;
+                        if (tray->timer_thread_id != 0 && tray->duration_minutes > 0 &&
+                            suspend_tick64 >= tray->start_tick64) {
+                            ULONGLONG duration_ms =
+                                (ULONGLONG)tray->duration_minutes * 60 * 1000;
+                            duration_reached_at_suspend =
+                                suspend_tick64 - tray->start_tick64 >= duration_ms;
                         }
-                        SetEvent(tray->sleep_stop_event);
-                        SetEvent(tray->shutdown_stop_event);
+                        if (duration_reached_at_suspend) {
+                            tray->session_action_cancelled = true;
+                            SetEvent(tray->sleep_stop_event);
+                            SetEvent(tray->shutdown_stop_event);
+                        }
                         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 
-                        // Stop any countdown that was already active.
-                        if (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                        // Only cancel actions that were due when suspend arrived;
+                        // the timer can start a new action while this handler waits.
+                        if (duration_reached_at_suspend &&
+                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                             tray_stop_countdown(tray);
                         }
                         
