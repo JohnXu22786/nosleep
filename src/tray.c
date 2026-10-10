@@ -64,7 +64,7 @@ struct TrayUpdateCheckTask {
     HWND hwnd;
     bool silent;
     bool check_succeeded;
-    bool shutdown_requested;
+    volatile LONG shutdown_requested;
     UpdateInfo info;
     HANDLE thread;
     DWORD thread_id;
@@ -81,8 +81,11 @@ static void tray_update_check_end(void) {
 }
 
 static bool tray_update_check_shutdown_requested(TrayUpdateCheckTask* task) {
-    return InterlockedCompareExchange8(
-        (volatile char*)&task->shutdown_requested, 0, 0) != 0;
+#ifdef __GNUC__
+    return __atomic_load_n(&task->shutdown_requested, __ATOMIC_SEQ_CST) != 0;
+#else
+    return InterlockedCompareExchange(&task->shutdown_requested, 0, 0) != 0;
+#endif
 }
 
 static ULONGLONG get_elapsed_milliseconds(ULONGLONG start_tick64) {
@@ -265,7 +268,7 @@ static bool tray_wait_for_update_check(NoSleepTray* tray) {
 
     if (task->thread) {
         // Stop result delivery and cancel WinHTTP before joining the worker.
-        ATOMIC_STORE_BOOL(&task->shutdown_requested, true);
+        ATOMIC_STORE_INT(&task->shutdown_requested, true);
         CancelSynchronousIo(task->thread);
         if (WaitForSingleObject(task->thread, INFINITE) != WAIT_OBJECT_0) {
             DEBUG_LOG("tray_wait_for_update_check: waiting for update worker failed");

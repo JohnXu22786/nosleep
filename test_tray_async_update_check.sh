@@ -103,6 +103,7 @@ typedef void *HWND;
 typedef void *LPVOID;
 typedef unsigned int UINT;
 typedef unsigned long DWORD;
+typedef int32_t LONG;
 typedef int BOOL;
 typedef intptr_t LPARAM;
 typedef int NotifyEventId;
@@ -121,6 +122,8 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define MEMORY_BARRIER() ((void)0)
 #define ATOMIC_STORE_BOOL(destination, value) \
     __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
+#define ATOMIC_STORE_INT(destination, value) \
+    __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
 #define DEBUG_LOG(...) ((void)0)
 #define NOTIFY_EVENT_UPDATE_CHECK_FAILED 1
 #define NOTIFY_EVENT_UPDATE_CHECK_COMPLETED 2
@@ -130,14 +133,6 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define MF_BYCOMMAND 0x0000
 #define MF_GRAYED 0x0001
 #define MF_ENABLED 0x0000
-
-static char InterlockedCompareExchange8(volatile char *destination,
-                                        char exchange, char comparand) {
-    char previous = comparand;
-    __atomic_compare_exchange_n(destination, &previous, exchange, false,
-                                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-    return previous;
-}
 
 typedef struct {
     char latest_version[64];
@@ -266,7 +261,7 @@ static void Sleep(DWORD milliseconds) {
     ++retry_sleep_count;
     if (shutdown_task_after_sleep &&
         retry_sleep_count == shutdown_after_sleep_count) {
-        ATOMIC_STORE_BOOL(&shutdown_task_after_sleep->shutdown_requested, true);
+        ATOMIC_STORE_INT(&shutdown_task_after_sleep->shutdown_requested, true);
     }
 }
 

@@ -74,6 +74,7 @@ prelude = r"""
 typedef unsigned int DWORD;
 typedef unsigned long ULONG;
 typedef unsigned long long ULONGLONG;
+typedef int32_t LONG;
 typedef int BOOL;
 typedef void *HANDLE;
 typedef void *HWND;
@@ -94,7 +95,7 @@ typedef enum {
 } NotifyEventId;
 
 typedef struct TrayUpdateCheckTask {
-    bool shutdown_requested;
+    volatile LONG shutdown_requested;
     HANDLE thread;
     DWORD thread_id;
 } TrayUpdateCheckTask;
@@ -107,6 +108,8 @@ typedef struct TrayUpdateCheckTask {
 #define ES_CONTINUOUS 0x80000000u
 #define DEBUG_LOG(...) do { if (0) fprintf(stderr, __VA_ARGS__); } while (0)
 #define ATOMIC_STORE_BOOL(destination, value) \
+    __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
+#define ATOMIC_STORE_INT(destination, value) \
     __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
 #define ATOMIC_LOAD_BOOL(source) \
     __atomic_load_n((source), __ATOMIC_SEQ_CST)
