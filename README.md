@@ -22,7 +22,7 @@ A lightweight Windows utility written in C that prevents system sleep using the 
 
 ### Download a Release
 
-Download the versioned 64-bit `nosleep-v*.exe` file from the [latest GitHub release](https://github.com/JohnXu22786/nosleep/releases/latest) and save it on a 64-bit Windows PC. Double-click the executable to start in system tray mode, or run it from Command Prompt to use command-line options. The prebuilt executable runs without downloading the source code or installing MinGW.
+Download the versioned 64-bit `nosleep-v*.exe` file from the [latest GitHub release](https://github.com/JohnXu22786/nosleep/releases/latest) and save it on a 64-bit Windows PC. Rename it to `nosleep.exe` before following the command-line instructions below. Double-click the executable to start in system tray mode, or run it from Command Prompt to use command-line options. The prebuilt executable runs without downloading the source code or installing MinGW.
 
 ### Using the Provided Makefile
 
