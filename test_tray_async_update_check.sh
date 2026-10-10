@@ -75,28 +75,54 @@ task_struct = re.search(
 )
 assert task_struct, "could not find TrayUpdateCheckTask definition"
 
+shutdown_check = extract_function("tray_update_check_shutdown_requested").replace(
+    "tray_update_check_shutdown_requested",
+    "tray_update_check_shutdown_requested_source",
+    1,
+)
+worker = extract_function("tray_update_check_worker").replace(
+    "tray_update_check_shutdown_requested(task)",
+    "tray_update_check_shutdown_requested_for_test(task)",
+)
 functions = "\n\n".join(
-    extract_function(name)
-    for name in (
-        "tray_update_check_begin",
-        "tray_update_check_end",
-        "tray_update_check_shutdown_requested",
-        "tray_set_manual_update_status",
-        "tray_update_check_worker",
-        "tray_prompt_available_update",
-        "tray_review_available_update",
-        "tray_process_update_check_result",
-        "tray_check_for_updates",
-        "tray_handle_update_check_complete",
-        "tray_wait_for_update_check",
-    )
+    [
+        shutdown_check,
+        r'''static bool use_cached_shutdown_read;
+static bool cached_shutdown_read;
+
+static bool tray_update_check_shutdown_requested_for_test(TrayUpdateCheckTask *task) {
+    if (use_cached_shutdown_read) {
+        use_cached_shutdown_read = false;
+        return cached_shutdown_read;
+    }
+    return tray_update_check_shutdown_requested_source(task);
+}''',
+        worker,
+    ]
+    + [
+        extract_function(name)
+        for name in (
+            "tray_update_check_begin",
+            "tray_update_check_end",
+            "tray_set_manual_update_status",
+            "tray_prompt_available_update",
+            "tray_review_available_update",
+            "tray_process_update_check_result",
+            "tray_check_for_updates",
+            "tray_handle_update_check_complete",
+            "tray_wait_for_update_check",
+        )
+    ]
 )
 
 harness = r'''#include <stdbool.h>
 #include <stdint.h>
+#include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef void *HANDLE;
 typedef void *HWND;
@@ -115,6 +141,8 @@ typedef DWORD (WINAPI *ThreadStart)(LPVOID);
 #define WM_CLOSE 0x0010
 #define INFINITE 0xffffffffUL
 #define WAIT_OBJECT_0 0
+#define WAIT_TIMEOUT 258
+#define WAIT_FAILED 0xffffffffUL
 #define CURRENT_VERSION "1.0.0"
 #define MB_OK 0x00000000
 #define MB_ICONERROR 0x00000010
@@ -151,7 +179,7 @@ struct NoSleepTray {
     UpdateInfo available_update;
 };
 
-static DWORD current_thread_id = 1;
+static __thread DWORD current_thread_id = 1;
 static ThreadStart pending_worker;
 static void *pending_worker_parameter;
 static TrayUpdateCheckTask *shutdown_task_after_sleep;
@@ -170,6 +198,19 @@ static LPARAM last_post_parameter;
 static DWORD last_post_thread_id;
 static int updater_check_count;
 static bool updater_check_result;
+static bool simulate_late_request;
+static int cancel_count_before_race;
+static bool late_request_started_after_cancel;
+static bool late_request_cancelled;
+static bool late_request_cancelled_while_active;
+static bool late_request_active;
+static pthread_mutex_t race_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t race_changed = PTHREAD_COND_INITIALIZER;
+static pthread_t race_worker_thread;
+static bool race_worker_started;
+static bool race_worker_finished;
+static ThreadStart race_worker_start;
+static void *race_worker_parameter;
 static bool updater_release_found;
 static bool updater_update_available;
 static HWND updater_parent;
@@ -197,6 +238,30 @@ static char manual_update_status[128];
 static char last_status_text[128];
 static int last_status_control;
 static int status_update_count;
+
+static void *run_race_worker(void *unused) {
+    (void)unused;
+    current_thread_id = 2;
+    race_worker_start(race_worker_parameter);
+    current_thread_id = 1;
+    pthread_mutex_lock(&race_lock);
+    race_worker_finished = true;
+    pthread_cond_broadcast(&race_changed);
+    pthread_mutex_unlock(&race_lock);
+    return NULL;
+}
+
+static struct timespec race_deadline_after_ms(unsigned long milliseconds) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += milliseconds / 1000;
+    deadline.tv_nsec += (long)(milliseconds % 1000) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        ++deadline.tv_sec;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    return deadline;
+}
 
 static bool tray_update_check_begin(void);
 static void tray_update_check_end(void);
@@ -277,13 +342,65 @@ static DWORD GetCurrentThreadId(void) { return current_thread_id; }
 
 static BOOL CancelSynchronousIo(HANDLE thread) {
     (void)thread;
+    if (simulate_late_request) pthread_mutex_lock(&race_lock);
     ++cancel_count;
+    if (simulate_late_request && late_request_active &&
+        late_request_started_after_cancel) {
+        late_request_cancelled = true;
+        late_request_cancelled_while_active = true;
+        pthread_cond_broadcast(&race_changed);
+    }
+    if (simulate_late_request) pthread_mutex_unlock(&race_lock);
     return 1;
 }
 
 static DWORD WaitForSingleObject(HANDLE handle, DWORD timeout) {
-    (void)timeout;
     ++wait_count;
+    if (handle == fake_thread_handle && simulate_late_request) {
+        if (pending_worker) {
+            race_worker_start = pending_worker;
+            race_worker_parameter = pending_worker_parameter;
+            pending_worker = NULL;
+            pending_worker_parameter = NULL;
+            race_worker_finished = false;
+            if (pthread_create(&race_worker_thread, NULL, run_race_worker, NULL) != 0) {
+                return WAIT_FAILED;
+            }
+            race_worker_started = true;
+        }
+
+        pthread_mutex_lock(&race_lock);
+        int wait_result = 0;
+        struct timespec startup_deadline = race_deadline_after_ms(5000);
+        while (!race_worker_finished && !late_request_active && wait_result == 0) {
+            wait_result = pthread_cond_timedwait(&race_changed, &race_lock,
+                                                 &startup_deadline);
+        }
+        bool worker_finished = race_worker_finished;
+        bool request_active = late_request_active;
+        if (!worker_finished && !request_active) {
+            pthread_mutex_unlock(&race_lock);
+            return WAIT_FAILED;
+        }
+
+        DWORD effective_timeout = timeout == INFINITE ? 100 : timeout;
+        struct timespec deadline = race_deadline_after_ms(effective_timeout);
+        wait_result = 0;
+        while (!worker_finished && wait_result == 0) {
+            wait_result = pthread_cond_timedwait(&race_changed, &race_lock,
+                                                 &deadline);
+            worker_finished = race_worker_finished;
+        }
+        pthread_mutex_unlock(&race_lock);
+        if (!worker_finished && wait_result != ETIMEDOUT) return WAIT_FAILED;
+        if (!worker_finished) return WAIT_TIMEOUT;
+        if (race_worker_started) {
+            pthread_join(race_worker_thread, NULL);
+            race_worker_started = false;
+        }
+        return WAIT_OBJECT_0;
+    }
+
     if (handle == fake_thread_handle && pending_worker) {
         ThreadStart worker = pending_worker;
         void *parameter = pending_worker_parameter;
@@ -303,6 +420,18 @@ static BOOL CloseHandle(HANDLE handle) {
 }
 
 static bool updater_check(UpdateInfo *info, HWND hwnd_parent) {
+    if (simulate_late_request) {
+        pthread_mutex_lock(&race_lock);
+        late_request_started_after_cancel =
+            cancel_count == cancel_count_before_race + 1;
+        late_request_active = true;
+        pthread_cond_broadcast(&race_changed);
+        while (!late_request_cancelled) {
+            pthread_cond_wait(&race_changed, &race_lock);
+        }
+        late_request_active = false;
+        pthread_mutex_unlock(&race_lock);
+    }
     ++updater_check_count;
     updater_thread_id = current_thread_id;
     updater_parent = hwnd_parent;
@@ -456,15 +585,42 @@ int main(void) {
     if (!tray.update_check_task) return fail("a running check must be retained for shutdown cleanup");
     int waits_before_persistent_shutdown = wait_count;
     int cancels_before_persistent_shutdown = cancel_count;
+    int checks_before_persistent_shutdown = updater_check_count;
     int notifications_before_persistent_shutdown = notification_count;
     if (!tray_wait_for_update_check(&tray) || tray.update_check_task ||
         wait_count != waits_before_persistent_shutdown + 1 ||
         cancel_count != cancels_before_persistent_shutdown + 1 ||
+        updater_check_count != checks_before_persistent_shutdown ||
         post_count != posts_before_persistent_shutdown ||
         notification_count != notifications_before_persistent_shutdown ||
         update_check_in_progress) {
-        return fail("shutdown must stop result-post retries before joining and releasing the task");
+        return fail("shutdown must skip a not-yet-started update request before joining and releasing the task");
     }
+
+    NoSleepTray racing_tray = {0};
+    racing_tray.hwnd = (HWND)(uintptr_t)0x97;
+    tray_check_for_updates(&racing_tray, true);
+    TrayUpdateCheckTask *racing_task = racing_tray.update_check_task;
+    cached_shutdown_read = tray_update_check_shutdown_requested_source(racing_task);
+    if (cached_shutdown_read) return fail("the race fixture must cache a pre-shutdown read");
+    use_cached_shutdown_read = true;
+    simulate_late_request = true;
+    cancel_count_before_race = cancel_count;
+    int waits_before_racing_shutdown = wait_count;
+    int cancels_before_racing_shutdown = cancel_count;
+    int checks_before_racing_shutdown = updater_check_count;
+    if (!tray_wait_for_update_check(&racing_tray) || racing_tray.update_check_task ||
+        wait_count < waits_before_racing_shutdown + 2 ||
+        cancel_count < cancels_before_racing_shutdown + 2 ||
+        wait_count - waits_before_racing_shutdown !=
+            cancel_count - cancels_before_racing_shutdown ||
+        updater_check_count != checks_before_racing_shutdown + 1 ||
+        !late_request_started_after_cancel || !late_request_cancelled ||
+        !late_request_cancelled_while_active ||
+        update_check_in_progress) {
+        return fail("shutdown must cancel a request that starts after its first cancellation before joining");
+    }
+    simulate_late_request = false;
 
     fail_post_message_count = 1000;
     int posts_before_inflight_shutdown = post_count;
@@ -680,7 +836,7 @@ with tempfile.TemporaryDirectory() as tmp:
     binary = Path(tmp) / "test_tray_async_update_check"
     test_source.write_text(harness)
     command = shlex.split(os.environ.get("CC", "cc")) + [
-        "-std=c99", "-Wall", "-Wextra", str(test_source), "-o", str(binary),
+        "-std=c99", "-Wall", "-Wextra", "-pthread", str(test_source), "-o", str(binary),
     ]
     subprocess.run(command, check=True)
     subprocess.run([str(binary)], check=True)
