@@ -529,10 +529,15 @@ void tray_run(NoSleepTray* tray) {
     if (!tray || !tray->hwnd) return;
     
     MSG msg;
-    while (GetMessage(&msg, NULL, 0, 0)) {
+    int message_result;
+    while ((message_result = GetMessage(&msg, NULL, 0, 0)) > 0) {
         DEBUG_PRINT("tray_run: message 0x%04X hwnd=%p\n", msg.message, msg.hwnd);
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+    if (message_result == -1) {
+        DWORD error = GetLastError();
+        DEBUG_LOG("tray_run: GetMessage failed, error=%lu", error);
     }
 }
 
