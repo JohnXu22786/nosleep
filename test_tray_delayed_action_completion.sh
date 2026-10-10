@@ -250,6 +250,10 @@ void tray_stop_countdown(NoSleepTray *tray) {
 void tray_update_stop_menu_item(NoSleepTray *tray) {
     (void)tray;
 }
+static void tray_update_stop_menu_item_internal(NoSleepTray *tray, bool lock_held) {
+    (void)tray;
+    (void)lock_held;
+}
 void trigger_system_sleep(NoSleepTray *tray) {
     (void)tray;
     ++sleep_action_calls;
