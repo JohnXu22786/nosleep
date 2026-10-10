@@ -286,6 +286,26 @@ static void test_parse_exe_suffix(void) {
     PASS();
 }
 
+static void test_parse_exe_suffix_case_insensitive(void) {
+    printf("\n--- updater_parse_response (case-insensitive EXE suffix) ---\n");
+    fflush(stdout);
+    UpdateInfo info;
+    static const char* asset_urls[] = {
+        "https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.EXE",
+        "https://github.com/JohnXu22786/nosleep/releases/download/v2.1.0/nosleep-2.1.0.Exe"
+    };
+
+    TEST("uppercase and mixed-case EXE suffixes remain installable");
+    for (size_t i = 0; i < sizeof(asset_urls) / sizeof(asset_urls[0]); i++) {
+        if (!parse_asset_url(asset_urls[i], &info) || !info.update_available ||
+            strcmp(info.download_url, asset_urls[i]) != 0) {
+            FAIL("Expected mixed-case executable suffix to preserve the installable asset URL");
+            return;
+        }
+    }
+    PASS();
+}
+
 static void test_parse_malformed_exe_urls(void) {
     printf("\n--- updater_parse_response (malformed EXE URLs) ---\n");
     fflush(stdout);
@@ -462,6 +482,7 @@ int main(void) {
     test_release_page_url();
     test_parse_no_exe();
     test_parse_exe_suffix();
+    test_parse_exe_suffix_case_insensitive();
     test_parse_malformed_exe_urls();
     test_parse_exe_url_with_query();
     test_parse_exe_url_with_valid_port();

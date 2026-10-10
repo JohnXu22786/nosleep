@@ -62,7 +62,16 @@ static bool is_valid_exe_asset_url(const char* url, size_t url_len) {
 
     const char* path_end = strpbrk(path, "?#");
     size_t path_len = path_end ? (size_t)(path_end - path) : url_len - (size_t)(path - url);
-    return path_len >= 4 && strncmp(path + path_len - 4, ".exe", 4) == 0;
+    if (path_len < 4) return false;
+
+    const char* suffix = path + path_len - 4;
+    static const char exe_suffix[] = ".exe";
+    for (size_t i = 0; i < sizeof(exe_suffix) - 1; i++) {
+        char character = suffix[i];
+        if (character >= 'A' && character <= 'Z') character += 'a' - 'A';
+        if (character != exe_suffix[i]) return false;
+    }
+    return true;
 }
 
 static bool is_numeric_identifier(const char* identifier, size_t length) {
