@@ -464,6 +464,7 @@ static void expect_write_failure(const char *name, int session_finished_action,
 }
 
 int main(void) {
+    (void)&notify_groups_save; // Keep the mock available for call-count regression checks.
     for (int enable = 0; enable <= 1; ++enable) {
         reset_mocks();
         NoSleepTray dialog_tray = { .start_on_startup = !enable };
@@ -591,8 +592,8 @@ int main(void) {
            "a failed settings-key creation must not attempt value writes");
     expect(registry_close_count == 0,
            "a failed settings-key creation must not close an invalid handle");
-    expect(notify_groups_save_count == 1,
-           "notification groups must still be saved independently when the settings key fails");
+    expect(notify_groups_save_count == 0,
+           "a general settings save must not persist a potentially stale notification-group snapshot when settings-key creation fails");
 
     reset_mocks();
     NoSleepTray unset_path_settings = {0};
@@ -618,8 +619,8 @@ int main(void) {
            "a failed tray setting must not prevent attempts to save the remaining values");
     expect(registry_close_count == 1,
            "the settings registry handle must close after a failed tray setting write");
-    expect(notify_groups_save_count == 1,
-           "notification groups must retain their existing save behavior after value failure");
+    expect(notify_groups_save_count == 0,
+           "a failed general settings write must not persist a potentially stale notification-group snapshot");
     reset_mocks();
     failed_value_name = "auto_check_interval";
     registry_write_result = ERROR_ACCESS_DENIED;
@@ -634,8 +635,8 @@ int main(void) {
            "successful tray settings persistence must write all configured values");
     expect(registry_close_count == 1,
            "successful tray settings persistence must close its registry handle");
-    expect(notify_groups_save_count == 1,
-           "successful tray settings persistence must continue saving notification groups");
+    expect(notify_groups_save_count == 0,
+           "successful general settings persistence must not write notification groups from its cached snapshot");
     expect(stored_path_preference_present && stored_path_preference == 0,
            "saving an explicit disabled PATH preference must persist it");
     reset_mocks();
@@ -645,16 +646,16 @@ int main(void) {
 
     reset_mocks();
     notify_groups_save_result = false;
-    expect(!tray_save_settings(&settings_tray),
-           "a notification-group save failure must make the overall tray save fail");
-    expect(notify_groups_save_count == 1,
-           "the overall tray save must attempt notification groups exactly once");
+    expect(tray_save_settings(&settings_tray),
+           "an unrelated notification-group save failure must not make a general settings save fail");
+    expect(notify_groups_save_count == 0,
+           "a general settings save must leave notification-group persistence to explicit group edits");
     reset_mocks();
     notify_groups_save_result = false;
-    expect(!tray_save_settings_with_warning(NULL, &settings_tray),
-           "the settings UI save helper must report a notification-group save failure");
-    expect(settings_warning_count == 1,
-           "the settings UI warning must be shown when notification groups fail to save");
+    expect(tray_save_settings_with_warning(NULL, &settings_tray),
+           "the settings UI must report success when unrelated notification-group persistence is unavailable");
+    expect(settings_warning_count == 0,
+           "the settings UI warning must not be shown for an unrelated notification-group save failure");
 
     reset_mocks();
     settings_create_result = ERROR_ACCESS_DENIED;
