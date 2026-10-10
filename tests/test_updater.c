@@ -152,6 +152,30 @@ static void test_ver_compare(void) {
     ASSERT(updater_compare_versions("1.2.3-1", "1.2.3-alpha") == -1, "Expected -1");
     PASS();
 
+    TEST("multi-digit core components cannot start with zero");
+    ASSERT(updater_compare_versions("01.2.3", "1.2.3") == -2 &&
+           updater_compare_versions("1.02.3", "1.2.3") == -2 &&
+           updater_compare_versions("1.2.03", "1.2.3") == -2,
+           "Expected invalid-version result");
+    PASS();
+
+    TEST("single zero core and prerelease identifiers remain valid");
+    ASSERT(updater_compare_versions("0.0.0-0", "0.0.0") == -1,
+           "Expected a valid prerelease version");
+    PASS();
+
+    TEST("multi-digit numeric prerelease identifiers cannot start with zero");
+    ASSERT(updater_compare_versions("1.2.3-001", "1.2.3-10") == -2 &&
+           updater_compare_versions("1.2.3-rc.01", "1.2.3-rc.1") == -2,
+           "Expected invalid-version result");
+    PASS();
+
+    TEST("build metadata permits numeric identifiers with leading zeros");
+    ASSERT(updater_compare_versions("1.2.3+001", "1.2.3") == 0 &&
+           updater_compare_versions("1.2.3-rc.1+001", "1.2.3-rc.1") == 0,
+           "Build metadata must not affect precedence or version validity");
+    PASS();
+
     TEST("shorter equal-prefix prerelease has lower precedence");
     ASSERT(updater_compare_versions("1.2.3-alpha", "1.2.3-alpha.1") == -1, "Expected -1");
     PASS();
