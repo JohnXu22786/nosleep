@@ -1705,8 +1705,8 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         return 0;
     }
     
-    DEBUG_LOG("tray_duration_timer: started, duration_minutes=%d, session_finished_action=%d",
-            tray->duration_minutes, tray->session_finished_action);
+    DEBUG_LOG("tray_duration_timer: started, duration_minutes=%d",
+            tray->duration_minutes);
     
     if (tray->duration_minutes <= 0) {
         DEBUG_LOG("tray_duration_timer: duration_minutes=%d, returning early", tray->duration_minutes);
@@ -1719,7 +1719,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
         ULONGLONG elapsed_ms = get_elapsed_milliseconds(tray->start_tick64);
         
         if (elapsed_ms >= duration_ms) {
+            AcquireSRWLockExclusive(&tray->delayed_action_lock);
             SessionFinishedAction finished_action = tray->session_finished_action;
+            ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             if (finished_action != SESSION_FINISHED_NONE) {
                 // Do not honor a follow-up action until the NoSleep core is known to exist.
                 for (;;) {
@@ -2598,6 +2600,7 @@ static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_hel
     bool shutdown_pending = tray->shutdown_timer != NULL && !tray->shutdown_action_claimed;
     bool delayed_action_pending = delayed_sleep_countdown_active || sleep_pending || shutdown_pending;
     SessionFinishedAction pending_action = tray->countdown_action;
+    SessionFinishedAction session_action = tray->session_finished_action;
     bool saved_action_matches_pending =
         ((pending_action == SESSION_FINISHED_SHUTDOWN ||
           pending_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) && shutdown_pending) ||
@@ -2636,8 +2639,9 @@ static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_hel
     
     SetMenuItemInfo(tray->hmenu, IDM_STOP, FALSE, &mii);
     
+    (void)session_action;
     DEBUG_LOG("tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s, session_action=%d)",
-            stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false", tray->session_finished_action);
+            stop_text, delayed_sleep_countdown_active ? "true" : "false", is_running ? "true" : "false", session_action);
 }
 
 void tray_update_stop_menu_item(NoSleepTray* tray) {
@@ -5773,37 +5777,51 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     break;
                 case IDM_TOGGLE_SLEEP_AFTER_TIMEOUT:
                     // Backward compatibility: toggle between SLEEP and NONE
-                    if (tray->session_finished_action == SESSION_FINISHED_SLEEP) {
-                        tray->session_finished_action = SESSION_FINISHED_NONE;
-                    } else {
-                        tray->session_finished_action = SESSION_FINISHED_SLEEP;
+                    {
+                        SessionFinishedAction action;
+                        AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                        if (tray->session_finished_action == SESSION_FINISHED_SLEEP) {
+                            action = SESSION_FINISHED_NONE;
+                        } else {
+                            action = SESSION_FINISHED_SLEEP;
+                        }
+                        tray->session_finished_action = action;
+                        ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                        tray->sleep_after_timeout = (action == SESSION_FINISHED_SLEEP);
                     }
-                    tray->sleep_after_timeout = (tray->session_finished_action == SESSION_FINISHED_SLEEP);
                     // Update menu checkmarks
                     if (tray->hmenu) {
                         tray_update_session_finished_menu(tray);
                     }
                     break;
                 case IDM_SESSION_FINISHED_NONE:
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
                     tray->session_finished_action = SESSION_FINISHED_NONE;
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
                     tray_save_settings_with_warning(hwnd, tray);
                     break;
                 case IDM_SESSION_FINISHED_SHUTDOWN:
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
                     tray->session_finished_action = SESSION_FINISHED_SHUTDOWN;
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
                     tray_save_settings_with_warning(hwnd, tray);
                     break;
                 case IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL:
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
                     tray->session_finished_action = SESSION_FINISHED_SHUTDOWN_GRACEFUL;
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     tray->sleep_after_timeout = false;
                     tray_update_session_finished_menu(tray);
                     tray_save_settings_with_warning(hwnd, tray);
                     break;
                 case IDM_SESSION_FINISHED_SLEEP:
+                    AcquireSRWLockExclusive(&tray->delayed_action_lock);
                     tray->session_finished_action = SESSION_FINISHED_SLEEP;
+                    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     tray->sleep_after_timeout = true;
                     tray_update_session_finished_menu(tray);
                     tray_save_settings_with_warning(hwnd, tray);

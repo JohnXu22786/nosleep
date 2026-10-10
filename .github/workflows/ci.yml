@@ -142,6 +142,9 @@ jobs:
       - name: Test countdown tooltip rounding
         run: bash test_tray_countdown_action.sh
 
+      - name: Test session finished action synchronization
+        run: bash test_tray_session_finished_menu.sh
+
       - name: Test stop menu labels for pending delayed actions
         run: bash test_tray_stop_menu_pending_action.sh
 

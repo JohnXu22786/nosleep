@@ -70,6 +70,8 @@ def extract_function(name):
 menu = extract_function("tray_create_menu")
 update = extract_function("tray_update_session_finished_menu")
 command_handler = extract_function("tray_window_proc")
+duration_timer = extract_function("tray_duration_timer")
+stop_menu_update = extract_function("tray_update_stop_menu_item_internal")
 
 finished_item = re.search(
     r"AppendMenu\(tray->hmenu,\s*MF_STRING\s*\|\s*MF_POPUP,\s*"
@@ -112,5 +114,71 @@ for command, action in (
         f"{command} must persist the selected session-finished action"
     )
 
-print("PASS: When finished menu updates its checkmarks, caption, and persisted action")
+snapshot = re.search(
+    r"SessionFinishedAction\s+finished_action\s*=\s*"
+    r"tray->session_finished_action\s*;",
+    duration_timer,
+)
+assert snapshot, "the duration timer must snapshot the selected session-finished action"
+assert len(re.findall(r"tray->session_finished_action", duration_timer)) == 1, (
+    "the duration timer must not read the selected action outside its snapshot"
+)
+snapshot_lock = duration_timer.rfind(
+    "AcquireSRWLockExclusive(&tray->delayed_action_lock)", 0, snapshot.start()
+)
+snapshot_unlock = duration_timer.find(
+    "ReleaseSRWLockExclusive(&tray->delayed_action_lock)", snapshot_lock
+)
+assert snapshot_lock >= 0 and snapshot_unlock > snapshot.end(), (
+    "the duration timer must snapshot the selected action under delayed_action_lock"
+)
+
+menu_snapshot = re.search(
+    r"SessionFinishedAction\s+session_action\s*=\s*"
+    r"tray->session_finished_action\s*;",
+    stop_menu_update,
+)
+assert menu_snapshot, "the stop-menu updater must snapshot the selected action"
+assert len(re.findall(r"tray->session_finished_action", stop_menu_update)) == 1, (
+    "the stop-menu updater must not read the selected action outside its snapshot"
+)
+menu_lock = stop_menu_update.rfind(
+    "if (!lock_held) AcquireSRWLockExclusive(&tray->delayed_action_lock)",
+    0,
+    menu_snapshot.start(),
+)
+menu_unlock = stop_menu_update.find(
+    "if (!lock_held) ReleaseSRWLockExclusive(&tray->delayed_action_lock)",
+    menu_lock,
+)
+assert menu_lock >= 0 and menu_unlock > menu_snapshot.end(), (
+    "the stop-menu updater must capture the selected action inside its lock section"
+)
+
+for command in (
+    "IDM_TOGGLE_SLEEP_AFTER_TIMEOUT",
+    "IDM_SESSION_FINISHED_NONE",
+    "IDM_SESSION_FINISHED_SHUTDOWN",
+    "IDM_SESSION_FINISHED_SHUTDOWN_GRACEFUL",
+    "IDM_SESSION_FINISHED_SLEEP",
+):
+    case = re.search(
+        rf"case {command}:(?P<body>.*?)(?=^\s*break;)",
+        command_handler,
+        re.S | re.M,
+    )
+    assert case, f"could not find command handler for {command}"
+    action_accesses = list(re.finditer(r"tray->session_finished_action", case["body"]))
+    assert action_accesses, f"{command} must access the session-finished action"
+    action_lock = case["body"].rfind(
+        "AcquireSRWLockExclusive(&tray->delayed_action_lock)", 0, action_accesses[0].start()
+    )
+    action_unlock = case["body"].find(
+        "ReleaseSRWLockExclusive(&tray->delayed_action_lock)", action_lock
+    )
+    assert action_lock >= 0 and action_unlock > action_accesses[-1].end(), (
+        f"{command} must read or write the selected action under delayed_action_lock"
+    )
+
+print("PASS: When finished menu updates and synchronizes session-finished action access")
 PY
