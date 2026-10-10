@@ -348,7 +348,7 @@ bool updater_parse_response(const char* json_response, UpdateInfo* info) {
 
             size_t url_len = strlen(url->valuestring);
             if (!info->update_available &&
-                url_len < sizeof(info->download_url) - 1 &&
+                url_len < sizeof(info->download_url) &&
                 is_valid_exe_asset_url(url->valuestring, url_len)) {
                 strncpy(info->download_url, url->valuestring,
                         sizeof(info->download_url) - 1);
