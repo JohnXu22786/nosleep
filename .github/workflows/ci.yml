@@ -157,6 +157,9 @@ jobs:
       - name: Test delayed action handle cleanup
         run: ./test_tray_delayed_action_completion.sh
 
+      - name: Test suspend cancellation before delayed action startup
+        run: ./test_tray_suspend_delayed_action_race.sh
+
       - name: Test concurrent countdown cleanup ownership
         run: bash test_tray_countdown_cleanup.sh
 

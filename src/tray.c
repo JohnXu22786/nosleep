@@ -5977,6 +5977,9 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         // be generating this broadcast while waiting for it to return.
                         AcquireSRWLockExclusive(&tray->delayed_action_lock);
                         tray_wait_for_delayed_countdown_start(tray);
+                        if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
+                            tray->session_action_cancelled = true;
+                        }
                         SetEvent(tray->sleep_stop_event);
                         SetEvent(tray->shutdown_stop_event);
                         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
