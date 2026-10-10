@@ -100,6 +100,7 @@ typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock; // Serializes session/action startup against stop and failure
     SRWLOCK tray_icon_lock; // Serializes NOTIFYICONDATA updates and shell calls
     SRWLOCK countdown_icon_cache_lock; // Serializes lazy countdown icon creation and cleanup
+    SRWLOCK notify_groups_lock; // Protects notification group snapshots and replacements
     int duration_minutes;       // Current duration (0 = indefinite, -1 = not set)
     ULONGLONG start_tick64;     // Monotonic tick count when nosleep started
     HANDLE stop_event;          // Event to signal stop

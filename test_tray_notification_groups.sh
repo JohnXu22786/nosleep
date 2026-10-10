@@ -78,10 +78,19 @@ assert re.search(
     r"NotifyEventId\s+event_type",
     notification,
 ), "direct notification dispatch must require an explicit event type"
-group_gate = notification.find("notify_groups_should_show(&tray->notify_groups, event_type)")
+snapshot = re.search(
+    r"NotifyGroupManager\s+(\w+);\s*"
+    r"AcquireSRWLockShared\(&tray->notify_groups_lock\);\s*"
+    r"\1\s*=\s*tray->notify_groups;\s*"
+    r"ReleaseSRWLockShared\(&tray->notify_groups_lock\);",
+    notification,
+)
+group_gate = notification.find(
+    f"notify_groups_should_show(&{snapshot.group(1)}, event_type)"
+) if snapshot else -1
 display = notification.find("Shell_NotifyIcon(NIM_MODIFY")
-assert group_gate >= 0 and group_gate < display, (
-    "direct dispatch must apply the active event group before displaying a notification"
+assert snapshot and group_gate >= 0 and group_gate < display, (
+    "direct dispatch must filter using a synchronized group snapshot before displaying a notification"
 )
 
 assert re.search(
@@ -168,10 +177,17 @@ typedef struct {
     HWND hwnd;
     NOTIFYICONDATA nid;
     int notification_mode;
+    int notify_groups_lock;
+    int tray_icon_lock;
     NotifyGroupManager notify_groups;
 } NoSleepTray;
 
 static unsigned int shell_notify_calls;
+typedef int SRWLOCK;
+static void AcquireSRWLockShared(SRWLOCK *lock) { (void)lock; }
+static void ReleaseSRWLockShared(SRWLOCK *lock) { (void)lock; }
+static void AcquireSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
+static void ReleaseSRWLockExclusive(SRWLOCK *lock) { (void)lock; }
 
 LONG RegCreateKeyEx(HKEY root, const char *path, DWORD reserved,
                     const char *class_name, DWORD options, DWORD access,
