@@ -113,6 +113,7 @@ typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
     CONDITION_VARIABLE stop_condition;
     DWORD stopping_thread_id;
+    bool stopping_expiry_notification_suppressed;
     bool is_running;
     bool duration_expired;
     bool stopping;
@@ -282,6 +283,7 @@ int main(void) {
 '''
 
 functions = extract_function("tray_wait_for_delayed_countdown_start") + "\n\n" + \
+    extract_function("tray_show_manual_stop_notification") + "\n\n" + \
     extract_function("tray_stop_nosleep_for_session") + "\n\n" + \
     extract_function("tray_stop_nosleep")
 with tempfile.TemporaryDirectory() as tmp:

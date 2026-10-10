@@ -1447,6 +1447,21 @@ static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray) {
     }
 }
 
+static void tray_show_manual_stop_notification(NoSleepTray* tray,
+                                               ULONGLONG start_tick64) {
+    ULONGLONG elapsed_seconds = get_elapsed_milliseconds(start_tick64) / 1000;
+    int hours = (int)(elapsed_seconds / 3600);
+    int minutes = (int)((elapsed_seconds % 3600) / 60);
+    int seconds = (int)(elapsed_seconds % 60);
+    char message[256];
+    if (hours > 0) {
+        sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dh %dm", hours, minutes);
+    } else {
+        sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
+    }
+    tray_show_notification(tray, NOTIFY_EVENT_SESSION_STOP, "Stopped", message, false);
+}
+
 static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
                                           DWORD expected_thread_id,
                                           bool timer_expired,
@@ -1499,6 +1514,10 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         tray->session_action_cancelled = true;
     }
 
+    // Preserve the completed expiry cleanup's suppression state when Stop
+    // arrives before the timer worker publishes its configured action.
+    bool previous_stop_notification_suppressed =
+        tray->stopping_expiry_notification_suppressed;
     DWORD current_thread_id = GetCurrentThreadId();
     bool was_stopping = ATOMIC_EXCHANGE_BOOL(&tray->stopping, true);
     if (was_stopping) {
@@ -1508,20 +1527,29 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         bool is_stop_worker = current_thread_id == tray->nosleep_thread_id ||
                               current_thread_id == tray->timer_thread_id;
         bool waited_for_stop = !is_reentrant && !is_stop_worker;
+        bool show_manual_stop_notification = false;
+        ULONGLONG manual_stop_start_tick64 = 0;
         if (waited_for_stop) {
             while (ATOMIC_LOAD_BOOL(&tray->stopping)) {
                 SleepConditionVariableSRW(&tray->stop_condition,
                                           &tray->delayed_action_lock,
                                           INFINITE, 0);
             }
+            show_manual_stop_notification = manual_stop_requested &&
+                tray->stopping_expiry_notification_suppressed;
+            manual_stop_start_tick64 = tray->start_tick64;
         }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        if (show_manual_stop_notification) {
+            tray_show_manual_stop_notification(tray, manual_stop_start_tick64);
+        }
         DEBUG_LOG("tray_stop_nosleep: duplicate stop %s",
                   waited_for_stop ? "waited for active cleanup" :
                   is_reentrant ? "reentrant call returned" : "stop worker returned");
         return expected_thread_id != 0 && is_reentrant;
     }
     tray->stopping_thread_id = current_thread_id;
+    tray->stopping_expiry_notification_suppressed = false;
 
     bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
                                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
@@ -1537,10 +1565,17 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     }
     if (!has_work) {
         DEBUG_LOG("tray_stop_nosleep: no active session, countdown, or delayed action; resetting stopping flag and returning");
+        bool show_manual_stop_notification = manual_stop_requested &&
+            previous_stop_notification_suppressed &&
+            ATOMIC_LOAD_BOOL(&tray->duration_expired);
+        ULONGLONG manual_stop_start_tick64 = tray->start_tick64;
         tray->stopping_thread_id = 0;
         ATOMIC_STORE_BOOL(&tray->stopping, false);
         WakeAllConditionVariable(&tray->stop_condition);
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+        if (show_manual_stop_notification) {
+            tray_show_manual_stop_notification(tray, manual_stop_start_tick64);
+        }
         return is_nosleep_thread;
     }
 
@@ -1643,7 +1678,13 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     
     // Determine which notification to show
     bool nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
-    if (!suppress_notification || (nosleep_run_failed && !is_nosleep_thread)) {
+    bool notification_suppressed = suppress_notification &&
+                                   !(nosleep_run_failed && !is_nosleep_thread);
+    AcquireSRWLockExclusive(&tray->delayed_action_lock);
+    tray->stopping_expiry_notification_suppressed =
+        notification_suppressed && timer_expired;
+    ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+    if (!notification_suppressed) {
         if (nosleep_run_failed) {
             tray_show_notification(tray, NOTIFY_EVENT_ERROR,
                 "Sleep prevention failed",
@@ -1671,12 +1712,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         } else {
             // Nosleep session manually stopped
             DEBUG_LOG("tray_stop_nosleep: showing Stopped notification");
-            if (hours > 0) {
-                sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dh %dm", hours, minutes);
-            } else {
-                sprintf(message, "Sleep prevention manually stopped\nTotal duration: %dm %ds", minutes, seconds);
-            }
-            tray_show_notification(tray, NOTIFY_EVENT_SESSION_STOP, "Stopped", message, false);
+            tray_show_manual_stop_notification(tray, tray->start_tick64);
         }
     } else {
         DEBUG_LOG("tray_stop_nosleep: notification suppressed");

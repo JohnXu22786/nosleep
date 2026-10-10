@@ -122,6 +122,7 @@ typedef struct NoSleepTray {
     CONDITION_VARIABLE stop_condition;
     bool stopping;
     DWORD stopping_thread_id;
+    bool stopping_expiry_notification_suppressed;
     bool starting_nosleep;
     bool delayed_countdown_starting;
     DWORD nosleep_thread_id;
@@ -379,6 +380,10 @@ update_check_wait_function = extract_function(
 countdown_start_wait_function = extract_function(
     "static void tray_wait_for_delayed_countdown_start(NoSleepTray* tray)"
 )
+manual_notice_function = extract_function(
+    "static void tray_show_manual_stop_notification(NoSleepTray* tray,\n"
+    "                                               ULONGLONG start_tick64)"
+)
 destroy_function = extract_function("void tray_destroy(NoSleepTray* tray)")
 stop_function = extract_function(
     "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,\n"
@@ -539,7 +544,7 @@ int main(void) {
 
 output.write_text(prelude + update_check_wait_function + "\n" + wait_function + "\n" +
                   countdown_start_wait_function + "\n" + destroy_function + "\n" +
-                  stop_function + "\n" + wrapper)
+                  manual_notice_function + "\n" + stop_function + "\n" + wrapper)
 PY
 
 "${CC:-cc}" -std=c99 -Wall -Wextra -pthread "$TMP_DIR/test_tray_concurrent_stop.c" \
