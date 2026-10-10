@@ -12,7 +12,7 @@ fail() { FAIL=$((FAIL+1)); echo "FAIL: $1"; }
 
 # Create a temp dir
 TMPDIR=$(mktemp -d)
-trap "rm -rf $TMPDIR" EXIT
+trap 'rm -rf "$TMPDIR"' EXIT
 
 # If compiling on Linux with MinGW, skip tests that need compilation
 CAN_COMPILE=false
