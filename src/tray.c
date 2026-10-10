@@ -1756,10 +1756,17 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     bool core_init_succeeded = ATOMIC_LOAD_BOOL(&tray->core_init_succeeded);
                     bool nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
                     bool session_starting = tray->starting_nosleep;
+                    bool should_abandon = !is_current_session || !is_running ||
+                                          core_init_failed || nosleep_run_failed ||
+                                          session_starting;
+                    if (!should_abandon && core_init_succeeded) {
+                        // Publish expiry with the final session check so suspend
+                        // cannot miss cancellation between the check and publish.
+                        ATOMIC_STORE_BOOL(&tray->duration_expired, true);
+                    }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 
-                    if (!is_current_session || !is_running || core_init_failed ||
-                        nosleep_run_failed || session_starting) {
+                    if (should_abandon) {
                         DEBUG_LOG("tray_duration_timer: abandoning action while core initialization or session state changes");
                         return 0;
                     }
@@ -1768,11 +1775,27 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     Sleep(10);
                 }
+            } else {
+                // No delayed action needs core readiness, but only publish expiry
+                // for the session that reached its duration.
+                AcquireSRWLockExclusive(&tray->delayed_action_lock);
+                bool is_current_session = (tray->timer_thread_id == timer_thread_id);
+                bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+                bool session_starting = tray->starting_nosleep;
+                bool should_abandon = !is_current_session || !is_running ||
+                                      session_starting;
+                if (!should_abandon) {
+                    ATOMIC_STORE_BOOL(&tray->duration_expired, true);
+                }
+                ReleaseSRWLockExclusive(&tray->delayed_action_lock);
+                if (should_abandon) {
+                    DEBUG_LOG("tray_duration_timer: abandoning expiry for an ended session");
+                    return 0;
+                }
             }
 
             // Duration reached
             DEBUG_LOG("tray_duration_timer: duration reached, stopping with timer_expired=true");
-            ATOMIC_STORE_BOOL(&tray->duration_expired, true);
             
             DEBUG_LOG("tray_duration_timer: elapsed=%llu ms, duration=%llu ms, calling tray_stop_nosleep",
                     elapsed_ms, duration_ms);

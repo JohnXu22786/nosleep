@@ -80,6 +80,13 @@ suspend_end = window_proc.index("case PBT_APMRESUMESUSPEND:", suspend_start)
 suspend_case = window_proc[suspend_start:suspend_end]
 
 duration_timer = extract_function("tray_duration_timer")
+readiness_lock = extract_lock_region(
+    duration_timer,
+    "// Do not honor a follow-up action until the NoSleep core is known to exist.",
+)
+assert "ATOMIC_STORE_BOOL(&tray->duration_expired, true)" in readiness_lock, (
+    "duration expiry must be published under the final session-state lock"
+)
 sleep_startup = extract_lock_region(duration_timer, "HANDLE sleep_timer = NULL;")
 shutdown_startup = extract_lock_region(duration_timer, "HANDLE shutdown_timer = NULL;")
 
@@ -95,6 +102,7 @@ typedef void *HANDLE;
 #define PBT_APMSUSPEND 4
 #define DEBUG_LOG(...) ((void)0)
 #define ATOMIC_LOAD_BOOL(value) (*(value))
+#define ATOMIC_STORE_BOOL(value, new_value) (*(value) = (new_value))
 
 typedef enum {
     SESSION_FINISHED_NONE = 0,
@@ -129,9 +137,19 @@ typedef struct NoSleepTray {
 
 static int create_thread_count;
 static int reset_event_count;
+static bool suspend_on_next_unlock;
+static NoSleepTray *suspend_target;
+
+static void simulate_suspend(NoSleepTray *tray);
 
 void AcquireSRWLockExclusive(void *lock) { (void)lock; }
-void ReleaseSRWLockExclusive(void *lock) { (void)lock; }
+void ReleaseSRWLockExclusive(void *lock) {
+    (void)lock;
+    if (suspend_on_next_unlock) {
+        suspend_on_next_unlock = false;
+        simulate_suspend(suspend_target);
+    }
+}
 void tray_wait_for_delayed_countdown_start(NoSleepTray *tray) { (void)tray; }
 void tray_stop_countdown(NoSleepTray *tray) { (void)tray; }
 void tray_show_notification(NoSleepTray *tray, NotifyEventId event,
@@ -207,6 +225,44 @@ static bool try_start_shutdown_action(NoSleepTray *tray, DWORD timer_thread_id,
     return shutdown_timer != NULL;
 }
 
+static bool timer_session_ready_for_action(NoSleepTray *tray,
+                                           DWORD timer_thread_id) {
+''' + readiness_lock + r'''
+    return !should_abandon && core_init_succeeded;
+}
+
+static int expect_suspend_after_expiry_publication(void) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.core_init_succeeded = true;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+
+    create_thread_count = 0;
+    reset_event_count = 0;
+    suspend_target = &tray;
+    suspend_on_next_unlock = true;
+    if (!timer_session_ready_for_action(&tray, tray.timer_thread_id) ||
+        suspend_on_next_unlock || !tray.duration_expired ||
+        !tray.session_action_cancelled || !sleep_event || !shutdown_event) {
+        fprintf(stderr, "FAIL: suspend missed expiry at the readiness-lock boundary\n");
+        return 1;
+    }
+
+    bool sleep_started = try_start_sleep_action(&tray, tray.timer_thread_id);
+    bool shutdown_started = try_start_shutdown_action(
+        &tray, tray.timer_thread_id, SESSION_FINISHED_SHUTDOWN);
+    if (sleep_started || shutdown_started || create_thread_count != 0 || reset_event_count != 0 ||
+        !sleep_event || !shutdown_event) {
+        fprintf(stderr, "FAIL: delayed-action startup erased boundary suspend cancellation\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int expect_suspend_cancels_delayed_start(SessionFinishedAction action) {
     bool sleep_event = false;
     bool shutdown_event = false;
@@ -264,6 +320,7 @@ static int expect_active_session_keeps_future_action(SessionFinishedAction actio
 
 int main(void) {
     int failures = 0;
+    failures += expect_suspend_after_expiry_publication();
     failures += expect_suspend_cancels_delayed_start(SESSION_FINISHED_SLEEP);
     failures += expect_suspend_cancels_delayed_start(SESSION_FINISHED_SHUTDOWN);
     failures += expect_active_session_keeps_future_action(SESSION_FINISHED_SLEEP);
