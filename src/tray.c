@@ -6050,12 +6050,11 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                 KillTimer(hwnd, TIMER_ID_AUTO_START);
                 DEBUG_PRINT("Auto-starting 1 minute nosleep (testing)\n");
                 tray_start_nosleep(tray, 1); // 1 minute for testing
-            } else if (wParam == 1002) {
+            } else if (tray && tray->update_timer_id != 0 &&
+                       wParam == tray->update_timer_id) {
                 // Periodic update check timer
-                if (tray) {
-                    tray_check_for_updates(tray, true);
-                    tray_setup_update_timer(tray, false);
-                }
+                tray_check_for_updates(tray, true);
+                tray_setup_update_timer(tray, false);
             }
             break;
             
