@@ -2046,8 +2046,8 @@ static void trigger_system_sleep(NoSleepTray* tray) {
     // Use SetSuspendState to put system to sleep (not hibernate)
     // First parameter FALSE = sleep (not hibernate)
     // Second parameter FALSE = force sleep (do not ask applications)
-    // Third parameter FALSE = disable wake events
-    BOOL result = SetSuspendState(FALSE, FALSE, FALSE);
+    // Third parameter TRUE = disable wake events
+    BOOL result = SetSuspendState(FALSE, FALSE, TRUE);
 
     if (result) {
         DEBUG_LOG("trigger_system_sleep: successfully initiated sleep");
