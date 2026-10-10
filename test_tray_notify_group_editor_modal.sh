@@ -99,18 +99,19 @@ assert "NotifyGroupManager updated = *edit_mgr;" in edit_save_case, (
 )
 assert re.search(
     r"if\s*\(notify_groups_save\(&updated\)\)\s*\{\s*"
-    r"\*edit_mgr\s*=\s*updated;\s*success\s*=\s*true;",
+    r"replace_notification_groups\(g_notify_edit_ctx\.lock,\s*edit_mgr,\s*&updated\);\s*"
+    r"success\s*=\s*true;",
     edit_save_case,
     re.S,
-), "the editor must commit and report success only after the group save succeeds"
+), "the editor must synchronize its commit and report success only after the group save succeeds"
 assert "notify_groups_save(&updated)" in set_active_case and (
-    "settings_tray->notify_groups = updated;" in set_active_case
-), "Set Active must commit the candidate manager only after a successful save"
+    "replace_notification_groups(&settings_tray->notify_groups_lock," in set_active_case
+), "Set Active must commit the candidate manager under the notification group lock after save"
 # Count only the original Set Active/Delete actions, not the new restore action.
 legacy_actions = settings_proc[settings_proc.index("case IDC_NOTIFY_SET_ACTIVE:"):]
 assert legacy_actions.count("if (notify_groups_save(&updated))") == 2 and (
-    legacy_actions.count("settings_tray->notify_groups = updated;") == 2
-), "Set Active and Delete must both gate their in-memory changes on save success"
+    legacy_actions.count("replace_notification_groups(&settings_tray->notify_groups_lock,") == 2
+), "Set Active and Delete must synchronize in-memory changes after save success"
 assert re.search(
     r'"Changes are saved immediately; Settings Cancel does\\n"\s*'
     r'"not undo notification group changes\."',
@@ -166,8 +167,10 @@ typedef struct {
 } MSG;
 
 typedef struct NotifyGroupManager NotifyGroupManager;
+typedef void* SRWLOCK;
 static struct {
     NotifyGroupManager* mgr;
+    SRWLOCK* lock;
     int group_index;
     HWND hwnd_parent;
 } g_notify_edit_ctx;

@@ -29,6 +29,9 @@ jobs:
       - name: Test notification group save failures
         run: ./test_notify_groups_save.sh
 
+      - name: Test notification group synchronization
+        run: ./test_tray_notification_group_sync.sh
+
       - name: Test notification group editor save handling
         run: ./test_tray_notify_group_editor_modal.sh
 

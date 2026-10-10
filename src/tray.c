@@ -178,6 +178,7 @@ NoSleepTray* tray_create(void) {
     InitializeSRWLock(&tray->delayed_action_lock);
     InitializeSRWLock(&tray->tray_icon_lock);
     InitializeSRWLock(&tray->countdown_icon_cache_lock);
+    InitializeSRWLock(&tray->notify_groups_lock);
     InitializeConditionVariable(&tray->stop_condition);
     tray->duration_minutes = -1; // Not set
     tray->current_number = -1;   // No numbered icon displayed
@@ -493,6 +494,7 @@ bool tray_init(NoSleepTray* tray) {
 
     // Initialize notification groups and migrate old settings
     // Migrate the old mode only if no groups were loaded from the registry.
+    AcquireSRWLockExclusive(&tray->notify_groups_lock);
     notify_groups_init(&tray->notify_groups, tray->notification_mode);
 
     // Resolve runtime CLI settings after loading preferences, before startup effects.
@@ -508,6 +510,7 @@ bool tray_init(NoSleepTray* tray) {
             tray->check_updates_on_startup = (tray->check_updates_startup_cli_override != 0);
         }
     }
+    ReleaseSRWLockExclusive(&tray->notify_groups_lock);
 
     // Show the startup notification only after the active notification group is known.
     tray_show_notification(tray, NOTIFY_EVENT_APP_START,
@@ -3573,7 +3576,11 @@ void tray_show_notification(NoSleepTray* tray, NotifyEventId event_type,
     (void)critical; // Retained for existing callers; event groups define visibility.
 
     // The active event group is authoritative for direct and event-originated notifications.
-    if (!notify_groups_should_show(&tray->notify_groups, event_type)) return;
+    NotifyGroupManager groups_snapshot;
+    AcquireSRWLockShared(&tray->notify_groups_lock);
+    groups_snapshot = tray->notify_groups;
+    ReleaseSRWLockShared(&tray->notify_groups_lock);
+    if (!notify_groups_should_show(&groups_snapshot, event_type)) return;
     
     DEBUG_LOG("tray_show_notification: title='%s', message='%s'", title, message);
     
@@ -4151,9 +4158,18 @@ static HANDLE enter_dialog_dpi_context(DialogDpiContextFn* setter) {
 // Global for passing group edit info
 static struct {
     NotifyGroupManager* mgr;
+    SRWLOCK* lock;
     int group_index;
     HWND hwnd_parent;
-} g_notify_edit_ctx = {NULL, -1, NULL};
+} g_notify_edit_ctx = {NULL, NULL, -1, NULL};
+
+static void replace_notification_groups(SRWLOCK* lock,
+                                        NotifyGroupManager* target,
+                                        const NotifyGroupManager* updated) {
+    AcquireSRWLockExclusive(lock);
+    *target = *updated;
+    ReleaseSRWLockExclusive(lock);
+}
 
 static LRESULT CALLBACK notify_tab_subclass_proc(HWND hwnd, UINT msg, WPARAM wParam,
                                                   LPARAM lParam, UINT_PTR subclass_id,
@@ -4372,6 +4388,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 case IDC_NOTIFY_ADD_GROUP:
                 {
                     int previous_count = settings_tray->notify_groups.count;
+                    g_notify_edit_ctx.lock = &settings_tray->notify_groups_lock;
                     show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, -1);
                     // The nested editor can dispatch Settings Cancel/Close.
                     if (!IsWindow(hwnd) || !settings_tray || !IsWindow(hNotifyTab)) break;
@@ -4404,6 +4421,7 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     int group_idx = (int)SendMessage(hList, LB_GETITEMDATA, (WPARAM)sel, 0);
                     if (group_idx < 0 || group_idx >= settings_tray->notify_groups.count) break;
                     
+                    g_notify_edit_ctx.lock = &settings_tray->notify_groups_lock;
                     show_notify_group_edit_dialog(hwnd, &settings_tray->notify_groups, group_idx);
                     refresh_notification_group_list(hNotifyTab, settings_tray);
                     break;
@@ -4442,7 +4460,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                         break;
                     }
                     if (notify_groups_save(&updated)) {
-                        settings_tray->notify_groups = updated;
+                        replace_notification_groups(&settings_tray->notify_groups_lock,
+                            &settings_tray->notify_groups, &updated);
                     } else {
                         MessageBox(hwnd,
                             "Could not save notification groups. Please check registry access and try again.",
@@ -4465,7 +4484,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                     NotifyGroupManager updated = settings_tray->notify_groups;
                     if (notify_groups_set_active(&updated, group_idx)) {
                         if (notify_groups_save(&updated)) {
-                            settings_tray->notify_groups = updated;
+                            replace_notification_groups(&settings_tray->notify_groups_lock,
+                                &settings_tray->notify_groups, &updated);
                         } else {
                             MessageBox(hwnd,
                                 "Could not save notification groups. Please check registry access and try again.",
@@ -4502,7 +4522,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                         NotifyGroupManager updated = settings_tray->notify_groups;
                         if (notify_groups_remove(&updated, group_idx)) {
                             if (notify_groups_save(&updated)) {
-                                settings_tray->notify_groups = updated;
+                                replace_notification_groups(&settings_tray->notify_groups_lock,
+                                    &settings_tray->notify_groups, &updated);
                             } else {
                                 MessageBox(hwnd,
                                     "Could not save notification groups. Please check registry access and try again.",
@@ -4992,7 +5013,7 @@ static LRESULT CALLBACK notify_group_edit_proc(HWND hwnd, UINT msg, WPARAM wPara
 
                     if (group_change_valid) {
                         if (notify_groups_save(&updated)) {
-                            *edit_mgr = updated;
+                            replace_notification_groups(g_notify_edit_ctx.lock, edit_mgr, &updated);
                             success = true;
                         } else {
                             MessageBox(hwnd,
@@ -5104,6 +5125,7 @@ void show_notify_group_edit_dialog(HWND hwnd_parent, NotifyGroupManager* mgr, in
     if (previous_context) set_dpi_context(previous_context);
 
     UnregisterClass("NoSleepNotifyGroupEditDialog", hInstance);
+    g_notify_edit_ctx.lock = NULL;
 }
 
 void tray_show_about_dialog(NoSleepTray* tray) {
