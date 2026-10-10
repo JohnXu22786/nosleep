@@ -128,6 +128,8 @@ typedef struct NoSleepTray {
     bool sleep_action_claimed;
     bool shutdown_action_claimed;
     DWORD timer_thread_id;
+    int duration_minutes;
+    ULONGLONG start_tick64;
     HANDLE sleep_stop_event;
     HANDLE shutdown_stop_event;
     HANDLE sleep_timer;
@@ -135,14 +137,39 @@ typedef struct NoSleepTray {
     SessionFinishedAction shutdown_action;
 } NoSleepTray;
 
+static ULONGLONG current_tick64;
+ULONGLONG GetTickCount64(void) { return current_tick64; }
+
 static int create_thread_count;
 static int reset_event_count;
 static bool suspend_on_next_unlock;
 static NoSleepTray *suspend_target;
+static bool publish_expiry_on_next_acquire;
+static NoSleepTray *expiry_target;
+static bool start_actions_before_suspend_lock;
+static bool actions_started_before_suspend_lock;
 
 static void simulate_suspend(NoSleepTray *tray);
+static bool try_start_sleep_action(NoSleepTray *tray, DWORD timer_thread_id);
+static bool try_start_shutdown_action(NoSleepTray *tray, DWORD timer_thread_id,
+                                      SessionFinishedAction finished_action);
 
-void AcquireSRWLockExclusive(void *lock) { (void)lock; }
+void AcquireSRWLockExclusive(void *lock) {
+    (void)lock;
+    if (publish_expiry_on_next_acquire) {
+        publish_expiry_on_next_acquire = false;
+        current_tick64 = expiry_target->start_tick64 +
+            (ULONGLONG)expiry_target->duration_minutes * 60 * 1000;
+        expiry_target->duration_expired = true;
+        if (start_actions_before_suspend_lock) {
+            start_actions_before_suspend_lock = false;
+            actions_started_before_suspend_lock =
+                try_start_sleep_action(expiry_target, expiry_target->timer_thread_id) &&
+                try_start_shutdown_action(expiry_target, expiry_target->timer_thread_id,
+                                          SESSION_FINISHED_SHUTDOWN);
+        }
+    }
+}
 void ReleaseSRWLockExclusive(void *lock) {
     (void)lock;
     if (suspend_on_next_unlock) {
@@ -237,9 +264,12 @@ static int expect_suspend_after_expiry_publication(void) {
     NoSleepTray tray = {0};
     tray.is_running = true;
     tray.core_init_succeeded = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
     tray.timer_thread_id = 27;
     tray.sleep_stop_event = &sleep_event;
     tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
 
     create_thread_count = 0;
     reset_event_count = 0;
@@ -263,15 +293,92 @@ static int expect_suspend_after_expiry_publication(void) {
     return 0;
 }
 
-static int expect_suspend_cancels_delayed_start(SessionFinishedAction action) {
+static int expect_suspend_first_after_duration_elapsed(void) {
     bool sleep_event = false;
     bool shutdown_event = false;
     NoSleepTray tray = {0};
-    tray.duration_expired = true;
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
+
+    create_thread_count = 0;
+    reset_event_count = 0;
+    simulate_suspend(&tray);
+    if (!tray.session_action_cancelled || !sleep_event || !shutdown_event) {
+        fprintf(stderr, "FAIL: suspend missed an elapsed duration before timer publication\n");
+        return 1;
+    }
+
+    tray.core_init_succeeded = true;
+    if (!timer_session_ready_for_action(&tray, tray.timer_thread_id) ||
+        !tray.duration_expired) {
+        fprintf(stderr, "FAIL: timer did not finish the expired session after resume\n");
+        return 1;
+    }
+
+    bool sleep_started = try_start_sleep_action(&tray, tray.timer_thread_id);
+    bool shutdown_started = try_start_shutdown_action(
+        &tray, tray.timer_thread_id, SESSION_FINISHED_SHUTDOWN);
+    if (sleep_started || shutdown_started || create_thread_count != 0 ||
+        reset_event_count != 0 || !sleep_event || !shutdown_event) {
+        fprintf(stderr, "FAIL: suspend-first cancellation was erased by delayed-action startup\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_pre_expiry_suspend_does_not_cancel_later_actions(void) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
     tray.core_init_succeeded = true;
     tray.timer_thread_id = 27;
     tray.sleep_stop_event = &sleep_event;
     tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 60999;
+    expiry_target = &tray;
+    publish_expiry_on_next_acquire = true;
+    start_actions_before_suspend_lock = true;
+    actions_started_before_suspend_lock = false;
+
+    create_thread_count = 0;
+    reset_event_count = 0;
+    simulate_suspend(&tray);
+    if (publish_expiry_on_next_acquire || start_actions_before_suspend_lock ||
+        !actions_started_before_suspend_lock || !tray.duration_expired ||
+        sleep_event || shutdown_event || tray.session_action_cancelled) {
+        fprintf(stderr, "FAIL: pre-expiry suspend canceled an action created before lock acquisition\n");
+        return 1;
+    }
+
+    if (tray.sleep_timer == NULL || tray.shutdown_timer == NULL ||
+        create_thread_count != 2 || reset_event_count != 2) {
+        fprintf(stderr, "FAIL: actions did not start before the delayed suspend handler acquired the lock\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_suspend_cancels_delayed_start(SessionFinishedAction action) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.duration_expired = true;
+    tray.core_init_succeeded = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
 
     create_thread_count = 0;
     reset_event_count = 0;
@@ -299,10 +406,14 @@ static int expect_active_session_keeps_future_action(SessionFinishedAction actio
     bool sleep_event = false;
     bool shutdown_event = false;
     NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
     tray.core_init_succeeded = true;
     tray.timer_thread_id = 27;
     tray.sleep_stop_event = &sleep_event;
     tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 60999;
 
     create_thread_count = 0;
     reset_event_count = 0;
@@ -321,6 +432,8 @@ static int expect_active_session_keeps_future_action(SessionFinishedAction actio
 int main(void) {
     int failures = 0;
     failures += expect_suspend_after_expiry_publication();
+    failures += expect_suspend_first_after_duration_elapsed();
+    failures += expect_pre_expiry_suspend_does_not_cancel_later_actions();
     failures += expect_suspend_cancels_delayed_start(SESSION_FINISHED_SLEEP);
     failures += expect_suspend_cancels_delayed_start(SESSION_FINISHED_SHUTDOWN);
     failures += expect_active_session_keeps_future_action(SESSION_FINISHED_SLEEP);

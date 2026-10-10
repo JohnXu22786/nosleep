@@ -5999,20 +5999,31 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                     case PBT_APMSUSPEND:
                         // System is about to enter sleep
                         DEBUG_LOG("System entering sleep, stopping all timers");
+                        ULONGLONG suspend_tick64 = GetTickCount64();
                         
                         // Do not wait for action workers here: a sleep action can
                         // be generating this broadcast while waiting for it to return.
                         AcquireSRWLockExclusive(&tray->delayed_action_lock);
                         tray_wait_for_delayed_countdown_start(tray);
-                        if (ATOMIC_LOAD_BOOL(&tray->duration_expired)) {
-                            tray->session_action_cancelled = true;
+                        bool duration_reached_at_suspend = false;
+                        if (tray->timer_thread_id != 0 && tray->duration_minutes > 0 &&
+                            suspend_tick64 >= tray->start_tick64) {
+                            ULONGLONG duration_ms =
+                                (ULONGLONG)tray->duration_minutes * 60 * 1000;
+                            duration_reached_at_suspend =
+                                suspend_tick64 - tray->start_tick64 >= duration_ms;
                         }
-                        SetEvent(tray->sleep_stop_event);
-                        SetEvent(tray->shutdown_stop_event);
+                        if (duration_reached_at_suspend) {
+                            tray->session_action_cancelled = true;
+                            SetEvent(tray->sleep_stop_event);
+                            SetEvent(tray->shutdown_stop_event);
+                        }
                         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
 
-                        // Stop any countdown that was already active.
-                        if (ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
+                        // Only cancel actions that were due when suspend arrived;
+                        // the timer can start a new action while this handler waits.
+                        if (duration_reached_at_suspend &&
+                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active)) {
                             tray_stop_countdown(tray);
                         }
                         
