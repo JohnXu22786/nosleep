@@ -26,9 +26,9 @@
 #else
 // Windows Interlocked APIs
 #define ATOMIC_STORE_BOOL(dest, value) InterlockedExchange8((volatile char*)(dest), (char)(value))
-#define ATOMIC_LOAD_BOOL(src) (*(src))
+#define ATOMIC_LOAD_BOOL(src) ((bool)InterlockedCompareExchange8((volatile CHAR*)(src), 0, 0))
 #define ATOMIC_STORE_INT(dest, value) InterlockedExchange((volatile LONG*)(dest), (LONG)(value))
-#define ATOMIC_LOAD_INT(src) (*(src))
+#define ATOMIC_LOAD_INT(src) ((int)InterlockedCompareExchange((volatile LONG*)(src), 0, 0))
 #define ATOMIC_EXCHANGE_BOOL(dest, value) InterlockedExchange8((volatile char*)(dest), (char)(value))
 #define ATOMIC_EXCHANGE_INT(dest, value) InterlockedExchange((volatile LONG*)(dest), (LONG)(value))
 #define MEMORY_BARRIER() MemoryBarrier()
