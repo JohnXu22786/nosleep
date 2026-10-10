@@ -643,34 +643,35 @@ static HICON icon_to_grayscale(HICON hColorIcon) {
     HBITMAP hOldBmp = (HBITMAP)SelectObject(hdcMem, hbmpGray);
     
     // Draw color icon to memory DC
-    DrawIconEx(hdcMem, 0, 0, hColorIcon, width, height, 0, NULL, DI_NORMAL);
-    
-    // Complete GDI drawing before accessing DIB pixels directly.
-    GdiFlush();
-    
-    // Convert to grayscale by iterating pixels
-    DWORD* pixels = (DWORD*)pBits;
-    for (int i = 0; i < width * height; i++) {
-        DWORD pixel = pixels[i];
-        // A 32-bit BI_RGB DIB stores bytes in BGRA order.
-        BYTE r = (pixel >> 16) & 0xFF;
-        BYTE g = (pixel >> 8) & 0xFF;
-        BYTE b = pixel & 0xFF;
-        BYTE a = (pixel >> 24) & 0xFF; // Alpha channel
+    HICON hGrayIcon = NULL;
+    if (DrawIconEx(hdcMem, 0, 0, hColorIcon, width, height, 0, NULL, DI_NORMAL)) {
+        // Complete GDI drawing before accessing DIB pixels directly.
+        GdiFlush();
+
+        // Convert to grayscale by iterating pixels
+        DWORD* pixels = (DWORD*)pBits;
+        for (int i = 0; i < width * height; i++) {
+            DWORD pixel = pixels[i];
+            // A 32-bit BI_RGB DIB stores bytes in BGRA order.
+            BYTE r = (pixel >> 16) & 0xFF;
+            BYTE g = (pixel >> 8) & 0xFF;
+            BYTE b = pixel & 0xFF;
+            BYTE a = (pixel >> 24) & 0xFF; // Alpha channel
+
+            // Calculate grayscale luminance (standard formula)
+            BYTE gray = (BYTE)(0.299f * r + 0.587f * g + 0.114f * b);
+
+            pixels[i] = (a << 24) | (gray << 16) | (gray << 8) | gray;
+        }
+
+        // Create grayscale icon
+        ICONINFO grayIconInfo;
+        grayIconInfo.fIcon = TRUE;
+        grayIconInfo.hbmColor = hbmpGray;
+        grayIconInfo.hbmMask = iconInfo.hbmMask; // Reuse mask
         
-        // Calculate grayscale luminance (standard formula)
-        BYTE gray = (BYTE)(0.299f * r + 0.587f * g + 0.114f * b);
-        
-        pixels[i] = (a << 24) | (gray << 16) | (gray << 8) | gray;
+        hGrayIcon = CreateIconIndirect(&grayIconInfo);
     }
-    
-    // Create grayscale icon
-    ICONINFO grayIconInfo;
-    grayIconInfo.fIcon = TRUE;
-    grayIconInfo.hbmColor = hbmpGray;
-    grayIconInfo.hbmMask = iconInfo.hbmMask; // Reuse mask
-    
-    HICON hGrayIcon = CreateIconIndirect(&grayIconInfo);
     
     // Cleanup
     SelectObject(hdcMem, hOldBmp);
