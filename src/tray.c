@@ -3302,12 +3302,20 @@ static bool is_startup_enabled(void) {
                              (LPBYTE)reg_value, &value_size);
     RegCloseKey(hKey);
 
-    bool enabled = (result == ERROR_SUCCESS && value_type == REG_SZ &&
+    bool value_valid = (result == ERROR_SUCCESS && value_type == REG_SZ &&
         value_size >= sizeof(wchar_t) &&
         value_size <= expected_len * sizeof(wchar_t) &&
         value_size % sizeof(wchar_t) == 0 &&
-        reg_value[value_size / sizeof(wchar_t) - 1] == L'\0' &&
-        wcscmp(reg_value, expected) == 0);
+        reg_value[value_size / sizeof(wchar_t) - 1] == L'\0');
+    bool enabled = false;
+    if (value_valid && exe_len <= INT_MAX) {
+        size_t value_chars = value_size / sizeof(wchar_t) - 1;
+        size_t expected_chars = wcslen(expected);
+        enabled = value_chars == expected_chars && reg_value[0] == L'"' &&
+            CompareStringOrdinal(reg_value + 1, (int)exe_len,
+                                 expected + 1, (int)exe_len, TRUE) == CSTR_EQUAL &&
+            wcscmp(reg_value + exe_len + 1, expected + exe_len + 1) == 0;
+    }
     free(exe_path);
     free(expected);
     free(reg_value);
