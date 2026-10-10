@@ -75,7 +75,7 @@ bool notify_groups_name_is_duplicate(const NotifyGroupManager* mgr, const char* 
 // Add a new custom group
 int notify_groups_add(NotifyGroupManager* mgr, const char* name, unsigned int event_mask);
 
-// Remove a custom group (cannot remove default groups)
+// Remove a custom group (cannot remove default groups or the final group)
 bool notify_groups_remove(NotifyGroupManager* mgr, int index);
 
 // Update a group's name and event mask

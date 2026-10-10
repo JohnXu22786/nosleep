@@ -4834,7 +4834,8 @@ static void update_notification_group_actions(HWND hwnd_parent, NoSleepTray* tra
         tray && tray->notify_groups.count < MAX_NOTIFY_GROUPS);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_CONFIGURE_GROUP), valid);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_DEL_GROUP),
-        valid && !tray->notify_groups.groups[group_index].is_default);
+        valid && tray->notify_groups.count > 1 &&
+        !tray->notify_groups.groups[group_index].is_default);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_RESTORE_DEFAULT),
         valid && tray->notify_groups.groups[group_index].is_default);
     EnableWindow(GetDlgItem(hwnd_parent, IDC_NOTIFY_SET_ACTIVE),

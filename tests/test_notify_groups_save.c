@@ -1078,6 +1078,43 @@ static int test_successful_save_round_trips_groups(void) {
     return 0;
 }
 
+static int test_removing_last_custom_group_is_rejected(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 0;
+    seed_stored_group(0, "Only custom group", 0x155u, 0);
+
+    NotifyGroupManager loaded = {0};
+    notify_groups_load(&loaded);
+    if (loaded.count != 1 || loaded.active_index != 0 ||
+        strcmp(loaded.groups[0].name, "Only custom group") != 0) {
+        fprintf(stderr, "FAIL: the sole stored custom notification group was not loaded\n");
+        return 1;
+    }
+
+    if (notify_groups_remove(&loaded, 0) || loaded.count != 1 ||
+        loaded.active_index != 0 || !notify_groups_get_active(&loaded)) {
+        fprintf(stderr, "FAIL: removing the sole custom group left no valid active group\n");
+        return 1;
+    }
+
+    if (!notify_groups_save(&loaded)) {
+        fprintf(stderr, "FAIL: the remaining custom group could not be saved\n");
+        return 1;
+    }
+
+    NotifyGroupManager reloaded = {0};
+    notify_groups_load(&reloaded);
+    if (reloaded.count != 1 || reloaded.active_index != 0 ||
+        strcmp(reloaded.groups[0].name, "Only custom group") != 0 ||
+        !notify_groups_get_active(&reloaded)) {
+        fprintf(stderr, "FAIL: the sole custom group did not remain active after save and reload\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_reload_without_registry_trees_clears_stale_groups(void) {
     reset_registry();
     stored_root_exists = true;
@@ -1240,6 +1277,7 @@ int main(void) {
     failures += test_staging_cleanup_failure();
     failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
+    failures += test_removing_last_custom_group_is_rejected();
     failures += test_legacy_rename_fallback_replaces_existing_tree();
     failures += test_dynamic_rename_api_is_used_when_available();
     failures += test_interrupted_copy_rename_restores_complete_backup_before_load();
