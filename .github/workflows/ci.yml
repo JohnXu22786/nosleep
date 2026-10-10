@@ -59,6 +59,9 @@ jobs:
       - name: Test About dialog monitor positioning
         run: ./test_tray_about_dialog_monitor.sh
 
+      - name: Test keyboard tray menu anchoring
+        run: ./test_tray_keyboard_menu_anchor.sh
+
       - name: Test custom duration dialog monitor selection
         run: ./test_tray_custom_dialog_monitor.sh
 
