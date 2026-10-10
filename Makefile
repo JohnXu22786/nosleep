@@ -80,6 +80,8 @@ test-unit: $(OBJDIR) test-cli test-updater-url-policy
 	./tests/test_updater_response_buffer_t.exe
 	$(CC) -std=c99 -Wall -Wextra -Isrc tests/test_updater_response_read.c $(SRCDIR)/updater_response_read.c $(SRCDIR)/updater_logic.c $(SRCDIR)/cJSON.c -o tests/test_updater_response_read_t.exe
 	./tests/test_updater_response_read_t.exe
+	$(CC) -std=c99 -Wall -Wextra -Isrc -Drealloc=test_realloc tests/test_updater_response_content_length.c $(SRCDIR)/updater_response_read.c -o tests/test_updater_response_content_length_t.exe
+	./tests/test_updater_response_content_length_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_temp_path.c -o tests/test_updater_temp_path_t.exe
 	./tests/test_updater_temp_path_t.exe
 	$(CC) -std=c99 -Wall -Wextra tests/test_updater_stream.c -o tests/test_updater_stream_t.exe

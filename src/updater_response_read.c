@@ -54,6 +54,7 @@ UpdaterResponseReadResult updater_read_response_body(UpdaterStreamRead read_data
             return UPDATER_RESPONSE_READ_FAILED;
         }
         total_read += (uint32_t)bytes_read;
+        if (content_length != 0 && total_read >= content_length) break;
         if (total_read >= buffer_size - 1u &&
             total_read < UPDATER_MAX_RESPONSE_SIZE) {
             uint32_t new_buffer_size = 0;
