@@ -78,7 +78,10 @@ assert '"Up to 20 groups; Add Group is disabled at the limit.\\n"' in notificati
     "the Notifications tab must explain why Add Group is disabled at capacity"
 )
 assert re.search(
-    r"case WM_DPICHANGED:\s*scale_dialog_layout\(hwnd, HIWORD\(wParam\), \(const RECT\*\)lParam\);\s*"
+    r"case WM_DPICHANGED:\s*settings_layout_reflowing = TRUE;\s*"
+    r"scale_dialog_layout\(hwnd, HIWORD\(wParam\), \(const RECT\*\)lParam\);\s*"
+    r"settings_layout_reflowing = FALSE;\s*"
+    r"settings_monitor = MonitorFromWindow\(hwnd, MONITOR_DEFAULTTONEAREST\);\s*"
     r"refresh_notification_group_list\(hNotifyTab, settings_tray\);",
     tray,
 ), "the list extent must be recalculated when its font changes with the dialog DPI"

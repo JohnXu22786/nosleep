@@ -4184,6 +4184,39 @@ static UINT fit_dialog_dpi(UINT dpi, int width, int height, int available_width,
     return fitted ? fitted : 1;
 }
 
+static BOOL fit_dialog_layout_to_work_area(int width, int height, UINT dpi,
+                                           DWORD style, DWORD ex_style,
+                                           const RECT* work_area, const RECT* current,
+                                           const RECT* suggested, UINT* layout_dpi,
+                                           RECT* bounds) {
+    if (!work_area || !layout_dpi || !bounds) return FALSE;
+
+    int available_width = work_area->right - work_area->left;
+    int available_height = work_area->bottom - work_area->top;
+    UINT fitted_dpi = fit_dialog_dpi(dpi, width, height, available_width,
+        available_height, style, ex_style);
+    RECT size;
+    if (!dialog_window_bounds_for_dpi(width, height, fitted_dpi, dpi,
+                                      style, ex_style, &size)) return FALSE;
+
+    int window_width = size.right - size.left;
+    int window_height = size.bottom - size.top;
+    int x = suggested ? suggested->left : (current ? current->left : 0);
+    int y = suggested ? suggested->top : (current ? current->top : 0);
+    int max_x = work_area->right - window_width;
+    int max_y = work_area->bottom - window_height;
+    if (max_x < work_area->left) max_x = work_area->left;
+    if (max_y < work_area->top) max_y = work_area->top;
+    if (x < work_area->left) x = work_area->left;
+    if (x > max_x) x = max_x;
+    if (y < work_area->top) y = work_area->top;
+    if (y > max_y) y = max_y;
+
+    *layout_dpi = fitted_dpi;
+    *bounds = (RECT){x, y, x + window_width, y + window_height};
+    return TRUE;
+}
+
 static BOOL dialog_work_area(HWND hwnd, const RECT* suggested, RECT* work_area) {
     RECT anchor;
     if (suggested) {
@@ -4245,15 +4278,13 @@ static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
     if (!dialog_work_area(hwnd, suggested, &work_area)) {
         return;
     }
-    int available_width = work_area.right - work_area.left;
-    int available_height = work_area.bottom - work_area.top;
     DWORD style = (DWORD)GetWindowLongPtr(hwnd, GWL_STYLE);
     DWORD ex_style = (DWORD)GetWindowLongPtr(hwnd, GWL_EXSTYLE);
-    UINT layout_dpi = fit_dialog_dpi(dpi, layout->width, layout->height,
-        available_width, available_height, style, ex_style);
     RECT bounds;
-    if (!dialog_window_bounds_for_dpi(layout->width, layout->height, layout_dpi,
-                                      dpi, style, ex_style, &bounds)) return;
+    UINT layout_dpi;
+    if (!fit_dialog_layout_to_work_area(layout->width, layout->height, dpi,
+            style, ex_style, &work_area, have_current ? &current : NULL,
+            suggested, &layout_dpi, &bounds)) return;
     int window_width = bounds.right - bounds.left;
     int window_height = bounds.bottom - bounds.top;
     for (DialogControlLayout* control = layout->controls; control; control = control->next) {
@@ -4270,19 +4301,9 @@ static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
         SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)replacement);
         if (previous) DeleteObject(previous);
     }
-    int x = suggested ? suggested->left : current.left;
-    int y = suggested ? suggested->top : current.top;
-    int max_x = work_area.right - window_width;
-    int max_y = work_area.bottom - window_height;
-    if (max_x < work_area.left) max_x = work_area.left;
-    if (max_y < work_area.top) max_y = work_area.top;
-    if (x < work_area.left) x = work_area.left;
-    if (x > max_x) x = max_x;
-    if (y < work_area.top) y = work_area.top;
-    if (y > max_y) y = max_y;
     UINT flags = SWP_NOZORDER | SWP_NOACTIVATE;
     if (!suggested && !have_current) flags |= SWP_NOMOVE;
-    SetWindowPos(hwnd, NULL, x, y, window_width, window_height, flags);
+    SetWindowPos(hwnd, NULL, bounds.left, bounds.top, window_width, window_height, flags);
     InvalidateRect(hwnd, NULL, TRUE);
 }
 
@@ -4312,6 +4333,18 @@ static BOOL initialize_dialog_layout(HWND hwnd, int width, int height) {
             (bounds.bottom - bounds.top)) / 2;
         SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
     }
+    return TRUE;
+}
+
+static BOOL settings_dialog_refit_on_move(HWND hwnd, HMONITOR* previous_monitor,
+                                           BOOL* reflowing) {
+    if (!previous_monitor || !reflowing || *reflowing) return FALSE;
+    HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!monitor || monitor == *previous_monitor) return FALSE;
+    *previous_monitor = monitor;
+    *reflowing = TRUE;
+    scale_dialog_layout(hwnd, custom_dialog_dpi(hwnd), NULL);
+    *reflowing = FALSE;
     return TRUE;
 }
 
@@ -4381,6 +4414,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
     static HWND hGeneralTab = NULL;
     static HWND hNotifyTab = NULL;
     static HWND hIntervalCombo = NULL;
+    static HMONITOR settings_monitor = NULL;
+    static BOOL settings_layout_reflowing = FALSE;
 
     switch (msg) {
         case WM_CREATE:
@@ -4454,7 +4489,11 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP,
                 250, 430, 80, 28, hwnd, (HMENU)IDC_SETTINGS_CANCEL, hInst, NULL);
 
-            if (!initialize_dialog_layout(hwnd, 480, 470)) return -1;
+            settings_layout_reflowing = TRUE;
+            BOOL layout_initialized = initialize_dialog_layout(hwnd, 480, 470);
+            settings_layout_reflowing = FALSE;
+            if (!layout_initialized) return -1;
+            settings_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
 
             return 0;
         }
@@ -4710,8 +4749,18 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             break;
 
         case WM_DPICHANGED:
+            settings_layout_reflowing = TRUE;
             scale_dialog_layout(hwnd, HIWORD(wParam), (const RECT*)lParam);
+            settings_layout_reflowing = FALSE;
+            settings_monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
             refresh_notification_group_list(hNotifyTab, settings_tray);
+            return 0;
+
+        case WM_MOVE:
+            if (settings_dialog_refit_on_move(hwnd, &settings_monitor,
+                                              &settings_layout_reflowing)) {
+                refresh_notification_group_list(hNotifyTab, settings_tray);
+            }
             return 0;
 
         case WM_NCDESTROY:
@@ -4728,6 +4777,8 @@ static LRESULT CALLBACK settings_dialog_proc(HWND hwnd, UINT msg, WPARAM wParam,
             hGeneralTab = NULL;
             hNotifyTab = NULL;
             hIntervalCombo = NULL;
+            settings_monitor = NULL;
+            settings_layout_reflowing = FALSE;
             break;
 
         case WM_CLOSE:
