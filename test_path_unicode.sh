@@ -285,9 +285,22 @@ int main(void) {
     registry_bytes = 0;
     registry_exists = 0;
     assert(add_app_to_path());
+    assert(registry_type == REG_EXPAND_SZ);
     assert(wcscmp(registry, L"C:\\安装\\😀") == 0);
     assert(remove_app_from_path());
     assert(registry[0] == 0);
+    // A missing PATH must preserve a literal percent in the install directory.
+    exe = L"C:\\100% NoSleep\\nosleep.exe";
+    registry_exists = 0;
+    registry_bytes = 0;
+    assert(add_app_to_path());
+    assert(registry_type == REG_SZ);
+    assert(wcscmp(registry, L"C:\\100% NoSleep") == 0);
+    assert(remove_app_from_path());
+    assert(registry[0] == 0);
+    exe = L"C:\\安装\\😀\\nosleep.exe";
+    registry_type = REG_EXPAND_SZ;
+    registry_bytes = 0;
     wcscpy(registry, L"C:\\既存");
     registry_bytes = (DWORD)((wcslen(registry) + 1) * sizeof(wchar_t));
     grow_on_read = 1;

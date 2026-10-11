@@ -3138,6 +3138,7 @@ static bool add_app_to_path(void) {
             free(dir);
             return false;
         }
+        if (!current_exists && wcschr(dir, L'%')) path_type = REG_SZ;
         if (current_exists && !is_supported_path_registry_type(path_type)) {
             free(current_path);
             close_user_environment_transaction(transaction, hKey, false);
