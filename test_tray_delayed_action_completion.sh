@@ -113,6 +113,7 @@ typedef struct NoSleepTray {
     CONDITION_VARIABLE stop_condition;
     bool stopping;
     bool session_action_cancelled;
+    bool session_action_pending;
     bool starting_nosleep;
     bool delayed_countdown_starting;
     bool sleep_action_claimed;
