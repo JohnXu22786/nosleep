@@ -66,13 +66,13 @@ fi
 echo ""
 echo "=== Test 3: Verify duration path lazy loading ==="
 
-if grep -q "hIconNumbered\[display_number\] == NULL" "$SRC_FILE"; then
+if grep -Fq "hIconNumbered[display_number] == NULL" "$SRC_FILE"; then
     pass "Lazy loading NULL check exists for duration path"
 else
     fail "Missing lazy loading check in duration path"
 fi
 
-if grep -q "hIconNumbered\[display_number\] = create_numbered_icon" "$SRC_FILE"; then
+if grep -Fq "hIconNumbered[display_number] = create_numbered_icon" "$SRC_FILE"; then
     pass "Lazy creation exists for duration path"
 else
     fail "Missing lazy creation in duration path"
