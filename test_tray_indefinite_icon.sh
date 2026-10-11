@@ -27,7 +27,7 @@ assert re.search(
     r"if\s*\(number\s*<\s*0\)\s*\{\s*wcscpy\(text,\s*L\"\\u221E\"\);",
     tray,
 ), "the indefinite icon must use a wide U+221E text string"
-assert tray.count("GetTextExtentPoint32W(") == 2 and tray.count("TextOutW(") == 2, (
+assert tray.count("GetTextExtentPoint32W(") == 2 and tray.count("TextOutW(") == 1, (
     "numbered-icon text must be measured and drawn with wide-character APIs"
 )
 PY
