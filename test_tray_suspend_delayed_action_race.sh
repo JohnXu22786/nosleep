@@ -141,6 +141,7 @@ typedef struct NoSleepTray {
     HANDLE sleep_timer;
     HANDLE shutdown_timer;
     SessionFinishedAction shutdown_action;
+    SessionFinishedAction countdown_action;
     SessionFinishedAction session_finished_action;
 } NoSleepTray;
 
@@ -544,6 +545,24 @@ static int expect_setting_change_after_expiry_resolution_stays_neutral(void) {
                                  "System sleep detected; no pending actions were cancelled");
 }
 
+static int expect_expiry_action_is_captured_before_handle_publication(void) {
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.session_finished_action = SESSION_FINISHED_SLEEP;
+    current_tick64 = 61000;
+
+    if (resolve_expiry_action(&tray, tray.timer_thread_id) != SESSION_FINISHED_SLEEP ||
+        !tray.session_action_pending ||
+        tray.countdown_action != SESSION_FINISHED_SLEEP) {
+        fprintf(stderr, "FAIL: expiry did not publish its captured action with pending state\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int expect_elapsed_clock_after_manual_stop_does_not_cancel(void) {
     bool sleep_event = false;
     bool shutdown_event = false;
@@ -704,6 +723,7 @@ int main(void) {
     failures += expect_active_session_keeps_future_action(SESSION_FINISHED_SHUTDOWN);
     failures += expect_suspend_without_active_session();
     failures += expect_setting_change_after_expiry_resolution_stays_neutral();
+    failures += expect_expiry_action_is_captured_before_handle_publication();
     failures += expect_elapsed_clock_after_manual_stop_does_not_cancel();
     failures += expect_failed_session_does_not_claim_cancellation(true);
     failures += expect_failed_session_does_not_claim_cancellation(false);

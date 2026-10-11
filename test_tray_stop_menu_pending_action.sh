@@ -73,6 +73,7 @@ def extract_function(name):
     raise AssertionError(f"unterminated function: {name}")
 
 
+has_stop_work = extract_function("tray_has_stop_work")
 update_internal = extract_function("tray_update_stop_menu_item_internal")
 update = extract_function("tray_update_stop_menu_item")
 reap = extract_function("tray_reap_delayed_action_handle")
@@ -80,6 +81,7 @@ reap = extract_function("tray_reap_delayed_action_handle")
 harness = r'''#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
+#include "tray_stop_guard.h"
 
 typedef void *HANDLE;
 typedef void *HMENU;
@@ -122,6 +124,7 @@ typedef struct NoSleepTray {
 #define DEBUG_LOG(...) ((void)0)
 
 static char actual_menu_text[64];
+static bool actual_menu_enabled;
 static int close_handle_calls;
 static int delayed_action_lock_depth;
 static int menu_updates_under_lock;
@@ -143,7 +146,7 @@ static int CloseHandle(HANDLE handle) {
 static int EnableMenuItem(HMENU menu, unsigned int item, unsigned int flags) {
     (void)menu;
     (void)item;
-    (void)flags;
+    actual_menu_enabled = (flags & MF_GRAYED) == 0;
     return 1;
 }
 
@@ -157,7 +160,7 @@ static int SetMenuItemInfo(HMENU menu, unsigned int item, bool by_position,
     return 1;
 }
 
-''' + update_internal + "\n" + update + "\n" + reap + r'''
+''' + has_stop_work + "\n" + update_internal + "\n" + update + "\n" + reap + r'''
 
 static int expect_menu_text(const char *scenario,
                             bool countdown_active,
@@ -168,6 +171,7 @@ static int expect_menu_text(const char *scenario,
                             bool shutdown_claimed,
                             SessionFinishedAction countdown_action,
                             SessionFinishedAction shutdown_action,
+                            bool expected_enabled,
                             const char *expected) {
     NoSleepTray tray = {0};
     tray.hmenu = (HMENU)1;
@@ -187,6 +191,37 @@ static int expect_menu_text(const char *scenario,
                 scenario, actual_menu_text, expected);
         return 1;
     }
+    if (actual_menu_enabled != expected_enabled) {
+        fprintf(stderr, "FAIL: %s left Stop %s, expected it %s\n",
+                scenario, actual_menu_enabled ? "enabled" : "disabled",
+                expected_enabled ? "enabled" : "disabled");
+        return 1;
+    }
+    return 0;
+}
+
+static int expect_pending_expiry_menu(const char *scenario,
+                                      SessionFinishedAction pending_action,
+                                      SessionFinishedAction configured_action,
+                                      const char *expected) {
+    NoSleepTray tray = {0};
+    tray.hmenu = (HMENU)1;
+    tray.session_action_pending = true;
+    tray.countdown_action = pending_action;
+    tray.session_finished_action = configured_action;
+    actual_menu_text[0] = '\0';
+    actual_menu_enabled = false;
+
+    bool popup_enabled = tray_has_stop_work(&tray);
+    tray_update_stop_menu_item(&tray);
+    if (!popup_enabled || !actual_menu_enabled ||
+        strcmp(actual_menu_text, expected) != 0) {
+        fprintf(stderr, "FAIL: %s produced '%s' with popup Stop %s and menu Stop %s\n",
+                scenario, actual_menu_text,
+                popup_enabled ? "enabled" : "disabled",
+                actual_menu_enabled ? "enabled" : "disabled");
+        return 1;
+    }
     return 0;
 }
 
@@ -195,28 +230,37 @@ int main(void) {
     failures += expect_menu_text(
         "pending sleep after countdown thread creation failure", false, false,
         true, false, false, false, SESSION_FINISHED_SHUTDOWN,
-        SESSION_FINISHED_NONE, "Cancel sleep");
+        SESSION_FINISHED_NONE, true, "Cancel sleep");
     failures += expect_menu_text(
         "pending shutdown after countdown thread creation failure", false, false,
         false, true, false, false, SESSION_FINISHED_SLEEP,
-        SESSION_FINISHED_SHUTDOWN_GRACEFUL, "Cancel shutdown");
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL, true, "Cancel shutdown");
     failures += expect_menu_text(
         "active sleep countdown", true, false, true, false, false, false,
-        SESSION_FINISHED_SLEEP, SESSION_FINISHED_NONE, "Cancel sleep");
+        SESSION_FINISHED_SLEEP, SESSION_FINISHED_NONE, true, "Cancel sleep");
     failures += expect_menu_text(
         "active shutdown countdown", true, false, false, true, false, false,
         SESSION_FINISHED_SHUTDOWN, SESSION_FINISHED_SHUTDOWN,
-        "Cancel shutdown");
+        true, "Cancel shutdown");
     failures += expect_menu_text(
         "claimed sleep action is no longer cancellable", false, false,
         true, false, true, false, SESSION_FINISHED_SLEEP,
-        SESSION_FINISHED_NONE, "Stop");
+        SESSION_FINISHED_NONE, false, "Stop");
     failures += expect_menu_text(
         "active NoSleep session", false, true, false, false, false, false,
-        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, "Stop nosleep session");
+        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, true,
+        "Stop nosleep session");
     failures += expect_menu_text(
         "idle tray", false, false, false, false, false, false,
-        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, "Stop");
+        SESSION_FINISHED_NONE, SESSION_FINISHED_NONE, false, "Stop");
+    failures += expect_pending_expiry_menu(
+        "sleep expiry pending after preference changes to shutdown",
+        SESSION_FINISHED_SLEEP, SESSION_FINISHED_SHUTDOWN_GRACEFUL,
+        "Cancel sleep");
+    failures += expect_pending_expiry_menu(
+        "shutdown expiry pending after preference changes to sleep",
+        SESSION_FINISHED_SHUTDOWN_GRACEFUL, SESSION_FINISHED_SLEEP,
+        "Cancel shutdown");
     if (failures) return 1;
     NoSleepTray sleep_tray = {0};
     sleep_tray.hmenu = (HMENU)1;
@@ -227,9 +271,14 @@ int main(void) {
         fprintf(stderr, "FAIL: pending sleep was not shown as cancellable before reaping\n");
         return 1;
     }
+    if (!actual_menu_enabled) {
+        fprintf(stderr, "FAIL: pending sleep menu item was disabled before reaping\n");
+        return 1;
+    }
     int sleep_menu_updates_before_reap = menu_updates_under_lock;
     tray_reap_delayed_action_handle(&sleep_tray, &sleep_tray.sleep_timer);
     if (sleep_tray.sleep_timer != NULL || strcmp(actual_menu_text, "Stop") != 0 ||
+        actual_menu_enabled ||
         menu_updates_under_lock != sleep_menu_updates_before_reap + 1) {
         fprintf(stderr, "FAIL: sleep reap left caption '%s' or updated it outside the tray lock\n",
                 actual_menu_text);
@@ -246,9 +295,14 @@ int main(void) {
         fprintf(stderr, "FAIL: pending shutdown was not shown as cancellable before reaping\n");
         return 1;
     }
+    if (!actual_menu_enabled) {
+        fprintf(stderr, "FAIL: pending shutdown menu item was disabled before reaping\n");
+        return 1;
+    }
     int shutdown_menu_updates_before_reap = menu_updates_under_lock;
     tray_reap_delayed_action_handle(&shutdown_tray, &shutdown_tray.shutdown_timer);
     if (shutdown_tray.shutdown_timer != NULL || strcmp(actual_menu_text, "Stop") != 0 ||
+        actual_menu_enabled ||
         close_handle_calls != 2 ||
         menu_updates_under_lock != shutdown_menu_updates_before_reap + 1) {
         fprintf(stderr, "FAIL: shutdown reap left caption '%s' or updated it outside the tray lock\n",
@@ -262,7 +316,8 @@ int main(void) {
 
 output.write_text(harness)
 command = shlex.split(os.environ.get("CC", "cc")) + [
-    "-std=c99", "-Wall", "-Wextra", str(output), "-o", str(output.with_suffix(""))
+    "-std=c99", "-Wall", "-Wextra", f"-I{root / 'src'}", str(output),
+    "-o", str(output.with_suffix(""))
 ]
 subprocess.run(command, check=True)
 subprocess.run([str(output.with_suffix(""))], check=True)

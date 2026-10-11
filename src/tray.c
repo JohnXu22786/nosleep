@@ -1371,6 +1371,7 @@ void tray_start_nosleep(NoSleepTray* tray, int duration_minutes) {
     ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, false);
     tray->session_action_cancelled = false;
     tray->session_action_pending = false;
+    tray->countdown_action = SESSION_FINISHED_NONE;
     tray->session_expiry_action_resolved = false;
     tray->timer_thread_id = 0;
     tray->nosleep_thread_id = 0;
@@ -1550,6 +1551,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         if (show_manual_stop_notification) {
             tray_show_manual_stop_notification(tray, manual_stop_start_tick64);
         }
+        tray_update_stop_menu_item(tray);
         DEBUG_LOG("tray_stop_nosleep: duplicate stop %s",
                   waited_for_stop ? "waited for active cleanup" :
                   is_reentrant ? "reentrant call returned" : "stop worker returned");
@@ -1568,6 +1570,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         WakeAllConditionVariable(&tray->stop_condition);
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         DEBUG_LOG("tray_stop_nosleep: ended session has no cleanup work");
+        tray_update_stop_menu_item(tray);
         return true;
     }
     if (!has_work) {
@@ -1583,6 +1586,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         if (show_manual_stop_notification) {
             tray_show_manual_stop_notification(tray, manual_stop_start_tick64);
         }
+        tray_update_stop_menu_item(tray);
         return is_nosleep_thread;
     }
 
@@ -1746,7 +1750,8 @@ void tray_stop_nosleep(NoSleepTray* tray, bool timer_expired, bool suppress_noti
 
 static bool tray_has_stop_work(NoSleepTray* tray) {
     AcquireSRWLockExclusive(&tray->delayed_action_lock);
-    bool has_work = tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
+    bool has_work = tray->session_action_pending ||
+                    tray_stop_has_work(ATOMIC_LOAD_BOOL(&tray->is_running),
                                        ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
                                        tray->sleep_timer != NULL && !tray->sleep_action_claimed,
                                        tray->shutdown_timer != NULL && !tray->shutdown_action_claimed);
@@ -1807,6 +1812,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     !tray->session_action_cancelled && !core_init_failed &&
                     !nosleep_run_failed && !session_starting &&
                     finished_action != SESSION_FINISHED_NONE;
+                if (tray->session_action_pending) {
+                    tray->countdown_action = finished_action;
+                }
             }
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             if (!is_current_session || !is_running) {
@@ -1828,6 +1836,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                                           session_starting;
                     if (should_abandon && is_current_session) {
                         tray->session_action_pending = false;
+                        tray_update_stop_menu_item_internal(tray, true);
                     }
                     if (!should_abandon && core_init_succeeded) {
                         // Publish expiry with the final session check so suspend
@@ -1906,6 +1915,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     if (!sleep_timer && tray->timer_thread_id == timer_thread_id) {
                         tray->session_action_pending = false;
+                        tray_update_stop_menu_item_internal(tray, true);
                     }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     if (stale_session) {
@@ -1971,6 +1981,7 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     if (!shutdown_timer && tray->timer_thread_id == timer_thread_id) {
                         tray->session_action_pending = false;
+                        tray_update_stop_menu_item_internal(tray, true);
                     }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
                     if (shutdown_stale_session) {
@@ -2088,6 +2099,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         if (tray->nosleep_thread_id == GetCurrentThreadId()) {
             ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, true);
             tray->session_action_pending = false;
+            tray_update_stop_menu_item_internal(tray, true);
         }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     }
@@ -2716,17 +2728,18 @@ void tray_update_icon(NoSleepTray* tray) {
 static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_held) {
     if (!tray || !tray->hmenu) return;
     
-    // Countdown startup can fail while its delayed action is still pending.
-    // Read the action handles under their lock so the menu still offers the
-    // matching cancellation command when the display flag is clear.
+    // Keep cancellation available between expiry cleanup and delayed-action
+    // handle publication, and when countdown startup fails.
     if (!lock_held) AcquireSRWLockExclusive(&tray->delayed_action_lock);
     bool delayed_sleep_countdown_active = ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
     bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
+    bool session_action_pending = tray->session_action_pending;
     bool sleep_pending = tray->sleep_timer != NULL && !tray->sleep_action_claimed;
     bool shutdown_pending = tray->shutdown_timer != NULL && !tray->shutdown_action_claimed;
-    bool delayed_action_pending = delayed_sleep_countdown_active || sleep_pending || shutdown_pending;
-    SessionFinishedAction pending_action = tray->countdown_action;
     SessionFinishedAction session_action = tray->session_finished_action;
+    bool delayed_action_pending = delayed_sleep_countdown_active ||
+                                  session_action_pending || sleep_pending || shutdown_pending;
+    SessionFinishedAction pending_action = tray->countdown_action;
     bool saved_action_matches_pending =
         ((pending_action == SESSION_FINISHED_SHUTDOWN ||
           pending_action == SESSION_FINISHED_SHUTDOWN_GRACEFUL) && shutdown_pending) ||
@@ -6165,6 +6178,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         if (cancel_pending_actions_at_suspend) {
                             tray->session_action_cancelled = true;
                             tray->session_action_pending = false;
+                            tray_update_stop_menu_item_internal(tray, true);
                             SetEvent(tray->sleep_stop_event);
                             SetEvent(tray->shutdown_stop_event);
                         }

@@ -148,6 +148,7 @@ static bool release_expiry_worker_wait;
 static DWORD blocked_wait_thread_id;
 static HANDLE blocked_wait_handle;
 static int notification_count;
+static int stop_menu_update_count;
 static NotifyEventId notification_event;
 static char notification_title[128];
 static char notification_message[256];
@@ -252,6 +253,7 @@ static void tray_show_notification(NoSleepTray *tray,
 
 static void tray_update_stop_menu_item(NoSleepTray *tray) {
     (void)tray;
+    ++stop_menu_update_count;
 }
 
 static void tray_update_icon(NoSleepTray *tray) {
@@ -393,15 +395,17 @@ int main(void) {
         fputs("FAIL: expiry cleanup should suppress its configured action notice\n", stderr);
         return 1;
     }
+    int menu_updates_after_expiry_cleanup = stop_menu_update_count;
 
     current_thread_id = 4;
     (void)tray_stop_nosleep_for_session(&gap_tray, 0, false, false);
     if (!gap_tray.session_action_cancelled || notification_count != 1 ||
         notification_event != NOTIFY_EVENT_SESSION_STOP ||
         strcmp(notification_title, "Stopped") != 0 ||
-        strstr(notification_message, "manually stopped") == NULL) {
+        strstr(notification_message, "manually stopped") == NULL ||
+        stop_menu_update_count != menu_updates_after_expiry_cleanup + 1) {
         fprintf(stderr,
-                "FAIL: manual Stop between expiry cleanup and action startup should show the Stopped notice; got %d notifications, title '%s'\n",
+                "FAIL: manual Stop between expiry cleanup and action startup should refresh the menu and show Stopped; got %d notifications, title '%s'\n",
                 notification_count, notification_title);
         return 1;
     }

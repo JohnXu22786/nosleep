@@ -136,7 +136,7 @@ typedef struct NoSleepTray {
     HANDLE shutdown_timer;      // Timer handle for delayed shutdown
     HANDLE shutdown_stop_event; // Event to signal stop delayed shutdown
     bool delayed_sleep_countdown_active; // Whether delayed sleep countdown is active (60s countdown) - accessed atomically
-    SessionFinishedAction countdown_action; // Action scheduled for the active countdown
+    SessionFinishedAction countdown_action; // Action scheduled for the pending delayed action or active countdown
     ULONGLONG countdown_start_tick64; // Shared dispatch/countdown timing origin; set before worker creation
     int countdown_seconds;               // Remaining seconds (60 to 0) - accessed atomically
     HANDLE countdown_timer_thread; // Countdown update thread handle
