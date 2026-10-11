@@ -128,6 +128,7 @@ static bool actual_menu_enabled;
 static int close_handle_calls;
 static int delayed_action_lock_depth;
 static int menu_updates_under_lock;
+static void (*after_unlock_callback)(void);
 
 static void AcquireSRWLockExclusive(int *lock) {
     (void)lock;
@@ -136,6 +137,11 @@ static void AcquireSRWLockExclusive(int *lock) {
 static void ReleaseSRWLockExclusive(int *lock) {
     (void)lock;
     --delayed_action_lock_depth;
+    if (delayed_action_lock_depth == 0 && after_unlock_callback) {
+        void (*callback)(void) = after_unlock_callback;
+        after_unlock_callback = NULL;
+        callback();
+    }
 }
 static int CloseHandle(HANDLE handle) {
     (void)handle;
@@ -161,6 +167,39 @@ static int SetMenuItemInfo(HMENU menu, unsigned int item, bool by_position,
 }
 
 ''' + has_stop_work + "\n" + update_internal + "\n" + update + "\n" + reap + r'''
+
+static NoSleepTray *worker_failure_tray;
+static int worker_failure_count;
+
+static void fail_no_sleep_worker_initialization(void) {
+    ++worker_failure_count;
+    worker_failure_tray->is_running = false;
+    tray_update_stop_menu_item(worker_failure_tray);
+}
+
+static int expect_worker_start_failure_race(void) {
+    NoSleepTray tray = {0};
+    tray.hmenu = (HMENU)4;
+    tray.is_running = true;
+    actual_menu_text[0] = '\0';
+    actual_menu_enabled = false;
+    worker_failure_tray = &tray;
+    worker_failure_count = 0;
+    after_unlock_callback = fail_no_sleep_worker_initialization;
+
+    tray_update_stop_menu_item(&tray);
+
+    after_unlock_callback = NULL;
+    worker_failure_tray = NULL;
+    if (worker_failure_count != 1 || strcmp(actual_menu_text, "Stop") != 0 ||
+        actual_menu_enabled) {
+        fprintf(stderr,
+                "FAIL: worker initialization failure left Stop '%s' and %s\n",
+                actual_menu_text, actual_menu_enabled ? "enabled" : "disabled");
+        return 1;
+    }
+    return 0;
+}
 
 static int expect_menu_text(const char *scenario,
                             bool countdown_active,
@@ -261,6 +300,7 @@ int main(void) {
         "shutdown expiry pending after preference changes to sleep",
         SESSION_FINISHED_SHUTDOWN_GRACEFUL, SESSION_FINISHED_SLEEP,
         "Cancel shutdown");
+    failures += expect_worker_start_failure_race();
     if (failures) return 1;
     NoSleepTray sleep_tray = {0};
     sleep_tray.hmenu = (HMENU)1;

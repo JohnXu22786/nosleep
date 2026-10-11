@@ -2748,8 +2748,6 @@ static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_hel
         // The pending handle identifies the action if the countdown type is stale.
         pending_action = shutdown_pending ? tray->shutdown_action : SESSION_FINISHED_SLEEP;
     }
-    if (!lock_held) ReleaseSRWLockExclusive(&tray->delayed_action_lock);
-    
     // Determine menu text based on state
     const char* stop_text = NULL;
     if (delayed_action_pending) {
@@ -2777,6 +2775,9 @@ static void tray_update_stop_menu_item_internal(NoSleepTray* tray, bool lock_hel
     mii.dwTypeData = (LPSTR)stop_text;
     
     SetMenuItemInfo(tray->hmenu, IDM_STOP, FALSE, &mii);
+
+    // Keep menu writes serialized with session state changes.
+    if (!lock_held) ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     
     (void)session_action;
     DEBUG_LOG("tray_update_stop_menu_item: updated to '%s' (countdown_active=%s, is_running=%s, session_action=%d)",
