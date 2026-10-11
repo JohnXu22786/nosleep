@@ -4,6 +4,7 @@
 #include <io.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <windows.h>
 #include <stdbool.h>
 #include <shellapi.h>
@@ -134,7 +135,15 @@ static void prepare_cli_output(bool ignore_ctrl_c) {
         if (has_stdout) SetStdHandle(STD_OUTPUT_HANDLE, (HANDLE)_get_osfhandle(stdout_fd));
         else freopen("CONOUT$", "w", stdout);
         if (has_stderr) SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(stderr_fd));
-        else freopen("CONOUT$", "w", stderr);
+        else if (freopen("CONOUT$", "w", stderr)) {
+            stderr_fd = _fileno(stderr);
+            if (stderr_fd >= 0) {
+                intptr_t stderr_handle = _get_osfhandle(stderr_fd);
+                if (stderr_handle != -1) {
+                    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)stderr_handle);
+                }
+            }
+        }
     }
 
     if (ignore_ctrl_c) {

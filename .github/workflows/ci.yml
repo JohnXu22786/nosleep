@@ -148,6 +148,9 @@ jobs:
       - name: Test actionable CLI parse errors
         run: bash test_cli_parse_errors.sh
 
+      - name: Test CLI stderr handle after console attachment
+        run: bash test_cli_stderr_handle.sh
+
       - name: Test tray cancellation notice action
         run: bash test_tray_cancellation_notice_action.sh
 
