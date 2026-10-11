@@ -114,6 +114,7 @@ typedef struct NoSleepTray {
     bool stopping;
     bool session_action_cancelled;
     bool session_action_pending;
+    bool stopping_expiry_notification_suppressed;
     bool starting_nosleep;
     bool delayed_countdown_starting;
     bool sleep_action_claimed;

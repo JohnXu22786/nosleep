@@ -1494,6 +1494,8 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     bool manual_stop_requested = expected_thread_id == 0 &&
                                  !timer_expired &&
                                  !suppress_notification;
+    bool expiry_action_was_pending = manual_stop_requested &&
+                                     tray->session_action_pending;
     bool has_cancellable_work = tray_stop_has_work(
         ATOMIC_LOAD_BOOL(&tray->is_running),
         ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active),
@@ -1548,8 +1550,11 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
                                           &tray->delayed_action_lock,
                                           INFINITE, 0);
             }
-            show_manual_stop_notification = manual_stop_requested &&
+            show_manual_stop_notification = expiry_action_was_pending &&
                 tray->stopping_expiry_notification_suppressed;
+            if (expiry_action_was_pending) {
+                tray->stopping_expiry_notification_suppressed = false;
+            }
             manual_stop_start_tick64 = tray->start_tick64;
         }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -1580,7 +1585,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
     }
     if (!has_work) {
         DEBUG_LOG("tray_stop_nosleep: no active session, countdown, or delayed action; resetting stopping flag and returning");
-        bool show_manual_stop_notification = manual_stop_requested &&
+        bool show_manual_stop_notification = expiry_action_was_pending &&
             previous_stop_notification_suppressed &&
             ATOMIC_LOAD_BOOL(&tray->duration_expired);
         ULONGLONG manual_stop_start_tick64 = tray->start_tick64;
@@ -1771,6 +1776,7 @@ static void tray_reap_delayed_action_handle(NoSleepTray* tray, HANDLE* timer_han
     HANDLE completed_timer = *timer_handle;
     *timer_handle = NULL;
     tray->session_action_pending = false;
+    tray->stopping_expiry_notification_suppressed = false;
     if (completed_timer) CloseHandle(completed_timer);
     // Keep teardown from freeing the tray before its menu caption is refreshed.
     tray_update_stop_menu_item_internal(tray, true);
@@ -1920,6 +1926,10 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     if (!sleep_timer && tray->timer_thread_id == timer_thread_id) {
                         tray->session_action_pending = false;
+                        // A waiting manual Stop consumes this notice after cleanup wakes it.
+                        if (!tray->session_action_cancelled) {
+                            tray->stopping_expiry_notification_suppressed = false;
+                        }
                         tray_update_stop_menu_item_internal(tray, true);
                     }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -1986,6 +1996,9 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
                     }
                     if (!shutdown_timer && tray->timer_thread_id == timer_thread_id) {
                         tray->session_action_pending = false;
+                        if (!tray->session_action_cancelled) {
+                            tray->stopping_expiry_notification_suppressed = false;
+                        }
                         tray_update_stop_menu_item_internal(tray, true);
                     }
                     ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -2104,6 +2117,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         if (tray->nosleep_thread_id == GetCurrentThreadId()) {
             ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, true);
             tray->session_action_pending = false;
+            tray->stopping_expiry_notification_suppressed = false;
             tray_update_stop_menu_item_internal(tray, true);
         }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
@@ -6236,6 +6250,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         if (cancel_pending_actions_at_suspend) {
                             tray->session_action_cancelled = true;
                             tray->session_action_pending = false;
+                            tray->stopping_expiry_notification_suppressed = false;
                             tray_update_stop_menu_item_internal(tray, true);
                             SetEvent(tray->sleep_stop_event);
                             SetEvent(tray->shutdown_stop_event);

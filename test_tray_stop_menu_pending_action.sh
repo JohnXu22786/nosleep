@@ -104,6 +104,7 @@ typedef struct NoSleepTray {
     int delayed_action_lock;
     bool delayed_sleep_countdown_active;
     bool session_action_pending;
+    bool stopping_expiry_notification_suppressed;
     bool is_running;
     HANDLE sleep_timer;
     HANDLE shutdown_timer;
