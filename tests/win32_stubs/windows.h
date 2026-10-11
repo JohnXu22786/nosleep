@@ -8,6 +8,7 @@ typedef struct TestIcon *HICON;
 typedef void *HWND;
 typedef int BOOL;
 typedef unsigned int DWORD;
+typedef unsigned long long ULONGLONG;
 typedef long LONG;
 typedef unsigned char BYTE;
 typedef BYTE *LPBYTE;
@@ -49,6 +50,7 @@ typedef struct {
 #define KEY_READ (READ_CONTROL | KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | KEY_NOTIFY)
 #define REG_SZ 1
 #define REG_DWORD 4
+#define REG_QWORD 11
 #define TOKEN_QUERY 0x0008
 #define TokenUser 1
 #define INFINITE 0xFFFFFFFFu

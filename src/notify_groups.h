@@ -51,6 +51,7 @@ typedef struct {
     int count;                      // Number of groups
     int active_index;               // Index of the currently active group
     bool load_incomplete;           // Registry access failed; block replacement saves
+    ULONGLONG registry_revision;    // Snapshot version used to reject stale replacement saves
 } NotifyGroupManager;
 
 // Initialize the notification group manager
@@ -84,7 +85,7 @@ bool notify_groups_update(NotifyGroupManager* mgr, int index, const char* name, 
 // Restore a selected built-in group to a chosen preset (0: All, 1: Critical, 2: None)
 bool notify_groups_restore_default(NotifyGroupManager* mgr, int index, int preset_index);
 
-// Save all groups to registry; returns false on incomplete load or registry failure
+// Save all groups; returns false for stale snapshots, incomplete loads, or registry failures
 bool notify_groups_save(NotifyGroupManager* mgr);
 
 // Load groups from registry

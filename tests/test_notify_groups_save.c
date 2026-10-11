@@ -49,6 +49,8 @@ typedef struct {
     bool exists;
     bool has_active_index_value;
     DWORD active_index;
+    bool has_registry_revision_value;
+    ULONGLONG registry_revision;
     StoredGroup groups[MAX_NOTIFY_GROUPS + 5];
 } StoredRegistryTree;
 
@@ -420,6 +422,12 @@ LONG RegSetValueEx(HKEY key, const char *name, DWORD reserved, DWORD type,
         stored_trees[tree].has_active_index_value = true;
         return ERROR_SUCCESS;
     }
+    if (group_index == -1 && strcmp(name, "registry_revision") == 0 &&
+        type == REG_QWORD && size == sizeof(ULONGLONG)) {
+        memcpy(&stored_trees[tree].registry_revision, value, sizeof(ULONGLONG));
+        stored_trees[tree].has_registry_revision_value = true;
+        return ERROR_SUCCESS;
+    }
     if (group_index < 0 || !stored_trees[tree].groups[group_index].exists) {
         return ERROR_FILE_NOT_FOUND;
     }
@@ -487,6 +495,11 @@ LONG RegQueryValueEx(HKEY key, const char *name, DWORD *reserved, DWORD *type,
         if (!stored_trees[tree].has_active_index_value) return ERROR_FILE_NOT_FOUND;
         return copy_registry_value(&stored_trees[tree].active_index,
             sizeof(stored_trees[tree].active_index), REG_DWORD, type, value, size);
+    }
+    if (tree >= 0 && strcmp(name, "registry_revision") == 0) {
+        if (!stored_trees[tree].has_registry_revision_value) return ERROR_FILE_NOT_FOUND;
+        return copy_registry_value(&stored_trees[tree].registry_revision,
+            sizeof(stored_trees[tree].registry_revision), REG_QWORD, type, value, size);
     }
     if (tree < 0 && !group_location_from_handle(key, &tree, &group_index)) {
         return ERROR_FILE_NOT_FOUND;
@@ -1078,6 +1091,49 @@ static int test_successful_save_round_trips_groups(void) {
     return 0;
 }
 
+static int test_stale_manager_cannot_replace_newer_groups(void) {
+    reset_registry();
+    stored_root_exists = true;
+    has_active_index = true;
+    stored_active_index = 1;
+    seed_stored_group(0, "All notifications", 0xFFFFFFFFu, 1);
+    seed_stored_group(1, "Work events", 0x155u, 0);
+
+    NotifyGroupManager newer;
+    NotifyGroupManager stale;
+    memset(&newer, 0, sizeof(newer));
+    memset(&stale, 0, sizeof(stale));
+    notify_groups_load(&newer);
+    notify_groups_load(&stale);
+    if (newer.count != 2 || stale.count != 2 ||
+        notify_groups_add(&newer, "New group", 0x4u) != 2 ||
+        !notify_groups_update(&stale, 1, "Work events", 0x2u)) {
+        fprintf(stderr, "FAIL: stale-save setup could not create separate manager snapshots\n");
+        return 1;
+    }
+
+    if (!notify_groups_save(&newer)) {
+        fprintf(stderr, "FAIL: current notification-group snapshot could not be saved\n");
+        return 1;
+    }
+    if (notify_groups_save(&stale)) {
+        fprintf(stderr, "FAIL: stale notification-group snapshot replaced a newer save\n");
+        return 1;
+    }
+
+    NotifyGroupManager loaded = {0};
+    notify_groups_load(&loaded);
+    if (loaded.count != 3 || loaded.active_index != 1 ||
+        strcmp(loaded.groups[1].name, "Work events") != 0 ||
+        loaded.groups[1].event_mask != 0x155u ||
+        strcmp(loaded.groups[2].name, "New group") != 0 ||
+        loaded.groups[2].event_mask != 0x4u) {
+        fprintf(stderr, "FAIL: stale save lost the groups from the newer registry revision\n");
+        return 1;
+    }
+    return 0;
+}
+
 static int test_removing_last_custom_group_is_rejected(void) {
     reset_registry();
     stored_root_exists = true;
@@ -1277,6 +1333,7 @@ int main(void) {
     failures += test_staging_cleanup_failure();
     failures += test_failed_save_preserves_previously_persisted_groups();
     failures += test_successful_save_round_trips_groups();
+    failures += test_stale_manager_cannot_replace_newer_groups();
     failures += test_removing_last_custom_group_is_rejected();
     failures += test_legacy_rename_fallback_replaces_existing_tree();
     failures += test_dynamic_rename_api_is_used_when_available();
