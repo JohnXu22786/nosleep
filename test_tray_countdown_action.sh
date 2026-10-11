@@ -238,6 +238,7 @@ typedef struct NoSleepTray {
     SRWLOCK delayed_action_lock;
     CONDITION_VARIABLE stop_condition;
     bool session_action_cancelled;
+    bool session_action_pending;
     bool starting_nosleep;
     bool stopping;
     bool delayed_countdown_starting;

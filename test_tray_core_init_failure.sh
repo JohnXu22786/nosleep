@@ -122,6 +122,7 @@ typedef struct NoSleepTray {
     bool is_running, duration_expired, stopping, core_init_failed;
     bool core_init_succeeded, starting_nosleep, nosleep_run_failed;
     bool session_action_cancelled;
+    bool session_action_pending, session_expiry_action_resolved;
     bool delayed_countdown_starting;
     bool prevent_display_cli_override_set, prevent_display_cli_override;
     bool away_mode_cli_override_set, away_mode_cli_override;

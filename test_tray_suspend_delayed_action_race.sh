@@ -567,6 +567,59 @@ static int expect_elapsed_clock_after_manual_stop_does_not_cancel(void) {
                                  "System sleep detected; no pending actions were cancelled");
 }
 
+static int expect_failed_session_does_not_claim_cancellation(bool core_init_failed) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.session_action_pending = true;
+    tray.core_init_failed = core_init_failed;
+    tray.nosleep_run_failed = !core_init_failed;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
+    notification_event = 0;
+    notification_message[0] = '\0';
+
+    simulate_suspend(&tray);
+    if (sleep_event || shutdown_event || tray.session_action_cancelled) {
+        fprintf(stderr, "FAIL: suspend claimed cancellation for a failed NoSleep session\n");
+        return 1;
+    }
+    return expect_suspend_notice("suspend after NoSleep failure",
+                                 "System sleep detected; no pending actions were cancelled");
+}
+
+static int expect_starting_session_does_not_claim_scheduled_work(
+        bool sleep_action, bool shutdown_action, bool countdown_active) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.starting_nosleep = true;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.sleep_timer = sleep_action ? (HANDLE)1 : NULL;
+    tray.shutdown_timer = shutdown_action ? (HANDLE)1 : NULL;
+    tray.delayed_sleep_countdown_active = countdown_active;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
+    notification_event = 0;
+    notification_message[0] = '\0';
+
+    simulate_suspend(&tray);
+    if (sleep_event || shutdown_event || tray.session_action_cancelled) {
+        fprintf(stderr, "FAIL: suspend claimed cancellation while NoSleep was starting\n");
+        return 1;
+    }
+    return expect_suspend_notice("suspend while NoSleep is starting",
+                                 "System sleep detected; no pending actions were cancelled");
+}
+
 static int expect_expired_session_without_action_stays_neutral(void) {
     bool sleep_event = false;
     bool shutdown_event = false;
@@ -625,6 +678,11 @@ int main(void) {
     failures += expect_suspend_without_active_session();
     failures += expect_setting_change_after_expiry_resolution_stays_neutral();
     failures += expect_elapsed_clock_after_manual_stop_does_not_cancel();
+    failures += expect_failed_session_does_not_claim_cancellation(true);
+    failures += expect_failed_session_does_not_claim_cancellation(false);
+    failures += expect_starting_session_does_not_claim_scheduled_work(true, false, false);
+    failures += expect_starting_session_does_not_claim_scheduled_work(false, true, false);
+    failures += expect_starting_session_does_not_claim_scheduled_work(false, false, true);
     failures += expect_expired_session_without_action_stays_neutral();
     failures += expect_reaped_action_clears_pending_state();
     if (failures) return 1;

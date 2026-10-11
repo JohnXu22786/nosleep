@@ -1510,6 +1510,7 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
 
     if (is_nosleep_thread) {
         ATOMIC_STORE_BOOL(&tray->core_init_failed, true);
+        tray->session_action_pending = false;
     }
 
     // Cancel even when expiry cleanup has not yet published its delayed action.
@@ -1797,12 +1798,15 @@ static DWORD WINAPI tray_duration_timer(LPVOID lpParam) {
             bool is_current_session = tray->timer_thread_id == timer_thread_id;
             bool is_running = ATOMIC_LOAD_BOOL(&tray->is_running);
             SessionFinishedAction finished_action = tray->session_finished_action;
+            bool core_init_failed = ATOMIC_LOAD_BOOL(&tray->core_init_failed);
+            bool nosleep_run_failed = ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed);
+            bool session_starting = tray->starting_nosleep;
             if (is_current_session && is_running) {
                 tray->session_expiry_action_resolved = true;
-                if (!tray->session_action_cancelled &&
-                    finished_action != SESSION_FINISHED_NONE) {
-                    tray->session_action_pending = true;
-                }
+                tray->session_action_pending =
+                    !tray->session_action_cancelled && !core_init_failed &&
+                    !nosleep_run_failed && !session_starting &&
+                    finished_action != SESSION_FINISHED_NONE;
             }
             ReleaseSRWLockExclusive(&tray->delayed_action_lock);
             if (!is_current_session || !is_running) {
@@ -2083,6 +2087,7 @@ static DWORD WINAPI tray_nosleep_thread(LPVOID lpParam) {
         AcquireSRWLockExclusive(&tray->delayed_action_lock);
         if (tray->nosleep_thread_id == GetCurrentThreadId()) {
             ATOMIC_STORE_BOOL(&tray->nosleep_run_failed, true);
+            tray->session_action_pending = false;
         }
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
     }
@@ -6134,13 +6139,18 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         AcquireSRWLockExclusive(&tray->delayed_action_lock);
                         tray_wait_for_delayed_countdown_start(tray);
                         bool session_running = ATOMIC_LOAD_BOOL(&tray->is_running);
-                        bool has_uncancelled_action =
-                            tray->session_action_pending ||
-                            (session_running && !tray->session_expiry_action_resolved &&
-                             tray->session_finished_action != SESSION_FINISHED_NONE) ||
-                            (tray->sleep_timer != NULL && !tray->sleep_action_claimed) ||
-                            (tray->shutdown_timer != NULL && !tray->shutdown_action_claimed) ||
-                            ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active);
+                        bool session_can_publish_action =
+                            !tray->session_action_cancelled &&
+                            !ATOMIC_LOAD_BOOL(&tray->core_init_failed) &&
+                            !ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed) &&
+                            !tray->starting_nosleep;
+                        bool has_uncancelled_action = session_can_publish_action &&
+                            (tray->session_action_pending ||
+                             (session_running && !tray->session_expiry_action_resolved &&
+                              tray->session_finished_action != SESSION_FINISHED_NONE) ||
+                             (tray->sleep_timer != NULL && !tray->sleep_action_claimed) ||
+                             (tray->shutdown_timer != NULL && !tray->shutdown_action_claimed) ||
+                             ATOMIC_LOAD_BOOL(&tray->delayed_sleep_countdown_active));
                         bool cancel_pending_actions_at_suspend = false;
                         if (has_uncancelled_action && !tray->session_action_cancelled &&
                             tray->timer_thread_id != 0 &&
