@@ -9,7 +9,7 @@ typedef void *HWND;
 typedef int BOOL;
 typedef unsigned int DWORD;
 typedef unsigned long long ULONGLONG;
-typedef long LONG;
+typedef int32_t LONG;
 typedef unsigned char BYTE;
 typedef BYTE *LPBYTE;
 typedef void *HKEY;

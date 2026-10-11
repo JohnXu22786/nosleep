@@ -1,5 +1,6 @@
 #include <stdbool.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,9 @@
 
 #include "notify_groups.h"
 #include <sddl.h>
+
+typedef char test_win32_long_is_32_bits[(sizeof(LONG) * CHAR_BIT == 32) ? 1 : -1];
+typedef char test_win32_long_is_signed[((LONG)-1 < 0) ? 1 : -1];
 
 enum {
     REGISTRY_PARENT_HANDLE = 1,
