@@ -5505,6 +5505,7 @@ static void center_about_dialog_on_invoking_monitor(HWND hwnd, HWND hwnd_owner,
 
     if (have_monitor_work_area) {
         work_area = monitor_info.rcWork;
+        scale_dialog_layout(hwnd, custom_dialog_dpi(hwnd), &work_area);
     } else if (!SystemParametersInfo(SPI_GETWORKAREA, 0, &work_area, 0)) {
         work_area = (RECT){0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
     }

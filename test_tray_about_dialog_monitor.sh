@@ -93,6 +93,9 @@ static RECT dialog_bounds = { 100, 100, 500, 340 };
 static int set_x;
 static int set_y;
 static UINT set_flags;
+static int refit_calls;
+static UINT refit_dpi;
+static RECT refit_work_area;
 static int icon_rect_queries;
 static int icon_api_lookups;
 static int icon_monitor_queries;
@@ -201,6 +204,18 @@ static BOOL SetWindowPos(HWND hwnd, HWND insert_after, int x, int y,
     return TRUE;
 }
 
+static UINT custom_dialog_dpi(HWND hwnd) {
+    (void)hwnd;
+    return 144;
+}
+
+static void scale_dialog_layout(HWND hwnd, UINT dpi, const RECT* suggested) {
+    (void)hwnd;
+    refit_calls++;
+    refit_dpi = dpi;
+    if (suggested) refit_work_area = *suggested;
+}
+
 __ICON_RECT_HELPER__
 
 __ICON_HELPER__
@@ -295,6 +310,21 @@ int main(void) {
     dialog_bounds = (RECT){ 100, 100, 1900, 1300 };
     failed |= check_position("oversized dialog stays anchored in work area", FALSE,
                              -1600, 100);
+
+    icon_work_area = (RECT){ -1600, 100, -1240, 320 };
+    dialog_bounds = (RECT){ 100, 100, 500, 340 };
+    refit_calls = 0;
+    failed |= check_position("about dialog refits for a narrow tray monitor", FALSE,
+                             -1600, 100);
+    if (refit_calls != 1 || refit_dpi != 144 ||
+        refit_work_area.left != icon_work_area.left ||
+        refit_work_area.top != icon_work_area.top ||
+        refit_work_area.right != icon_work_area.right ||
+        refit_work_area.bottom != icon_work_area.bottom) {
+        fprintf(stderr,
+                "FAIL: About dialog layout was not refit at the tray monitor DPI and work area\n");
+        failed = 1;
+    }
 
     return failed;
 }
