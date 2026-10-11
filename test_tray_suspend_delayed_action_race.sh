@@ -125,6 +125,7 @@ typedef struct NoSleepTray {
     bool is_running;
     bool session_action_cancelled;
     bool session_action_pending;
+    bool stopping_expiry_notification_suppressed;
     bool session_expiry_action_resolved;
     bool starting_nosleep;
     bool core_init_failed;
@@ -149,6 +150,7 @@ static ULONGLONG current_tick64;
 ULONGLONG GetTickCount64(void) { return current_tick64; }
 
 static int create_thread_count;
+static bool fail_next_create_thread;
 static int reset_event_count;
 static int close_handle_count;
 static NotifyEventId notification_event;
@@ -242,6 +244,10 @@ static HANDLE CreateThread(void *attributes, size_t stack_size,
     (void)flags;
     (void)thread_id;
     ++create_thread_count;
+    if (fail_next_create_thread) {
+        fail_next_create_thread = false;
+        return NULL;
+    }
     return (HANDLE)1;
 }
 
@@ -448,6 +454,7 @@ static int expect_suspend_cancels_delayed_start(SessionFinishedAction action) {
     tray.is_running = true;
     tray.duration_expired = true;
     tray.session_action_pending = true;
+    tray.stopping_expiry_notification_suppressed = true;
     tray.core_init_succeeded = true;
     tray.duration_minutes = 1;
     tray.start_tick64 = 1000;
@@ -459,8 +466,10 @@ static int expect_suspend_cancels_delayed_start(SessionFinishedAction action) {
     create_thread_count = 0;
     reset_event_count = 0;
     simulate_suspend(&tray);
-    if (!sleep_event || !shutdown_event) {
-        fprintf(stderr, "FAIL: suspend did not signal both delayed-action stop events\n");
+    if (!sleep_event || !shutdown_event ||
+        tray.stopping_expiry_notification_suppressed) {
+        fprintf(stderr,
+                "FAIL: suspend did not cancel delayed-action state and suppression\n");
         return 1;
     }
     if (expect_suspend_notice("suspend after duration expiry",
@@ -696,19 +705,49 @@ static int expect_reaped_action_clears_pending_state(void) {
     tray.start_tick64 = 1000;
     tray.timer_thread_id = 27;
     tray.session_action_pending = true;
+    tray.stopping_expiry_notification_suppressed = true;
     tray.sleep_timer = (HANDLE)1;
     current_tick64 = 61000;
     notification_event = 0;
     notification_message[0] = '\0';
 
     tray_reap_delayed_action_handle(&tray, &tray.sleep_timer);
-    if (tray.session_action_pending || tray.sleep_timer != NULL || close_handle_count != 1) {
+    if (tray.session_action_pending ||
+        tray.stopping_expiry_notification_suppressed ||
+        tray.sleep_timer != NULL || close_handle_count != 1) {
         fprintf(stderr, "FAIL: reaping an action left it marked pending\n");
         return 1;
     }
     simulate_suspend(&tray);
     return expect_suspend_notice("suspend after action completion",
                                  "System sleep detected; no pending actions were cancelled");
+}
+
+static int expect_failed_action_start_clears_suppression(bool sleep_action) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.core_init_succeeded = true;
+    tray.session_action_pending = true;
+    tray.stopping_expiry_notification_suppressed = true;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    fail_next_create_thread = true;
+    create_thread_count = 0;
+
+    bool started = sleep_action
+        ? try_start_sleep_action(&tray, tray.timer_thread_id)
+        : try_start_shutdown_action(&tray, tray.timer_thread_id,
+                                    SESSION_FINISHED_SHUTDOWN);
+    if (started || create_thread_count != 1 || tray.session_action_pending ||
+        tray.stopping_expiry_notification_suppressed) {
+        fprintf(stderr,
+                "FAIL: failed %s worker startup retained pending expiry notification state\n",
+                sleep_action ? "sleep" : "shutdown");
+        return 1;
+    }
+    return 0;
 }
 
 int main(void) {
@@ -733,6 +772,8 @@ int main(void) {
     failures += expect_starting_session_does_not_claim_scheduled_work(false, false, true);
     failures += expect_expired_session_without_action_stays_neutral();
     failures += expect_reaped_action_clears_pending_state();
+    failures += expect_failed_action_start_clears_suppression(true);
+    failures += expect_failed_action_start_clears_suppression(false);
     if (failures) return 1;
     puts("PASS: suspend cancellation persists until delayed workers are considered");
     return 0;

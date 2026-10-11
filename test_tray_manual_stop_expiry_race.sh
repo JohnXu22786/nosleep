@@ -60,12 +60,29 @@ def extract_function(signature):
     raise AssertionError(f"unterminated function: {signature}")
 
 
+def extract_lock_region(function, marker):
+    marker_position = function.index(marker)
+    start = function.index(
+        "AcquireSRWLockExclusive(&tray->delayed_action_lock);", marker_position
+    )
+    end_marker = "ReleaseSRWLockExclusive(&tray->delayed_action_lock);"
+    end = function.index(end_marker, start) + len(end_marker)
+    return function[start:end]
+
+
 stop_function = extract_function(
     "static bool tray_stop_nosleep_for_session(NoSleepTray* tray,"
 )
 manual_notice_function = extract_function(
     "static void tray_show_manual_stop_notification(NoSleepTray* tray,"
 )
+reap_function = extract_function(
+    "static void tray_reap_delayed_action_handle(NoSleepTray* tray,"
+)
+duration_timer = extract_function(
+    "static DWORD WINAPI tray_duration_timer(LPVOID lpParam)"
+)
+sleep_startup = extract_lock_region(duration_timer, "HANDLE sleep_timer = NULL;")
 
 prelude = r'''#include <pthread.h>
 #include <stdbool.h>
@@ -100,6 +117,7 @@ typedef enum {
 #define INFINITE 0xffffffffu
 #define WAIT_OBJECT_0 0
 #define ES_CONTINUOUS 0x80000000u
+#define CreateThread(...) NULL
 #define DEBUG_LOG(...) do { if (0) fprintf(stderr, __VA_ARGS__); } while (0)
 #define ATOMIC_STORE_BOOL(destination, value) \
     __atomic_store_n((destination), (value), __ATOMIC_SEQ_CST)
@@ -117,7 +135,9 @@ typedef struct NoSleepTray {
     bool is_running;
     bool duration_expired;
     bool core_init_failed;
+    bool core_init_succeeded;
     bool nosleep_run_failed;
+    bool starting_nosleep;
     bool delayed_countdown_starting;
     bool delayed_sleep_countdown_active;
     bool session_action_cancelled;
@@ -138,12 +158,19 @@ typedef struct NoSleepTray {
     ULONGLONG start_tick64;
 } NoSleepTray;
 
+static void tray_update_stop_menu_item_internal(NoSleepTray *tray,
+                                                bool lock_held) {
+    (void)tray;
+    (void)lock_held;
+}
+
 static NoSleepTray *active_tray;
 static __thread DWORD current_thread_id;
 static pthread_mutex_t harness_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t harness_changed = PTHREAD_COND_INITIALIZER;
 static bool expiry_waiting_for_worker;
 static bool manual_stop_waiting_for_cleanup;
+static bool defer_stop_condition_wake;
 static bool release_expiry_worker_wait;
 static DWORD blocked_wait_thread_id;
 static HANDLE blocked_wait_handle;
@@ -177,7 +204,9 @@ static bool SleepConditionVariableSRW(CONDITION_VARIABLE *condition,
 }
 
 static void WakeAllConditionVariable(CONDITION_VARIABLE *condition) {
-    pthread_cond_broadcast(condition);
+    if (!defer_stop_condition_wake) {
+        pthread_cond_broadcast(condition);
+    }
 }
 
 static DWORD GetCurrentThreadId(void) {
@@ -266,6 +295,11 @@ static void *expiry_cleanup(void *argument) {
     current_thread_id = 1;
     NoSleepTray *tray = (NoSleepTray *)argument;
     (void)tray_stop_nosleep_for_session(tray, 1, true, true);
+    try_start_cancelled_sleep_action(tray, tray->timer_thread_id);
+    if (defer_stop_condition_wake) {
+        defer_stop_condition_wake = false;
+        WakeAllConditionVariable(&tray->stop_condition);
+    }
     return NULL;
 }
 
@@ -311,6 +345,7 @@ int main(void) {
     pthread_cond_init(&tray.stop_condition, NULL);
     tray.is_running = true;
     tray.duration_expired = true;
+    tray.session_action_pending = true;
     tray.timer_thread = (HANDLE)(uintptr_t)1;
     tray.timer_thread_id = 1;
     tray.nosleep_thread = (HANDLE)(uintptr_t)2;
@@ -318,6 +353,7 @@ int main(void) {
     tray.stop_event = (HANDLE)(uintptr_t)4;
     blocked_wait_thread_id = 1;
     blocked_wait_handle = tray.nosleep_thread;
+    defer_stop_condition_wake = true;
     active_tray = &tray;
 
     if (pthread_create(&expiry_thread, NULL, expiry_cleanup, &tray) != 0) {
@@ -361,7 +397,8 @@ int main(void) {
     pthread_join(expiry_thread, NULL);
     pthread_join(manual_thread, NULL);
 
-    if (!tray.session_action_cancelled) {
+    if (!tray.session_action_cancelled ||
+        tray.stopping_expiry_notification_suppressed) {
         fputs("FAIL: manual Stop did not cancel the expiry action\n", stderr);
         return 1;
     }
@@ -380,6 +417,7 @@ int main(void) {
     pthread_cond_init(&gap_tray.stop_condition, NULL);
     gap_tray.is_running = true;
     gap_tray.duration_expired = true;
+    gap_tray.session_action_pending = true;
     gap_tray.timer_thread = (HANDLE)(uintptr_t)5;
     gap_tray.timer_thread_id = 1;
     gap_tray.nosleep_thread = (HANDLE)(uintptr_t)6;
@@ -399,13 +437,63 @@ int main(void) {
 
     current_thread_id = 4;
     (void)tray_stop_nosleep_for_session(&gap_tray, 0, false, false);
-    if (!gap_tray.session_action_cancelled || notification_count != 1 ||
+    if (!gap_tray.session_action_cancelled ||
+        gap_tray.stopping_expiry_notification_suppressed ||
+        notification_count != 1 ||
         notification_event != NOTIFY_EVENT_SESSION_STOP ||
         strcmp(notification_title, "Stopped") != 0 ||
         strstr(notification_message, "manually stopped") == NULL ||
         stop_menu_update_count != menu_updates_after_expiry_cleanup + 1) {
         fprintf(stderr,
                 "FAIL: manual Stop between expiry cleanup and action startup should refresh the menu and show Stopped; got %d notifications, title '%s'\n",
+                notification_count, notification_title);
+        return 1;
+    }
+
+    NoSleepTray failed_start_tray = {0};
+    pthread_mutex_init(&failed_start_tray.delayed_action_lock, NULL);
+    pthread_cond_init(&failed_start_tray.stop_condition, NULL);
+    failed_start_tray.duration_expired = true;
+    failed_start_tray.stopping_expiry_notification_suppressed = true;
+    active_tray = &failed_start_tray;
+    notification_count = 0;
+    notification_title[0] = '\0';
+    notification_message[0] = '\0';
+    current_thread_id = 5;
+    (void)tray_stop_nosleep_for_session(&failed_start_tray, 0, false, false);
+    if (notification_count != 0 ||
+        failed_start_tray.stopping_expiry_notification_suppressed) {
+        fprintf(stderr,
+                "FAIL: stale Stop after failed action startup showed a false notice or retained suppression state; got %d notifications, title '%s'\n",
+                notification_count, notification_title);
+        return 1;
+    }
+
+    NoSleepTray completed_tray = {0};
+    pthread_mutex_init(&completed_tray.delayed_action_lock, NULL);
+    pthread_cond_init(&completed_tray.stop_condition, NULL);
+    completed_tray.duration_expired = true;
+    completed_tray.session_action_pending = true;
+    completed_tray.stopping_expiry_notification_suppressed = true;
+    completed_tray.sleep_timer = (HANDLE)(uintptr_t)12;
+    tray_reap_delayed_action_handle(&completed_tray,
+                                   &completed_tray.sleep_timer);
+    if (completed_tray.session_action_pending ||
+        completed_tray.stopping_expiry_notification_suppressed ||
+        completed_tray.sleep_timer != NULL) {
+        fputs("FAIL: reaping a completed delayed action retained stale expiry suppression\n",
+              stderr);
+        return 1;
+    }
+    active_tray = &completed_tray;
+    notification_count = 0;
+    notification_title[0] = '\0';
+    notification_message[0] = '\0';
+    current_thread_id = 6;
+    (void)tray_stop_nosleep_for_session(&completed_tray, 0, false, false);
+    if (notification_count != 0) {
+        fprintf(stderr,
+                "FAIL: queued Stop after delayed action completion showed a false notice; got %d notifications, title '%s'\n",
                 notification_count, notification_title);
         return 1;
     }
@@ -471,7 +559,14 @@ int main(void) {
 '''
 
 output.write_text(prelude + "\n" + manual_notice_function + "\n" +
-                  stop_function + "\n" + main)
+                  stop_function + "\n" + reap_function + "\n" +
+                  "static void try_start_cancelled_sleep_action(NoSleepTray *tray, DWORD timer_thread_id) {\n"
+                  "    HANDLE sleep_timer = NULL;\n"
+                  "    bool core_init_failed;\n"
+                  "    bool core_init_succeeded;\n"
+                  "    bool nosleep_run_failed;\n"
+                  "    bool stale_session;\n"
+                  "    bool session_starting;\n" + sleep_startup + "\n}\n" + main)
 PY
 
 "${CC:-cc}" -std=c99 -Wall -Wextra -pthread -I"$SCRIPT_DIR/src" \
