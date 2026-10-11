@@ -312,6 +312,19 @@ static bool notify_groups_recover_interrupted_registry_rename(void) {
     return success;
 }
 
+static bool notify_groups_read_registry_revision(HKEY root, ULONGLONG* revision) {
+    DWORD type = 0;
+    DWORD size = sizeof(*revision);
+    LONG result = RegQueryValueEx(root, "registry_revision", NULL, &type,
+        (LPBYTE)revision, &size);
+    if (result == ERROR_FILE_NOT_FOUND) {
+        // Trees written before revision tracking are the initial revision.
+        *revision = 0;
+        return true;
+    }
+    return result == ERROR_SUCCESS && type == REG_QWORD && size == sizeof(*revision);
+}
+
 // Initialize default groups
 static void init_default_groups(NotifyGroupManager* mgr) {
     mgr->count = 3;
@@ -532,6 +545,25 @@ static bool notify_groups_save_locked(NotifyGroupManager* mgr) {
         return false;
     }
 
+    ULONGLONG current_revision = 0;
+    if (had_existing) {
+        result = RegOpenKeyEx(HKEY_CURRENT_USER, NOTIFY_GROUPS_REG_KEY,
+            0, KEY_READ, &hExisting);
+        if (result != ERROR_SUCCESS ||
+            !notify_groups_read_registry_revision(hExisting, &current_revision)) {
+            if (result == ERROR_SUCCESS) RegCloseKey(hExisting);
+            RegCloseKey(hParent);
+            return false;
+        }
+        RegCloseKey(hExisting);
+    }
+    if (current_revision != mgr->registry_revision ||
+        current_revision == (ULONGLONG)-1) {
+        RegCloseKey(hParent);
+        return false;
+    }
+    ULONGLONG next_revision = current_revision + 1;
+
     // A backup is stale only when the primary tree exists. If it is the only
     // remaining copy, the recovery above must succeed before it can be removed.
     if (had_existing && !notify_groups_delete_registry_tree(NOTIFY_GROUPS_BACKUP_REG_KEY)) {
@@ -587,6 +619,11 @@ static bool notify_groups_save_locked(NotifyGroupManager* mgr) {
             (LPBYTE)&val, sizeof(val));
         if (result != ERROR_SUCCESS) success = false;
     }
+    if (success) {
+        result = RegSetValueEx(hKeyRoot, "registry_revision", 0, REG_QWORD,
+            (LPBYTE)&next_revision, sizeof(next_revision));
+        if (result != ERROR_SUCCESS) success = false;
+    }
     if (RegCloseKey(hKeyRoot) != ERROR_SUCCESS) success = false;
     if (!success) {
         RegCloseKey(hParent);
@@ -615,6 +652,7 @@ static bool notify_groups_save_locked(NotifyGroupManager* mgr) {
         notify_groups_delete_registry_tree(NOTIFY_GROUPS_BACKUP_REG_KEY);
     }
     RegCloseKey(hParent);
+    mgr->registry_revision = next_revision;
     return true;
 }
 
@@ -638,6 +676,7 @@ static bool notify_groups_value_read_failed(LONG result) {
 static void notify_groups_load_locked(NotifyGroupManager* mgr) {
     if (!mgr) return;
     mgr->load_incomplete = false;
+    mgr->registry_revision = 0;
 
     if (!notify_groups_recover_interrupted_registry_rename()) {
         mgr->load_incomplete = true;
@@ -673,6 +712,10 @@ static void notify_groups_load_locked(NotifyGroupManager* mgr) {
     DWORD persisted_active_index = val;
     mgr->active_index = 0;
     bool active_index_mapped = false;
+
+    if (!notify_groups_read_registry_revision(hKeyRoot, &mgr->registry_revision)) {
+        mgr->load_incomplete = true;
+    }
     
     RegCloseKey(hKeyRoot);
     
