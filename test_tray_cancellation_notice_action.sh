@@ -144,6 +144,7 @@ typedef struct NoSleepTray {
 static MockHandle delayed_action_handle;
 static NoSleepTray *active_tray;
 static int notification_event;
+static int stop_menu_update_count;
 static char notification_title[128];
 static char notification_message[128];
 static bool countdown_stop_called;
@@ -194,7 +195,10 @@ static void tray_show_notification(NoSleepTray *tray,
     snprintf(notification_title, sizeof(notification_title), "%s", title);
     snprintf(notification_message, sizeof(notification_message), "%s", message);
 }
-static void tray_update_stop_menu_item(NoSleepTray *tray) { (void)tray; }
+static void tray_update_stop_menu_item(NoSleepTray *tray) {
+    (void)tray;
+    ++stop_menu_update_count;
+}
 static void tray_update_icon(NoSleepTray *tray) { (void)tray; }
 '''
 
@@ -246,6 +250,35 @@ static int expect_cancellation_notice(const char *scenario,
     return 0;
 }
 
+static int expect_claimed_action_feedback(const char *scenario, bool shutdown) {
+    NoSleepTray tray = {0};
+    if (shutdown) {
+        tray.shutdown_timer = &delayed_action_handle;
+        tray.shutdown_action_claimed = true;
+    } else {
+        tray.sleep_timer = &delayed_action_handle;
+        tray.sleep_action_claimed = true;
+    }
+    notification_event = 0;
+    notification_title[0] = '\0';
+    notification_message[0] = '\0';
+    stop_menu_update_count = 0;
+
+    tray_stop_nosleep(&tray, false, false);
+
+    if (notification_event != NOTIFY_EVENT_ERROR ||
+        strcmp(notification_title, "Action already started") != 0 ||
+        strstr(notification_message, "already started") == NULL ||
+        stop_menu_update_count != 1) {
+        fprintf(stderr,
+                "FAIL: %s reported '%s: %s' and refreshed the menu %d times\n",
+                scenario, notification_title, notification_message,
+                stop_menu_update_count);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
     failures += expect_cancellation_notice(
@@ -278,8 +311,12 @@ int main(void) {
         SESSION_FINISHED_SLEEP,
         false, true,
         "Shutdown cancelled", "System shutdown has been cancelled");
+    failures += expect_claimed_action_feedback(
+        "Stop after delayed sleep action was claimed", false);
+    failures += expect_claimed_action_feedback(
+        "Stop after delayed shutdown action was claimed", true);
     if (failures) return 1;
-    puts("PASS: cancellation notices use the scheduled action across countdown states");
+    puts("PASS: cancellation notices reflect action state and refresh the Stop menu");
     return 0;
 }
 '''

@@ -1506,6 +1506,11 @@ static bool tray_stop_nosleep_for_session(NoSleepTray* tray,
         !has_cancellable_work) {
         ReleaseSRWLockExclusive(&tray->delayed_action_lock);
         DEBUG_LOG("tray_stop_nosleep: no cancellable work remains");
+        tray_show_notification(tray, NOTIFY_EVENT_ERROR,
+            "Action already started",
+            "The sleep or shutdown action has already started and can no longer be cancelled.",
+            false);
+        tray_update_stop_menu_item(tray);
         return false;
     }
 
