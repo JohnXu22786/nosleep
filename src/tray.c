@@ -6140,6 +6140,7 @@ LRESULT CALLBACK tray_window_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPa
                         tray_wait_for_delayed_countdown_start(tray);
                         bool session_running = ATOMIC_LOAD_BOOL(&tray->is_running);
                         bool session_can_publish_action =
+                            ATOMIC_LOAD_BOOL(&tray->core_init_succeeded) &&
                             !tray->session_action_cancelled &&
                             !ATOMIC_LOAD_BOOL(&tray->core_init_failed) &&
                             !ATOMIC_LOAD_BOOL(&tray->nosleep_run_failed) &&

@@ -127,6 +127,7 @@ typedef struct NoSleepTray {
     bool delayed_countdown_starting;
     DWORD nosleep_thread_id;
     bool session_action_cancelled;
+    bool session_action_pending;
     bool core_init_failed;
     bool nosleep_run_failed;
     bool is_running;

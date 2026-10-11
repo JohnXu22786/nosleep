@@ -343,6 +343,7 @@ static int expect_suspend_first_after_duration_elapsed(void) {
     NoSleepTray tray = {0};
     tray.is_running = true;
     tray.session_finished_action = SESSION_FINISHED_SLEEP;
+    tray.core_init_succeeded = true;
     tray.duration_minutes = 1;
     tray.start_tick64 = 1000;
     tray.timer_thread_id = 27;
@@ -384,6 +385,7 @@ static int expect_expiry_after_stop_is_cancelled_before_action_publication(void)
     NoSleepTray tray = {0};
     tray.duration_expired = true;
     tray.session_action_pending = true;
+    tray.core_init_succeeded = true;
     tray.duration_minutes = 1;
     tray.start_tick64 = 1000;
     tray.timer_thread_id = 27;
@@ -593,6 +595,31 @@ static int expect_failed_session_does_not_claim_cancellation(bool core_init_fail
                                  "System sleep detected; no pending actions were cancelled");
 }
 
+static int expect_uninitialized_core_does_not_claim_cancellation(void) {
+    bool sleep_event = false;
+    bool shutdown_event = false;
+    NoSleepTray tray = {0};
+    tray.is_running = true;
+    tray.session_action_pending = true;
+    tray.core_init_succeeded = false;
+    tray.duration_minutes = 1;
+    tray.start_tick64 = 1000;
+    tray.timer_thread_id = 27;
+    tray.sleep_stop_event = &sleep_event;
+    tray.shutdown_stop_event = &shutdown_event;
+    current_tick64 = 61000;
+    notification_event = 0;
+    notification_message[0] = '\0';
+
+    simulate_suspend(&tray);
+    if (sleep_event || shutdown_event || tray.session_action_cancelled) {
+        fprintf(stderr, "FAIL: suspend claimed cancellation before NoSleep core initialization succeeded\n");
+        return 1;
+    }
+    return expect_suspend_notice("suspend before NoSleep core initialization succeeds",
+                                 "System sleep detected; no pending actions were cancelled");
+}
+
 static int expect_starting_session_does_not_claim_scheduled_work(
         bool sleep_action, bool shutdown_action, bool countdown_active) {
     bool sleep_event = false;
@@ -680,6 +707,7 @@ int main(void) {
     failures += expect_elapsed_clock_after_manual_stop_does_not_cancel();
     failures += expect_failed_session_does_not_claim_cancellation(true);
     failures += expect_failed_session_does_not_claim_cancellation(false);
+    failures += expect_uninitialized_core_does_not_claim_cancellation();
     failures += expect_starting_session_does_not_claim_scheduled_work(true, false, false);
     failures += expect_starting_session_does_not_claim_scheduled_work(false, true, false);
     failures += expect_starting_session_does_not_claim_scheduled_work(false, false, true);
